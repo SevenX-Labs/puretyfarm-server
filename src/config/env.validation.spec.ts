@@ -6,6 +6,8 @@ describe('validateEnv', () => {
     JWT_REFRESH_SECRET: 'b'.repeat(32),
     DATABASE_URL: 'postgresql://localhost/db',
     VALKEY_URL: 'rediss://localhost:6379',
+    GEOAPIFY_API_KEY: 'test-geoapify-key',
+    GEOAPIFY_BASE_URL: 'https://api.geoapify.com',
   };
 
   it('accepts a complete, valid configuration', () => {

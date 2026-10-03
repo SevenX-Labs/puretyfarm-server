@@ -44,6 +44,12 @@ export function validateEnv(
   requireNonEmpty('DATABASE_URL');
   requireNonEmpty('VALKEY_URL');
 
+  // Geoapify reverse-geocoding credentials. Required so the server fails fast
+  // at boot rather than at the first /locations/detect call. The key value is
+  // never logged.
+  requireNonEmpty('GEOAPIFY_API_KEY');
+  requireNonEmpty('GEOAPIFY_BASE_URL');
+
   if (errors.length > 0) {
     throw new Error(
       `Invalid environment configuration:\n- ${errors.join('\n- ')}`,

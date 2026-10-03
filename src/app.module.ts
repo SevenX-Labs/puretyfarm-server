@@ -9,6 +9,7 @@ import { ValkeyModule } from './valkey/valkey.module';
 import { validateEnv } from './config/env.validation';
 import { ProfileModule } from './modules/profile/profile.module';
 import { LocationsModule } from './modules/locations/locations.module';
+import { AddressModule } from './modules/address/address.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { LocationsModule } from './modules/locations/locations.module';
     ValkeyModule,
     ProfileModule,
     LocationsModule,
+    AddressModule,
   ],
   controllers: [AppController],
   providers: [AppService],
