@@ -7,6 +7,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { ValkeyModule } from './valkey/valkey.module';
 import { validateEnv } from './config/env.validation';
+import { ProfileModule } from './modules/profile/profile.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { validateEnv } from './config/env.validation';
     AuthModule,
     UsersModule,
     ValkeyModule,
+    ProfileModule,
   ],
   controllers: [AppController],
   providers: [AppService],
