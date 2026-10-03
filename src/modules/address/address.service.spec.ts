@@ -244,4 +244,71 @@ describe("AddressService", () => {
       expect(mockPrisma.customerAddress.delete).not.toHaveBeenCalled();
     });
   });
+
+  describe("mobile normalization", () => {
+    beforeEach(() => {
+      mockPrisma.area.findUnique.mockResolvedValue(activeArea);
+      mockPrisma.customerAddress.create.mockImplementation(({ data }: any) => ({
+        id: "addr-1",
+        ...data,
+      }));
+      mockPrisma.customerAddress.update.mockImplementation(({ data }: any) => ({
+        id: "addr-1",
+        ...data,
+      }));
+    });
+
+    it("15/18. normalizes a 10-digit Indian number on create", async () => {
+      await service.createAddress(OWNER, { ...baseDto, mobile: "9876543210" });
+      const data = mockPrisma.customerAddress.create.mock.calls[0][0].data;
+      expect(data.mobile).toBe("+919876543210");
+    });
+
+    it("16. keeps an already-canonical +91 number on create", async () => {
+      await service.createAddress(OWNER, {
+        ...baseDto,
+        mobile: "+919876543210",
+      });
+      const data = mockPrisma.customerAddress.create.mock.calls[0][0].data;
+      expect(data.mobile).toBe("+919876543210");
+    });
+
+    it("17. rejects an invalid mobile with a 400 on create", async () => {
+      await expect(
+        service.createAddress(OWNER, { ...baseDto, mobile: "12345" }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.customerAddress.create).not.toHaveBeenCalled();
+    });
+
+    it("19. normalizes the mobile on update when supplied", async () => {
+      mockPrisma.customerAddress.findFirst.mockResolvedValue({
+        id: "addr-1",
+        userId: OWNER,
+      });
+      await service.updateAddress(OWNER, "addr-1", { mobile: "09876543210" });
+      const data = mockPrisma.customerAddress.update.mock.calls[0][0].data;
+      expect(data.mobile).toBe("+919876543210");
+    });
+
+    it("20. leaves mobile untouched on update when not supplied", async () => {
+      mockPrisma.customerAddress.findFirst.mockResolvedValue({
+        id: "addr-1",
+        userId: OWNER,
+      });
+      await service.updateAddress(OWNER, "addr-1", { landmark: "New" });
+      const data = mockPrisma.customerAddress.update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty("mobile");
+    });
+
+    it("rejects an invalid mobile with a 400 on update", async () => {
+      mockPrisma.customerAddress.findFirst.mockResolvedValue({
+        id: "addr-1",
+        userId: OWNER,
+      });
+      await expect(
+        service.updateAddress(OWNER, "addr-1", { mobile: "abc" }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.customerAddress.update).not.toHaveBeenCalled();
+    });
+  });
 });

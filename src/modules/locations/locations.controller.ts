@@ -12,6 +12,8 @@ import {
 import { LocationsService } from "./locations.service";
 import { DetectLocationDto } from "./dto/customer/detect-location.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
 
 /**
  * Customer-side location APIs. All endpoints require a valid customer JWT.
@@ -29,8 +31,16 @@ export class LocationsController {
    */
   @Post("detect")
   @HttpCode(HttpStatus.OK)
-  async detect(@Body() dto: DetectLocationDto) {
-    return this.locationsService.detectLocation(dto.latitude, dto.longitude);
+  async detect(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: DetectLocationDto,
+  ) {
+    // Identity for rate limiting + caching comes from the JWT, never the body.
+    return this.locationsService.detectLocation(
+      user.sub,
+      dto.latitude,
+      dto.longitude,
+    );
   }
 
   @Get("states")

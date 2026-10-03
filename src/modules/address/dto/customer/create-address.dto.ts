@@ -30,11 +30,10 @@ export class CreateAddressDto {
   @Transform(trim)
   fullName: string;
 
+  // Format is validated + canonicalized by normalizeMobile() in the service
+  // (shared with Auth), so the DTO only enforces presence here.
   @IsString()
   @IsNotEmpty({ message: "mobile is required" })
-  @Matches(/^\+?[1-9]\d{7,14}$/, {
-    message: "mobile must be a valid phone number",
-  })
   @Transform(trim)
   mobile: string;
 

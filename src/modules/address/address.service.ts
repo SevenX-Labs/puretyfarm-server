@@ -7,6 +7,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { CustomerAddress } from "@prisma/client";
 import { CreateAddressDto } from "./dto/customer/create-address.dto";
 import { UpdateAddressDto } from "./dto/customer/update-address.dto";
+import { normalizeMobile } from "../../common/utils/phone.util";
 
 /** Authoritative, active State -> City -> Area resolved from the catalog. */
 interface ResolvedHierarchy {
@@ -38,11 +39,15 @@ export class AddressService {
       dto.areaId,
     );
 
+    // Canonicalize the mobile to the same +91XXXXXXXXXX format used across
+    // Auth/User. Throws a 400 on an invalid number.
+    const mobile = normalizeMobile(dto.mobile);
+
     return this.prisma.customerAddress.create({
       data: {
         userId,
         fullName: dto.fullName,
-        mobile: dto.mobile,
+        mobile,
         houseNumber: dto.houseNumber,
         buildingName: dto.buildingName ?? null,
         streetName: dto.streetName ?? null,
@@ -102,7 +107,8 @@ export class AddressService {
     const data: Record<string, unknown> = {};
 
     if (dto.fullName !== undefined) data.fullName = dto.fullName;
-    if (dto.mobile !== undefined) data.mobile = dto.mobile;
+    // Only touch mobile when supplied; canonicalize it (throws 400 if invalid).
+    if (dto.mobile !== undefined) data.mobile = normalizeMobile(dto.mobile);
     if (dto.houseNumber !== undefined) data.houseNumber = dto.houseNumber;
     if (dto.buildingName !== undefined) data.buildingName = dto.buildingName;
     if (dto.streetName !== undefined) data.streetName = dto.streetName;

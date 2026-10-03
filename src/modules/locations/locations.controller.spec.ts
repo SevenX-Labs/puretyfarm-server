@@ -41,9 +41,23 @@ describe("LocationsController", () => {
     expect(guards).toContain(JwtAuthGuard);
   });
 
-  it("1. detect delegates coordinates to the service (no persistence)", async () => {
-    await controller.detect({ latitude: 19.076, longitude: 72.8777 });
-    expect(mockService.detectLocation).toHaveBeenCalledWith(19.076, 72.8777);
+  const jwtUser = {
+    sub: "user-1",
+    role: "CUSTOMER",
+    sessionId: "session-1",
+    type: "access" as const,
+  };
+
+  it("1/5/6. detect uses JWT.sub (never a body userId) for identity", async () => {
+    await controller.detect(jwtUser, {
+      latitude: 19.076,
+      longitude: 72.8777,
+    } as any);
+    expect(mockService.detectLocation).toHaveBeenCalledWith(
+      "user-1",
+      19.076,
+      72.8777,
+    );
   });
 
   it("11. getStates returns the service result", async () => {
