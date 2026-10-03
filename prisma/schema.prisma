@@ -7,3 +7,39 @@ datasource db {
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
+
+enum Role {
+  CUSTOMER
+  ADMIN
+  CITY_ADMIN
+  AREA_ADMIN
+  STORE_ADMIN
+  DELIVERY_PARTNER
+}
+
+model User {
+  id            String    @id @default(uuid())
+  mobile        String    @unique
+  email         String?   @unique
+  emailVerified Boolean   @default(false)
+  role          Role      @default(CUSTOMER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id               String    @id @default(uuid())
+  userId           String
+  refreshTokenHash String
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  lastUsedAt       DateTime  @default(now())
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
