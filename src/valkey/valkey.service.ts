@@ -11,6 +11,7 @@ import { GlideClient, TimeUnit, Script } from '@valkey/valkey-glide';
 export class ValkeyService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ValkeyService.name);
   private client: GlideClient | null = null;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
   // Compiled Lua scripts are cached by source so we do not recreate them per call.
   private readonly scriptCache = new Map<string, Script>();
 
@@ -63,6 +64,12 @@ export class ValkeyService implements OnModuleInit, OnModuleDestroy {
           : undefined,
         useTLS: isTls,
         requestTimeout: 10000,
+        connectionBackoff: {
+          numberOfRetries: 5,
+          factor: 250,
+          exponentBase: 2,
+          jitterPercent: 20,
+        },
         advancedConfiguration: {
           connectionTimeout: 10000,
         },
@@ -71,6 +78,9 @@ export class ValkeyService implements OnModuleInit, OnModuleDestroy {
       // Verify connection with a lightweight PING
       const pingResult = await this.client.ping();
       this.logger.log(`Valkey connected successfully (Ping: ${pingResult})`);
+
+      // Start periodic heartbeat ping (every 30 seconds) to prevent cloud idle connection reset
+      this.startHeartbeat();
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -82,7 +92,34 @@ export class ValkeyService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private startHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+
+    this.heartbeatInterval = setInterval(async () => {
+      if (this.client) {
+        try {
+          await this.client.ping();
+        } catch (err) {
+          this.logger.debug(
+            `Valkey keep-alive ping failed (client will auto-reconnect): ${err}`,
+          );
+        }
+      }
+    }, 30000);
+
+    if (this.heartbeatInterval.unref) {
+      this.heartbeatInterval.unref();
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+
     if (this.client) {
       try {
         this.client.close();
@@ -99,36 +136,66 @@ export class ValkeyService implements OnModuleInit, OnModuleDestroy {
     return this.client;
   }
 
+  /**
+   * Automatically retries an operation once if a transient connection reset occurs.
+   */
+  private async executeWithRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (
+        msg.includes('Connection error') ||
+        msg.includes('Connection reset') ||
+        msg.includes('ConnectionError') ||
+        msg.includes('os error 104')
+      ) {
+        this.logger.warn(
+          `Valkey connection reset detected. Waiting for auto-reconnect and retrying...`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return await operation();
+      }
+      throw error;
+    }
+  }
+
   async get(key: string): Promise<string | null> {
     if (!this.client) {
       throw new Error('Valkey client is not initialized');
     }
-    const result = await this.client.get(key);
-    return result as string | null;
+    return this.executeWithRetry(async () => {
+      const result = await this.client!.get(key);
+      return result as string | null;
+    });
   }
 
   async set(key: string, value: string, ttl?: number): Promise<string | null> {
     if (!this.client) {
       throw new Error('Valkey client is not initialized');
     }
-    if (typeof ttl === 'number' && ttl > 0) {
-      const result = await this.client.set(key, value, {
-        expiry: {
-          type: TimeUnit.Seconds,
-          count: ttl,
-        },
-      });
+    return this.executeWithRetry(async () => {
+      if (typeof ttl === 'number' && ttl > 0) {
+        const result = await this.client!.set(key, value, {
+          expiry: {
+            type: TimeUnit.Seconds,
+            count: ttl,
+          },
+        });
+        return result as string | null;
+      }
+      const result = await this.client!.set(key, value);
       return result as string | null;
-    }
-    const result = await this.client.set(key, value);
-    return result as string | null;
+    });
   }
 
   async delete(key: string): Promise<number> {
     if (!this.client) {
       throw new Error('Valkey client is not initialized');
     }
-    return await this.client.del([key]);
+    return this.executeWithRetry(async () => {
+      return await this.client!.del([key]);
+    });
   }
 
   async del(key: string): Promise<number> {
@@ -139,21 +206,27 @@ export class ValkeyService implements OnModuleInit, OnModuleDestroy {
     if (!this.client) {
       throw new Error('Valkey client is not initialized');
     }
-    return await this.client.incr(key);
+    return this.executeWithRetry(async () => {
+      return await this.client!.incr(key);
+    });
   }
 
   async expire(key: string, seconds: number): Promise<boolean> {
     if (!this.client) {
       throw new Error('Valkey client is not initialized');
     }
-    return await this.client.expire(key, seconds);
+    return this.executeWithRetry(async () => {
+      return await this.client!.expire(key, seconds);
+    });
   }
 
   async ttl(key: string): Promise<number> {
     if (!this.client) {
       throw new Error('Valkey client is not initialized');
     }
-    return await this.client.ttl(key);
+    return this.executeWithRetry(async () => {
+      return await this.client!.ttl(key);
+    });
   }
 
   private getScript(source: string): Script {
@@ -172,9 +245,11 @@ export class ValkeyService implements OnModuleInit, OnModuleDestroy {
     if (!this.client) {
       throw new Error('Valkey client is not initialized');
     }
-    return await this.client.invokeScript(this.getScript(source), {
-      keys,
-      args,
+    return this.executeWithRetry(async () => {
+      return await this.client!.invokeScript(this.getScript(source), {
+        keys,
+        args,
+      });
     });
   }
 
