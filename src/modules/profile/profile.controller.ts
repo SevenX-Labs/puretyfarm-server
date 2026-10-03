@@ -18,6 +18,7 @@ import { CustomerUpdateProfileDto } from "./dto/customer/customer-update-profile
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
+import { avatarMulterOptions } from "./utils/avatar-upload.options";
 
 @Controller(["api/v1/customer/profile", "customer/profile"])
 export class ProfileController {
@@ -52,7 +53,7 @@ export class ProfileController {
 
   @Post("update-avatar")
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor("avatar"))
+  @UseInterceptors(FileInterceptor("avatar", avatarMulterOptions))
   @HttpCode(HttpStatus.OK)
   async updateAvatar(
     @CurrentUser() user: JwtPayload,

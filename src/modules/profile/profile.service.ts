@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
   BadRequestException,
@@ -11,6 +12,10 @@ import { CustomerUpdateProfileDto } from "./dto/customer/customer-update-profile
 import { validateAvatarFile } from "./utils/avatar-validator.util";
 import { CustomerProfile, Prisma } from "@prisma/client";
 
+// Signed URLs for private avatars are short-lived; the DB only ever stores the
+// permanent object path, never this URL.
+export const SIGNED_URL_EXPIRY_SECONDS = 3600; // 1 hour
+
 export interface CombinedCustomerProfileResponse {
   id: string;
   userId: string;
@@ -18,6 +23,8 @@ export interface CombinedCustomerProfileResponse {
   lastName: string;
   gender: string;
   dateOfBirth: string;
+  // Temporary signed URL (or null). Derived from the stored profileImagePath
+  // at read time — NEVER persisted.
   profileImageUrl: string | null;
   mobile: string;
   email: string | null;
@@ -28,6 +35,8 @@ export interface CombinedCustomerProfileResponse {
 
 @Injectable()
 export class ProfileService {
+  private readonly logger = new Logger(ProfileService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageService: ProfileStorageService,
@@ -69,7 +78,7 @@ export class ProfileService {
         },
       });
 
-      return this.formatProfileResponse(profile, user);
+      return await this.buildProfileResponse(profile, user);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -98,7 +107,7 @@ export class ProfileService {
       );
     }
 
-    return this.formatProfileResponse(profile, profile.user);
+    return this.buildProfileResponse(profile, profile.user);
   }
 
   /**
@@ -132,17 +141,19 @@ export class ProfileService {
       include: { user: true },
     });
 
-    return this.formatProfileResponse(updated, updated.user);
+    return this.buildProfileResponse(updated, updated.user);
   }
 
   /**
-   * Updates customer avatar via validated multipart image upload using a safe 2-phase sequence:
-   * 1. Validate new file.
-   * 2. Upload new avatar to storage and obtain public URL.
-   * 3. Update database record with new avatar URL.
-   * 4. Only after database update succeeds, delete old avatar from storage.
-   * 5. If upload fails, old avatar is kept.
-   * 6. If DB update fails, clean up the newly uploaded avatar and keep old avatar.
+   * Updates the customer avatar from a validated multipart image using a safe
+   * ordering that never leaves the account without a working avatar:
+   * 1. Validate the new file (defense in depth on top of the Multer limits).
+   * 2. Upload the new object to the PRIVATE bucket -> get its storage PATH.
+   *    If this fails, the old avatar + DB path are kept untouched.
+   * 3. Persist the new PATH in PostgreSQL.
+   *    If this fails, delete the just-uploaded object and keep the old avatar.
+   * 4. Only after the DB commit, delete the OLD object. A failure here is
+   *    logged but NOT rolled back — the new avatar is already live.
    */
   async updateCustomerAvatar(
     userId: string,
@@ -160,47 +171,47 @@ export class ProfileService {
       throw new NotFoundException("Customer profile not found");
     }
 
-    const oldAvatarUrl = profile.profileImageUrl;
+    const oldAvatarPath = profile.profileImagePath;
 
-    // 2 & 3. Upload new avatar and obtain new public URL
-    // If upload fails, old avatar is safely kept untouched
-    const newProfileImageUrl = await this.storageService.uploadAvatar(
-      userId,
-      file!,
-    );
+    // 2. Upload new avatar -> permanent storage PATH (not a URL).
+    //    If upload fails, old avatar is safely kept untouched.
+    const newAvatarPath = await this.storageService.uploadAvatar(userId, file!);
 
-    // 4. Update CustomerProfile.profileImageUrl in PostgreSQL
+    // 3. Persist the new PATH in PostgreSQL.
     let updated;
     try {
       updated = await this.prisma.customerProfile.update({
         where: { userId },
-        data: { profileImageUrl: newProfileImageUrl },
+        data: { profileImagePath: newAvatarPath },
         include: { user: true },
       });
     } catch (dbError) {
-      // 7. Database update failed: clean up newly uploaded avatar to prevent orphans
+      // DB update failed: remove the orphaned new object, keep old avatar/path.
       try {
-        await this.storageService.deleteAvatar(newProfileImageUrl);
-      } catch (cleanupError) {
-        // Suppress cleanup error to surface root database error
+        await this.storageService.deleteAvatar(newAvatarPath);
+      } catch {
+        // Suppress cleanup error so the root DB error is surfaced.
       }
       throw dbError;
     }
 
-    // 5. Only after database update succeeds, delete old avatar from storage
-    if (oldAvatarUrl) {
+    // 4. DB committed: delete the OLD object. Non-fatal on failure.
+    if (oldAvatarPath && oldAvatarPath !== newAvatarPath) {
       try {
-        await this.storageService.deleteAvatar(oldAvatarUrl);
-      } catch (deleteError) {
-        // Non-fatal if old avatar deletion fails; new avatar is already live and persisted
+        await this.storageService.deleteAvatar(oldAvatarPath);
+      } catch {
+        this.logger.warn(
+          `Avatar replaced for user ${userId}, but deleting the old object failed. New avatar is live; old object may need manual cleanup.`,
+        );
       }
     }
 
-    return this.formatProfileResponse(updated, updated.user);
+    return this.buildProfileResponse(updated, updated.user);
   }
 
   /**
-   * Removes avatar reference from profile and deletes physical object.
+   * Removes the avatar: deletes the stored object (only the authenticated
+   * user's own path) and clears the DB path. Returns profileImageUrl: null.
    */
   async removeCustomerAvatar(
     userId: string,
@@ -214,19 +225,19 @@ export class ProfileService {
       throw new NotFoundException("Customer profile not found");
     }
 
-    if (profile.profileImageUrl) {
-      await this.storageService.deleteAvatar(profile.profileImageUrl);
+    if (profile.profileImagePath) {
+      await this.storageService.deleteAvatar(profile.profileImagePath);
 
       const updated = await this.prisma.customerProfile.update({
         where: { userId },
-        data: { profileImageUrl: null },
+        data: { profileImagePath: null },
         include: { user: true },
       });
 
-      return this.formatProfileResponse(updated, updated.user);
+      return this.buildProfileResponse(updated, updated.user);
     }
 
-    return this.formatProfileResponse(profile, profile.user);
+    return this.buildProfileResponse(profile, profile.user);
   }
 
   private validateAndParseDate(dateStr: string): Date {
@@ -243,14 +254,35 @@ export class ProfileService {
     return date;
   }
 
-  private formatProfileResponse(
+  /**
+   * Builds the API response, turning the stored private object PATH into a
+   * temporary signed URL exposed as `profileImageUrl`. The signed URL is never
+   * written back to the database. If signing fails we return null rather than
+   * failing the whole profile read.
+   */
+  private async buildProfileResponse(
     profile: CustomerProfile,
     user: {
       mobile: string;
       email: string | null;
       emailVerified: boolean;
     },
-  ): CombinedCustomerProfileResponse {
+  ): Promise<CombinedCustomerProfileResponse> {
+    let profileImageUrl: string | null = null;
+    if (profile.profileImagePath) {
+      try {
+        profileImageUrl = await this.storageService.createSignedUrl(
+          profile.profileImagePath,
+          SIGNED_URL_EXPIRY_SECONDS,
+        );
+      } catch {
+        this.logger.warn(
+          `Failed to generate signed avatar URL for user ${profile.userId}`,
+        );
+        profileImageUrl = null;
+      }
+    }
+
     return {
       id: profile.id,
       userId: profile.userId,
@@ -258,7 +290,7 @@ export class ProfileService {
       lastName: profile.lastName,
       gender: profile.gender,
       dateOfBirth: profile.dateOfBirth.toISOString().split("T")[0],
-      profileImageUrl: profile.profileImageUrl,
+      profileImageUrl,
       mobile: user.mobile,
       email: user.email,
       emailVerified: user.emailVerified,

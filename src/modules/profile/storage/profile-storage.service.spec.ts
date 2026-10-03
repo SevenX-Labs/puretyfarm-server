@@ -11,8 +11,8 @@ jest.mock("@nestjs/config", () => ({
 jest.mock("@supabase/supabase-js", () => {
   const mockStorageFrom = {
     upload: jest.fn(),
-    getPublicUrl: jest.fn(),
     remove: jest.fn(),
+    createSignedUrl: jest.fn(),
   };
   return {
     createClient: jest.fn().mockReturnValue({
@@ -23,9 +23,8 @@ jest.mock("@supabase/supabase-js", () => {
   };
 });
 
-describe("ProfileStorageService", () => {
+describe("ProfileStorageService (private bucket)", () => {
   let service: ProfileStorageService;
-  let configService: any;
   let mockSupabaseStorage: any;
 
   beforeEach(async () => {
@@ -55,43 +54,116 @@ describe("ProfileStorageService", () => {
     service = module.get<ProfileStorageService>(ProfileStorageService);
   });
 
+  const jpegFile = {
+    fieldname: "avatar",
+    originalname: "../../etc/passwd.jpg", // hostile name — must be ignored
+    mimetype: "image/jpeg",
+    size: 1024,
+    buffer: Buffer.from("test"),
+  } as unknown as Express.Multer.File;
+
   it("should be defined", () => {
     expect(service).toBeDefined();
   });
 
-  it("should upload avatar to Supabase and return public URL", async () => {
+  it("uploads to the private bucket and returns the OBJECT PATH (not a URL)", async () => {
     mockSupabaseStorage.upload.mockResolvedValue({ data: {}, error: null });
-    mockSupabaseStorage.getPublicUrl.mockReturnValue({
-      data: {
-        publicUrl:
-          "https://test.supabase.co/storage/v1/object/public/uploads/avatars/customers/u1-123.jpg",
-      },
-    });
 
-    const file = {
-      fieldname: "avatar",
-      originalname: "test.jpg",
-      mimetype: "image/jpeg",
-      size: 1024,
-      buffer: Buffer.from("test"),
-    } as Express.Multer.File;
+    const result = await service.uploadAvatar("u1", jpegFile);
 
-    const url = await service.uploadAvatar("u1", file);
+    expect(result).toMatch(/^avatars\/customers\/u1-\d+\.jpg$/);
+    expect(result).not.toMatch(/^https?:\/\//);
+    // W. The client-supplied originalname must never leak into the path.
+    expect(result).not.toContain("passwd");
+    expect(result).not.toContain("..");
+    // getPublicUrl must NOT be used (bucket stays private).
+    expect(mockSupabaseStorage.getPublicUrl).toBeUndefined();
 
-    expect(url).toContain("https://test.supabase.co");
-    expect(mockSupabaseStorage.upload).toHaveBeenCalled();
+    const [uploadedPath] = mockSupabaseStorage.upload.mock.calls[0];
+    expect(uploadedPath).toBe(result);
   });
 
-  it("should delete avatar from Supabase using public URL", async () => {
+  it("derives the extension from the validated MIME type", async () => {
+    mockSupabaseStorage.upload.mockResolvedValue({ data: {}, error: null });
+
+    const png = await service.uploadAvatar("u1", {
+      ...jpegFile,
+      mimetype: "image/png",
+    } as Express.Multer.File);
+    expect(png).toMatch(/\.png$/);
+
+    const webp = await service.uploadAvatar("u1", {
+      ...jpegFile,
+      mimetype: "image/webp",
+    } as Express.Multer.File);
+    expect(webp).toMatch(/\.webp$/);
+  });
+
+  it("throws when the upload itself fails", async () => {
+    mockSupabaseStorage.upload.mockResolvedValue({
+      data: null,
+      error: { message: "boom" },
+    });
+    await expect(service.uploadAvatar("u1", jpegFile)).rejects.toThrow(
+      /Failed to upload avatar/,
+    );
+  });
+
+  it("creates a signed URL for a valid object path", async () => {
+    mockSupabaseStorage.createSignedUrl.mockResolvedValue({
+      data: { signedUrl: "https://test.supabase.co/signed?token=abc" },
+      error: null,
+    });
+
+    const url = await service.createSignedUrl(
+      "avatars/customers/u1-123.jpg",
+      3600,
+    );
+
+    expect(url).toBe("https://test.supabase.co/signed?token=abc");
+    expect(mockSupabaseStorage.createSignedUrl).toHaveBeenCalledWith(
+      "avatars/customers/u1-123.jpg",
+      3600,
+    );
+  });
+
+  it("deletes by object path", async () => {
     mockSupabaseStorage.remove.mockResolvedValue({ data: {}, error: null });
 
-    const publicUrl =
-      "https://test.supabase.co/storage/v1/object/public/uploads/avatars/customers/u1-123.jpg";
-
-    await service.deleteAvatar(publicUrl);
+    await service.deleteAvatar("avatars/customers/u1-123.jpg");
 
     expect(mockSupabaseStorage.remove).toHaveBeenCalledWith([
       "avatars/customers/u1-123.jpg",
     ]);
+  });
+
+  describe("W. rejects untrusted / client-controlled paths", () => {
+    const hostile = [
+      "secrets/private.key",
+      "../avatars/customers/u1.jpg",
+      "avatars/customers/../../etc/passwd",
+      "",
+    ];
+
+    it("deleteAvatar refuses paths outside avatars/customers (and never calls remove)", async () => {
+      for (const p of hostile) {
+        if (p === "") {
+          // empty is a silent no-op by contract
+          await expect(service.deleteAvatar(p)).resolves.toBeUndefined();
+        } else {
+          await expect(service.deleteAvatar(p)).rejects.toThrow(
+            /untrusted storage path/,
+          );
+        }
+      }
+      expect(mockSupabaseStorage.remove).not.toHaveBeenCalled();
+    });
+
+    it("createSignedUrl refuses untrusted paths", async () => {
+      await expect(
+        service.createSignedUrl("secrets/private.key", 3600),
+      ).rejects.toThrow(/untrusted storage path/);
+      expect(mockSupabaseStorage.createSignedUrl).not.toHaveBeenCalled();
+    });
   });
 });

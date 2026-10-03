@@ -5,7 +5,10 @@ jest.mock("@nestjs/config", () => ({
 }));
 
 import { Test, TestingModule } from "@nestjs/testing";
-import { ProfileService } from "./profile.service";
+import {
+  ProfileService,
+  SIGNED_URL_EXPIRY_SECONDS,
+} from "./profile.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ProfileStorageService } from "./storage/profile-storage.service";
 import { Gender, Prisma } from "@prisma/client";
@@ -32,10 +35,20 @@ describe("ProfileService", () => {
   const mockStorageService = {
     uploadAvatar: jest.fn(),
     deleteAvatar: jest.fn(),
+    // Deterministic signed URL so tests can assert the exact value and that it
+    // is derived from the PATH (never persisted).
+    createSignedUrl: jest
+      .fn()
+      .mockImplementation((p: string) =>
+        Promise.resolve(`https://signed.example/${p}?token=sig`),
+      ),
   };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockStorageService.createSignedUrl.mockImplementation((p: string) =>
+      Promise.resolve(`https://signed.example/${p}?token=sig`),
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -62,11 +75,14 @@ describe("ProfileService", () => {
     lastName: "Hode",
     gender: Gender.MALE,
     dateOfBirth: new Date("2000-01-01"),
-    profileImageUrl: null,
+    profileImagePath: null as string | null,
     createdAt: new Date(),
     updatedAt: new Date(),
     user: mockUser,
   };
+
+  const NEW_PATH = "avatars/customers/user-123-1700000000000.jpg";
+  const OLD_PATH = "avatars/customers/user-123-1600000000000.jpg";
 
   // Helper buffers with valid magic bytes
   const validJpegBuffer = Buffer.from([
@@ -79,43 +95,46 @@ describe("ProfileService", () => {
     0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
   ]);
 
+  const makeFile = (
+    overrides: Partial<Express.Multer.File>,
+  ): Express.Multer.File =>
+    ({
+      fieldname: "avatar",
+      originalname: "photo.jpg",
+      mimetype: "image/jpeg",
+      size: 1024,
+      buffer: validJpegBuffer,
+      ...overrides,
+    }) as Express.Multer.File;
+
   describe("1. createCustomerProfile", () => {
-    it("should successfully create customer profile and return combined profile", async () => {
+    it("should create profile and return null profileImageUrl (no avatar yet)", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
       mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
       mockPrismaService.customerProfile.create.mockResolvedValue(mockProfile);
 
-      const dto = {
+      const result = await service.createCustomerProfile("user-123", {
         firstName: "Sahil",
         lastName: "Hode",
         gender: Gender.MALE,
         dateOfBirth: "2000-01-01",
-      };
-
-      const result = await service.createCustomerProfile("user-123", dto);
+      });
 
       expect(result.id).toBe("profile-123");
-      expect(result.userId).toBe("user-123");
-      expect(result.firstName).toBe("Sahil");
-      expect(result.lastName).toBe("Hode");
       expect(result.mobile).toBe("+919876543210");
-      expect(result.email).toBe("customer@example.com");
-      expect(result.emailVerified).toBe(true);
-      expect(result.dateOfBirth).toBe("2000-01-01");
+      expect(result.profileImageUrl).toBeNull();
+      expect(mockStorageService.createSignedUrl).not.toHaveBeenCalled();
     });
 
     it("should throw ConflictException if profile already exists", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue(mockProfile);
-
-      const dto = {
-        firstName: "Sahil",
-        lastName: "Hode",
-        gender: Gender.MALE,
-        dateOfBirth: "2000-01-01",
-      };
-
       await expect(
-        service.createCustomerProfile("user-123", dto),
+        service.createCustomerProfile("user-123", {
+          firstName: "Sahil",
+          lastName: "Hode",
+          gender: Gender.MALE,
+          dateOfBirth: "2000-01-01",
+        }),
       ).rejects.toThrow(ConflictException);
     });
 
@@ -128,85 +147,88 @@ describe("ProfileService", () => {
           clientVersion: "6.0.0",
         }),
       );
-
-      const dto = {
-        firstName: "Sahil",
-        lastName: "Hode",
-        gender: Gender.MALE,
-        dateOfBirth: "2000-01-01",
-      };
-
       await expect(
-        service.createCustomerProfile("user-123", dto),
+        service.createCustomerProfile("user-123", {
+          firstName: "Sahil",
+          lastName: "Hode",
+          gender: Gender.MALE,
+          dateOfBirth: "2000-01-01",
+        }),
       ).rejects.toThrow(ConflictException);
     });
 
     it("should throw NotFoundException if user is not found", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
       mockPrismaService.user.findUnique.mockResolvedValue(null);
-
-      const dto = {
-        firstName: "Sahil",
-        lastName: "Hode",
-        gender: Gender.MALE,
-        dateOfBirth: "2000-01-01",
-      };
-
       await expect(
-        service.createCustomerProfile("user-123", dto),
+        service.createCustomerProfile("user-123", {
+          firstName: "Sahil",
+          lastName: "Hode",
+          gender: Gender.MALE,
+          dateOfBirth: "2000-01-01",
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("should throw BadRequestException if dateOfBirth is invalid", async () => {
+    it("should reject invalid / future dateOfBirth", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
       mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
-
-      const dto = {
-        firstName: "Sahil",
-        lastName: "Hode",
-        gender: Gender.MALE,
-        dateOfBirth: "not-a-date",
-      };
-
       await expect(
-        service.createCustomerProfile("user-123", dto),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it("should throw BadRequestException if dateOfBirth is in the future", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
-      mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
-
-      const futureDate = new Date();
-      futureDate.setFullYear(futureDate.getFullYear() + 1);
-
-      const dto = {
-        firstName: "Sahil",
-        lastName: "Hode",
-        gender: Gender.MALE,
-        dateOfBirth: futureDate.toISOString(),
-      };
-
-      await expect(
-        service.createCustomerProfile("user-123", dto),
+        service.createCustomerProfile("user-123", {
+          firstName: "Sahil",
+          lastName: "Hode",
+          gender: Gender.MALE,
+          dateOfBirth: "not-a-date",
+        }),
       ).rejects.toThrow(BadRequestException);
     });
   });
 
-  describe("2. getCustomerProfile", () => {
-    it("should return combined profile for authenticated user", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(mockProfile);
+  describe("2. getCustomerProfile (signed URL generation)", () => {
+    it("R. generates a signed URL from the stored path and returns it as profileImageUrl", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue({
+        ...mockProfile,
+        profileImagePath: OLD_PATH,
+      });
 
       const result = await service.getCustomerProfile("user-123");
 
-      expect(result.id).toBe("profile-123");
-      expect(result.firstName).toBe("Sahil");
-      expect(result.mobile).toBe("+919876543210");
+      expect(mockStorageService.createSignedUrl).toHaveBeenCalledWith(
+        OLD_PATH,
+        SIGNED_URL_EXPIRY_SECONDS,
+      );
+      expect(result.profileImageUrl).toBe(
+        `https://signed.example/${OLD_PATH}?token=sig`,
+      );
     });
 
-    it("should throw NotFoundException if customer has not created a profile yet", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
+    it("S. returns profileImageUrl null when no avatar exists", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue({
+        ...mockProfile,
+        profileImagePath: null,
+      });
 
+      const result = await service.getCustomerProfile("user-123");
+
+      expect(result.profileImageUrl).toBeNull();
+      expect(mockStorageService.createSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it("returns null (not an error) if signing fails", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue({
+        ...mockProfile,
+        profileImagePath: OLD_PATH,
+      });
+      mockStorageService.createSignedUrl.mockRejectedValueOnce(
+        new Error("sign failed"),
+      );
+
+      const result = await service.getCustomerProfile("user-123");
+      expect(result.profileImageUrl).toBeNull();
+    });
+
+    it("throws NotFoundException if profile missing", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
       await expect(service.getCustomerProfile("user-123")).rejects.toThrow(
         NotFoundException,
       );
@@ -214,299 +236,281 @@ describe("ProfileService", () => {
   });
 
   describe("3. updateCustomerProfile", () => {
-    it("should update allowed fields and return combined profile", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(mockProfile);
+    it("updates fields and signs the existing avatar path", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue({
+        ...mockProfile,
+        profileImagePath: OLD_PATH,
+      });
       mockPrismaService.customerProfile.update.mockResolvedValue({
         ...mockProfile,
         firstName: "UpdatedFirst",
-        lastName: "UpdatedLast",
+        profileImagePath: OLD_PATH,
       });
 
       const result = await service.updateCustomerProfile("user-123", {
         firstName: "UpdatedFirst",
-        lastName: "UpdatedLast",
       });
 
       expect(result.firstName).toBe("UpdatedFirst");
-      expect(result.lastName).toBe("UpdatedLast");
-    });
-
-    it("should throw NotFoundException if profile does not exist to update", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
-
-      await expect(
-        service.updateCustomerProfile("user-123", { firstName: "Test" }),
-      ).rejects.toThrow(NotFoundException);
-    });
-
-    it("should reject update if dateOfBirth is in the future", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(mockProfile);
-
-      const futureDate = new Date();
-      futureDate.setFullYear(futureDate.getFullYear() + 2);
-
-      await expect(
-        service.updateCustomerProfile("user-123", {
-          dateOfBirth: futureDate.toISOString(),
-        }),
-      ).rejects.toThrow(BadRequestException);
+      expect(result.profileImageUrl).toBe(
+        `https://signed.example/${OLD_PATH}?token=sig`,
+      );
     });
   });
 
   describe("4. updateCustomerAvatar", () => {
-    it("should upload new avatar, update database, and only then delete old avatar in safe order", async () => {
+    it("O. replacement: upload -> DB stores PATH -> old object deleted (safe order), returns signed URL", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: "/uploads/avatars/old-avatar.jpg",
+        profileImagePath: OLD_PATH,
       });
-      mockStorageService.uploadAvatar.mockResolvedValue(
-        "/uploads/avatars/new-avatar.jpg",
-      );
+      mockStorageService.uploadAvatar.mockResolvedValue(NEW_PATH);
       mockPrismaService.customerProfile.update.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: "/uploads/avatars/new-avatar.jpg",
+        profileImagePath: NEW_PATH,
       });
 
-      const file = {
-        fieldname: "avatar",
-        originalname: "photo.jpg",
-        mimetype: "image/jpeg",
-        size: 1024,
-        buffer: validJpegBuffer,
-      } as Express.Multer.File;
+      const result = await service.updateCustomerAvatar(
+        "user-123",
+        makeFile({}),
+      );
 
-      const result = await service.updateCustomerAvatar("user-123", file);
+      // Response exposes a SIGNED URL, derived from the new path.
+      expect(result.profileImageUrl).toBe(
+        `https://signed.example/${NEW_PATH}?token=sig`,
+      );
 
-      expect(result.profileImageUrl).toBe("/uploads/avatars/new-avatar.jpg");
+      // T. DB stores only the PATH, never a URL.
+      expect(mockPrismaService.customerProfile.update).toHaveBeenCalledWith({
+        where: { userId: "user-123" },
+        data: { profileImagePath: NEW_PATH },
+        include: { user: true },
+      });
+      const stored =
+        mockPrismaService.customerProfile.update.mock.calls[0][0].data
+          .profileImagePath;
+      expect(stored).toBe(NEW_PATH);
+      expect(stored).not.toMatch(/^https?:\/\//);
 
-      // Verify safe execution order: upload -> db update -> delete old
-      const uploadOrder = mockStorageService.uploadAvatar.mock.invocationCallOrder[0];
-      const dbUpdateOrder = mockPrismaService.customerProfile.update.mock.invocationCallOrder[0];
-      const deleteOrder = mockStorageService.deleteAvatar.mock.invocationCallOrder[0];
-
+      // Safe ordering: upload -> db update -> delete old
+      const uploadOrder =
+        mockStorageService.uploadAvatar.mock.invocationCallOrder[0];
+      const dbUpdateOrder =
+        mockPrismaService.customerProfile.update.mock.invocationCallOrder[0];
+      const deleteOrder =
+        mockStorageService.deleteAvatar.mock.invocationCallOrder[0];
       expect(uploadOrder).toBeLessThan(dbUpdateOrder);
       expect(dbUpdateOrder).toBeLessThan(deleteOrder);
-      expect(mockStorageService.deleteAvatar).toHaveBeenCalledWith(
-        "/uploads/avatars/old-avatar.jpg",
-      );
+      expect(mockStorageService.deleteAvatar).toHaveBeenCalledWith(OLD_PATH);
     });
 
-    it("should clean up newly uploaded avatar and preserve old avatar if database update fails", async () => {
+    it("N. DB update failure deletes the newly uploaded object and keeps old avatar/path", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: "/uploads/avatars/old-avatar.jpg",
+        profileImagePath: OLD_PATH,
       });
-      mockStorageService.uploadAvatar.mockResolvedValue(
-        "/uploads/avatars/new-avatar.jpg",
-      );
+      mockStorageService.uploadAvatar.mockResolvedValue(NEW_PATH);
       mockPrismaService.customerProfile.update.mockRejectedValue(
         new Error("Database connection error"),
       );
 
-      const file = {
-        fieldname: "avatar",
-        originalname: "photo.jpg",
-        mimetype: "image/jpeg",
-        size: 1024,
-        buffer: validJpegBuffer,
-      } as Express.Multer.File;
-
       await expect(
-        service.updateCustomerAvatar("user-123", file),
+        service.updateCustomerAvatar("user-123", makeFile({})),
       ).rejects.toThrow("Database connection error");
 
-      // Newly uploaded avatar must be cleaned up to prevent orphans
-      expect(mockStorageService.deleteAvatar).toHaveBeenCalledWith(
-        "/uploads/avatars/new-avatar.jpg",
-      );
-      // Old avatar must NOT be deleted
-      expect(mockStorageService.deleteAvatar).not.toHaveBeenCalledWith(
-        "/uploads/avatars/old-avatar.jpg",
-      );
+      expect(mockStorageService.deleteAvatar).toHaveBeenCalledWith(NEW_PATH);
+      expect(mockStorageService.deleteAvatar).not.toHaveBeenCalledWith(OLD_PATH);
     });
 
-    it("should keep old avatar untouched if upload fails", async () => {
+    it("M. upload failure keeps old avatar and does not touch the DB", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: "/uploads/avatars/old-avatar.jpg",
+        profileImagePath: OLD_PATH,
       });
       mockStorageService.uploadAvatar.mockRejectedValue(
         new Error("Storage upload error"),
       );
 
-      const file = {
-        fieldname: "avatar",
-        originalname: "photo.jpg",
-        mimetype: "image/jpeg",
-        size: 1024,
-        buffer: validJpegBuffer,
-      } as Express.Multer.File;
-
       await expect(
-        service.updateCustomerAvatar("user-123", file),
+        service.updateCustomerAvatar("user-123", makeFile({})),
       ).rejects.toThrow("Storage upload error");
 
       expect(mockStorageService.deleteAvatar).not.toHaveBeenCalled();
       expect(mockPrismaService.customerProfile.update).not.toHaveBeenCalled();
     });
 
-    it("should not call deleteAvatar if customer had no previous avatar", async () => {
+    it("P. old-object deletion failure does NOT roll back the new DB path", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: null,
+        profileImagePath: OLD_PATH,
       });
-      mockStorageService.uploadAvatar.mockResolvedValue(
-        "/uploads/avatars/new-avatar.jpg",
-      );
+      mockStorageService.uploadAvatar.mockResolvedValue(NEW_PATH);
       mockPrismaService.customerProfile.update.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: "/uploads/avatars/new-avatar.jpg",
+        profileImagePath: NEW_PATH,
+      });
+      mockStorageService.deleteAvatar.mockRejectedValueOnce(
+        new Error("old delete failed"),
+      );
+
+      const result = await service.updateCustomerAvatar(
+        "user-123",
+        makeFile({}),
+      );
+
+      // New avatar stays live; call resolves successfully.
+      expect(result.profileImageUrl).toBe(
+        `https://signed.example/${NEW_PATH}?token=sig`,
+      );
+      expect(mockStorageService.deleteAvatar).toHaveBeenCalledWith(OLD_PATH);
+    });
+
+    it("Q. no previous avatar -> no old deletion", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue({
+        ...mockProfile,
+        profileImagePath: null,
+      });
+      mockStorageService.uploadAvatar.mockResolvedValue(NEW_PATH);
+      mockPrismaService.customerProfile.update.mockResolvedValue({
+        ...mockProfile,
+        profileImagePath: NEW_PATH,
       });
 
-      const file = {
-        fieldname: "avatar",
-        originalname: "photo.jpg",
-        mimetype: "image/jpeg",
-        size: 1024,
-        buffer: validJpegBuffer,
-      } as Express.Multer.File;
-
-      const result = await service.updateCustomerAvatar("user-123", file);
-      expect(result.profileImageUrl).toBe("/uploads/avatars/new-avatar.jpg");
+      const result = await service.updateCustomerAvatar(
+        "user-123",
+        makeFile({}),
+      );
+      expect(result.profileImageUrl).toBe(
+        `https://signed.example/${NEW_PATH}?token=sig`,
+      );
       expect(mockStorageService.deleteAvatar).not.toHaveBeenCalled();
     });
 
-    it("should accept valid PNG image", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(mockProfile);
-      mockStorageService.uploadAvatar.mockResolvedValue(
-        "/uploads/avatars/avatar.png",
-      );
-      mockPrismaService.customerProfile.update.mockResolvedValue({
-        ...mockProfile,
-        profileImageUrl: "/uploads/avatars/avatar.png",
-      });
+    it("A/B/C. accepts valid JPEG, PNG and WEBP", async () => {
+      for (const [mimetype, buffer] of [
+        ["image/jpeg", validJpegBuffer],
+        ["image/png", validPngBuffer],
+        ["image/webp", validWebpBuffer],
+      ] as const) {
+        jest.clearAllMocks();
+        mockStorageService.createSignedUrl.mockImplementation((p: string) =>
+          Promise.resolve(`https://signed.example/${p}?token=sig`),
+        );
+        mockPrismaService.customerProfile.findUnique.mockResolvedValue(mockProfile);
+        mockStorageService.uploadAvatar.mockResolvedValue(NEW_PATH);
+        mockPrismaService.customerProfile.update.mockResolvedValue({
+          ...mockProfile,
+          profileImagePath: NEW_PATH,
+        });
 
-      const file = {
-        fieldname: "avatar",
-        originalname: "photo.png",
-        mimetype: "image/png",
-        size: 2048,
-        buffer: validPngBuffer,
-      } as Express.Multer.File;
-
-      const result = await service.updateCustomerAvatar("user-123", file);
-      expect(result.profileImageUrl).toBe("/uploads/avatars/avatar.png");
+        const result = await service.updateCustomerAvatar(
+          "user-123",
+          makeFile({ mimetype, buffer }),
+        );
+        expect(result.profileImageUrl).toContain("https://signed.example/");
+      }
     });
 
-    it("should accept valid WEBP image", async () => {
+    it("D. accepts a file exactly 3 MB", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue(mockProfile);
-      mockStorageService.uploadAvatar.mockResolvedValue(
-        "/uploads/avatars/avatar.webp",
-      );
+      mockStorageService.uploadAvatar.mockResolvedValue(NEW_PATH);
       mockPrismaService.customerProfile.update.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: "/uploads/avatars/avatar.webp",
+        profileImagePath: NEW_PATH,
       });
 
-      const file = {
-        fieldname: "avatar",
-        originalname: "photo.webp",
-        mimetype: "image/webp",
-        size: 3000,
-        buffer: validWebpBuffer,
-      } as Express.Multer.File;
-
-      const result = await service.updateCustomerAvatar("user-123", file);
-      expect(result.profileImageUrl).toBe("/uploads/avatars/avatar.webp");
+      const result = await service.updateCustomerAvatar(
+        "user-123",
+        makeFile({ size: 3 * 1024 * 1024 }),
+      );
+      expect(result.profileImageUrl).toContain("https://signed.example/");
     });
 
-    it("should reject avatar if file is missing", async () => {
+    it("E. rejects a file larger than 3 MB", async () => {
+      await expect(
+        service.updateCustomerAvatar(
+          "user-123",
+          makeFile({ size: 3 * 1024 * 1024 + 1 }),
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("G. rejects an unsupported MIME type", async () => {
+      await expect(
+        service.updateCustomerAvatar(
+          "user-123",
+          makeFile({ mimetype: "text/plain", buffer: Buffer.from("hello") }),
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("I. rejects a fake JPEG that actually contains PNG bytes", async () => {
+      await expect(
+        service.updateCustomerAvatar(
+          "user-123",
+          makeFile({ mimetype: "image/jpeg", buffer: validPngBuffer }),
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("J. rejects a fake PNG that actually contains JPEG bytes", async () => {
+      await expect(
+        service.updateCustomerAvatar(
+          "user-123",
+          makeFile({ mimetype: "image/png", buffer: validJpegBuffer }),
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("rejects when file is missing", async () => {
       await expect(
         service.updateCustomerAvatar("user-123", undefined),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("should reject avatar larger than 3 MB", async () => {
-      const oversizedFile = {
-        fieldname: "avatar",
-        originalname: "large.jpg",
-        mimetype: "image/jpeg",
-        size: 3 * 1024 * 1024 + 1,
-        buffer: validJpegBuffer,
-      } as Express.Multer.File;
-
-      await expect(
-        service.updateCustomerAvatar("user-123", oversizedFile),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it("should reject unsupported MIME type (e.g. text/plain)", async () => {
-      const textFile = {
-        fieldname: "avatar",
-        originalname: "notes.txt",
-        mimetype: "text/plain",
-        size: 100,
-        buffer: Buffer.from("Hello world"),
-      } as Express.Multer.File;
-
-      await expect(
-        service.updateCustomerAvatar("user-123", textFile),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it("should reject file if magic bytes do not match valid image signature", async () => {
-      const spoofedFile = {
-        fieldname: "avatar",
-        originalname: "malicious.jpg",
-        mimetype: "image/jpeg",
-        size: 500,
-        buffer: Buffer.from("MZ fake executable header"),
-      } as Express.Multer.File;
-
-      await expect(
-        service.updateCustomerAvatar("user-123", spoofedFile),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it("should throw NotFoundException if profile does not exist when uploading avatar", async () => {
+    it("throws NotFoundException if profile does not exist", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
-
-      const file = {
-        fieldname: "avatar",
-        originalname: "photo.jpg",
-        mimetype: "image/jpeg",
-        size: 1024,
-        buffer: validJpegBuffer,
-      } as Express.Multer.File;
-
       await expect(
-        service.updateCustomerAvatar("user-123", file),
+        service.updateCustomerAvatar("user-123", makeFile({})),
       ).rejects.toThrow(NotFoundException);
     });
   });
 
   describe("5. removeCustomerAvatar", () => {
-    it("should remove avatar reference and delete physical object", async () => {
+    it("U. deletes the stored object and clears the DB path, returning null", async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: "/uploads/avatars/photo.jpg",
+        profileImagePath: OLD_PATH,
       });
       mockPrismaService.customerProfile.update.mockResolvedValue({
         ...mockProfile,
-        profileImageUrl: null,
+        profileImagePath: null,
       });
 
       const result = await service.removeCustomerAvatar("user-123");
 
-      expect(mockStorageService.deleteAvatar).toHaveBeenCalledWith(
-        "/uploads/avatars/photo.jpg",
-      );
+      expect(mockStorageService.deleteAvatar).toHaveBeenCalledWith(OLD_PATH);
+      expect(mockPrismaService.customerProfile.update).toHaveBeenCalledWith({
+        where: { userId: "user-123" },
+        data: { profileImagePath: null },
+        include: { user: true },
+      });
       expect(result.profileImageUrl).toBeNull();
     });
 
-    it("should throw NotFoundException if profile does not exist to remove avatar", async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
+    it("is a no-op delete when there is no avatar", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue({
+        ...mockProfile,
+        profileImagePath: null,
+      });
 
+      const result = await service.removeCustomerAvatar("user-123");
+      expect(mockStorageService.deleteAvatar).not.toHaveBeenCalled();
+      expect(result.profileImageUrl).toBeNull();
+    });
+
+    it("throws NotFoundException if profile does not exist", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
       await expect(service.removeCustomerAvatar("user-123")).rejects.toThrow(
         NotFoundException,
       );

@@ -5,6 +5,10 @@ import { IProfileStorageService } from "./profile-storage.interface";
 import * as fs from "fs/promises";
 import * as path from "path";
 
+// All customer avatars live under this server-controlled prefix. The client
+// never supplies any part of the path, bucket, or filename.
+const AVATAR_PREFIX = "avatars/customers";
+
 @Injectable()
 export class ProfileStorageService implements IProfileStorageService {
   private readonly logger = new Logger(ProfileStorageService.name);
@@ -47,7 +51,35 @@ export class ProfileStorageService implements IProfileStorageService {
     try {
       await fs.mkdir(this.localUploadDir, { recursive: true });
     } catch (error) {
-      this.logger.warn(`Failed to create local upload directory: ${error}`);
+      this.logger.warn(`Failed to create local upload directory: ${String(error)}`);
+    }
+  }
+
+  private extensionFor(mimetype: string): string {
+    if (mimetype === "image/png") return ".png";
+    if (mimetype === "image/webp") return ".webp";
+    return ".jpg"; // image/jpeg
+  }
+
+  /**
+   * Builds the server-controlled storage path. The only client-derived input
+   * is the already-validated MIME type (for the extension) — never the
+   * original filename.
+   */
+  private buildObjectPath(userId: string, mimetype: string): string {
+    const ext = this.extensionFor(mimetype);
+    return `${AVATAR_PREFIX}/${userId}-${Date.now()}${ext}`;
+  }
+
+  // Rejects anything that is not a server-generated avatar path, so a client
+  // can never trick delete/sign into touching an arbitrary object.
+  private assertSafePath(objectPath: string): void {
+    if (
+      !objectPath ||
+      !objectPath.startsWith(`${AVATAR_PREFIX}/`) ||
+      objectPath.includes("..")
+    ) {
+      throw new Error("Refusing to operate on an untrusted storage path");
     }
   }
 
@@ -55,86 +87,83 @@ export class ProfileStorageService implements IProfileStorageService {
     userId: string,
     file: Express.Multer.File,
   ): Promise<string> {
-    let ext = ".jpg";
-    if (file.mimetype === "image/png") ext = ".png";
-    else if (file.mimetype === "image/webp") ext = ".webp";
-    else if (file.mimetype === "image/jpeg") ext = ".jpg";
-
-    const filename = `${userId}-${Date.now()}${ext}`;
+    const objectPath = this.buildObjectPath(userId, file.mimetype);
 
     if (this.supabaseClient && this.bucketName) {
-      const storagePath = `avatars/customers/${filename}`;
       const { error } = await this.supabaseClient.storage
         .from(this.bucketName)
-        .upload(storagePath, file.buffer, {
+        .upload(objectPath, file.buffer, {
           contentType: file.mimetype,
           upsert: true,
         });
 
       if (error) {
-        this.logger.error(`Supabase upload error: ${error.message}`);
-        throw new Error(`Failed to upload avatar to Supabase: ${error.message}`);
+        this.logger.error(`Supabase upload failed`);
+        throw new Error(`Failed to upload avatar: ${error.message}`);
       }
 
-      const { data: publicUrlData } = this.supabaseClient.storage
-        .from(this.bucketName)
-        .getPublicUrl(storagePath);
-
-      return publicUrlData.publicUrl;
+      // Return the permanent OBJECT PATH only — never a public/signed URL.
+      return objectPath;
     }
 
-    // Local file fallback
+    // Local file fallback (dev without Supabase credentials). Still returns a
+    // path in the same canonical shape so the rest of the app is agnostic.
     await this.ensureLocalUploadDir();
+    const filename = path.basename(objectPath);
     const filePath = path.join(this.localUploadDir, filename);
     await fs.writeFile(filePath, file.buffer);
-    return `/uploads/avatars/${filename}`;
+    return objectPath;
   }
 
-  async deleteAvatar(fileUrlOrKey: string): Promise<void> {
-    if (!fileUrlOrKey) return;
+  async deleteAvatar(objectPath: string): Promise<void> {
+    if (!objectPath) return;
+    this.assertSafePath(objectPath);
 
     if (this.supabaseClient && this.bucketName) {
-      const storagePath = this.extractStoragePath(fileUrlOrKey);
-      if (storagePath) {
-        const { error } = await this.supabaseClient.storage
-          .from(this.bucketName)
-          .remove([storagePath]);
+      const { error } = await this.supabaseClient.storage
+        .from(this.bucketName)
+        .remove([objectPath]);
 
-        if (error) {
-          this.logger.warn(
-            `Failed to delete avatar from Supabase: ${error.message}`,
-          );
-        }
-        return;
+      if (error) {
+        // Surface to caller; the service layer decides whether this is fatal.
+        throw new Error(`Failed to delete avatar: ${error.message}`);
       }
+      return;
     }
 
     // Local fallback cleanup
     try {
-      const filename = path.basename(fileUrlOrKey);
+      const filename = path.basename(objectPath);
       const filePath = path.join(this.localUploadDir, filename);
       await fs.unlink(filePath);
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") {
-        this.logger.warn(
-          `Could not delete local avatar file ${fileUrlOrKey}: ${error.message}`,
-        );
+    } catch (error: unknown) {
+      const code = (error as { code?: string })?.code;
+      if (code !== "ENOENT") {
+        throw error;
       }
     }
   }
 
-  private extractStoragePath(fileUrlOrKey: string): string | null {
-    if (!fileUrlOrKey) return null;
-    if (this.bucketName) {
-      const prefix = `/storage/v1/object/public/${this.bucketName}/`;
-      const index = fileUrlOrKey.indexOf(prefix);
-      if (index !== -1) {
-        return fileUrlOrKey.slice(index + prefix.length);
+  async createSignedUrl(
+    objectPath: string,
+    expiresInSeconds: number,
+  ): Promise<string> {
+    this.assertSafePath(objectPath);
+
+    if (this.supabaseClient && this.bucketName) {
+      const { data, error } = await this.supabaseClient.storage
+        .from(this.bucketName)
+        .createSignedUrl(objectPath, expiresInSeconds);
+
+      if (error || !data?.signedUrl) {
+        throw new Error(
+          `Failed to create signed URL: ${error?.message ?? "unknown error"}`,
+        );
       }
+      return data.signedUrl;
     }
-    if (fileUrlOrKey.startsWith("avatars/")) {
-      return fileUrlOrKey;
-    }
-    return null;
+
+    // Local fallback: expose a path the dev server can serve statically.
+    return `/uploads/avatars/${path.basename(objectPath)}`;
   }
 }
