@@ -8,7 +8,6 @@ import { UsersModule } from './modules/users/users.module';
 import { ValkeyModule } from './valkey/valkey.module';
 import { validateEnv } from './config/env.validation';
 import { ProfileModule } from './modules/profile/profile.module';
-import { ProfileModule } from './modules/profile/profile.module';
 
 @Module({
   imports: [
