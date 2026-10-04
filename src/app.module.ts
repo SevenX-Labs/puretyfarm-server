@@ -11,6 +11,7 @@ import { ProfileModule } from './modules/profile/profile.module';
 import { LocationsModule } from './modules/locations/locations.module';
 import { AddressModule } from './modules/address/address.module';
 import { WalletModule } from './modules/wallet/wallet.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
     LocationsModule,
     AddressModule,
     WalletModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
