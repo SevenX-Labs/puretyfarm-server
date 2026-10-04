@@ -11,8 +11,9 @@ import {
 } from "../plans/plans.constants";
 
 // ── Date helpers (UTC date-only), mirroring the service ──
+// Mirrors the service's toDateOnly: pins the LOCAL calendar date to UTC midnight.
 function dateOnly(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 }
 const TODAY = dateOnly(new Date());
 function plusDays(n: number): Date {

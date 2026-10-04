@@ -214,10 +214,11 @@ model PlanConfig {
   id                    String   @id @default(uuid())
   planType              PlanType @unique
   isActive              Boolean  @default(true)
-  /// Actual MRP price per litre (shown as strikethrough).
-  actualPricePerLitre   Float
-  /// Selling (discounted) price per litre.
-  sellingPricePerLitre  Float
+  /// Actual MRP price per litre, in INTEGER PAISE (shown as strikethrough).
+  /// Money is stored as integer paise to avoid floating-point rounding errors.
+  actualPricePerLitre   Int
+  /// Selling (discounted) price per litre, in INTEGER PAISE.
+  sellingPricePerLitre  Int
   /// Minimum litres per order/delivery.
   quantityMin           Int      @default(1)
   /// Maximum litres per order/delivery.
@@ -250,14 +251,16 @@ model PlanQuote {
   quantityA            Int?
   quantityB            Int?
 
-  // Calculation snapshots (immutable once created)
-  actualPricePerLitre  Float
-  sellingPricePerLitre Float
+  // Calculation snapshots (immutable once created). All monetary values are
+  // stored as INTEGER PAISE so the snapshot is financially exact and tamper-proof.
+  actualPricePerLitre  Int
+  sellingPricePerLitre Int
   deliveryOccurrences  Int
-  totalLitres          Float
-  totalActualAmount    Float
-  totalSellingAmount   Float
-  discountAmount       Float
+  /// Whole litres (quantity is always an integer), so Int is exact.
+  totalLitres          Int
+  totalActualAmount    Int
+  totalSellingAmount   Int
+  discountAmount       Int
 
   // Billing period (for monthly quotes)
   billingPeriodStart   DateTime?

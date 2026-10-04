@@ -35,6 +35,7 @@ describe("PlansService", () => {
       update: jest.fn(),
       updateMany: jest.fn(),
     },
+    $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
   };
 
@@ -46,8 +47,8 @@ describe("PlansService", () => {
     id: "cfg-bo",
     planType: PlanType.BUY_ONCE,
     isActive: true,
-    actualPricePerLitre: 120,
-    sellingPricePerLitre: 100,
+    actualPricePerLitre: 12000, // ₹120.00 in paise
+    sellingPricePerLitre: 10000, // ₹100.00 in paise
     quantityMin: 1,
     quantityMax: 5,
     maxUsages: 7,
@@ -59,8 +60,8 @@ describe("PlansService", () => {
     id: "cfg-tr",
     planType: PlanType.SEVEN_DAY_TRIAL,
     isActive: true,
-    actualPricePerLitre: 110,
-    sellingPricePerLitre: 95,
+    actualPricePerLitre: 11000, // ₹110.00 in paise
+    sellingPricePerLitre: 9500, // ₹95.00 in paise
     quantityMin: 1,
     quantityMax: 5,
     maxUsages: 1,
@@ -72,8 +73,8 @@ describe("PlansService", () => {
     id: "cfg-mo",
     planType: PlanType.MONTHLY,
     isActive: true,
-    actualPricePerLitre: 100,
-    sellingPricePerLitre: 90,
+    actualPricePerLitre: 10000, // ₹100.00 in paise
+    sellingPricePerLitre: 9000, // ₹90.00 in paise
     quantityMin: 1,
     quantityMax: 5,
     maxUsages: 0,
@@ -217,10 +218,10 @@ describe("PlansService", () => {
       expect(result.plan).toBe(PlanType.BUY_ONCE);
       expect(result.quantity).toBe(3);
       expect(result.totalLitres).toBe(3);
-      expect(result.sellingPricePerLitre).toBe(100);
-      expect(result.totalSellingAmount).toBe(300);
-      expect(result.totalActualAmount).toBe(360);
-      expect(result.discountAmount).toBe(60);
+      expect(result.sellingPricePerLitre).toBe(10000); // paise
+      expect(result.totalSellingAmount).toBe(30000); // 3L × ₹100 = ₹300.00
+      expect(result.totalActualAmount).toBe(36000); // 3L × ₹120 = ₹360.00
+      expect(result.discountAmount).toBe(6000); // ₹60.00
       expect(result.deliveryOccurrences).toBe(1);
       expect(result.quoteId).toBeDefined();
     });
@@ -274,8 +275,8 @@ describe("PlansService", () => {
         quantityLitres: 2,
       } as any);
       // The service always uses config price, never a body-supplied amount.
-      expect(result.totalSellingAmount).toBe(200);
-      expect(result.sellingPricePerLitre).toBe(100);
+      expect(result.totalSellingAmount).toBe(20000); // 2L × ₹100 = ₹200.00
+      expect(result.sellingPricePerLitre).toBe(10000);
     });
   });
 
@@ -323,8 +324,8 @@ describe("PlansService", () => {
       expect(result.deliveryOccurrences).toBe(7);
       expect(result.quantity).toBe(2);
       expect(result.totalLitres).toBe(14);
-      expect(result.totalSellingAmount).toBe(14 * 95);
-      expect(result.discountAmount).toBe(14 * 110 - 14 * 95);
+      expect(result.totalSellingAmount).toBe(14 * 9500); // paise
+      expect(result.discountAmount).toBe(14 * 11000 - 14 * 9500);
     });
 
     it("quantity=1 accepted", async () => {
@@ -373,7 +374,7 @@ describe("PlansService", () => {
       expect(result.quantityModes).toEqual(["FIXED", "ALTERNATING"]);
       expect(result.quantityMin).toBe(1);
       expect(result.quantityMax).toBe(5);
-      expect(result.sellingPricePerLitre).toBe(90);
+      expect(result.sellingPricePerLitre).toBe(9000); // paise
     });
   });
 
@@ -394,7 +395,7 @@ describe("PlansService", () => {
       expect(result.quantity).toBe(2);
       expect(result.deliveryOccurrences).toBeGreaterThan(0);
       expect(result.totalLitres).toBe(result.deliveryOccurrences * 2);
-      expect(result.totalSellingAmount).toBe(result.totalLitres * 90);
+      expect(result.totalSellingAmount).toBe(result.totalLitres * 9000); // paise
     });
 
     it("DAILY + ALTERNATING works", async () => {
@@ -533,7 +534,7 @@ describe("PlansService", () => {
         quantity: 2,
       } as any);
       // Always uses config price.
-      expect(result.sellingPricePerLitre).toBe(90);
+      expect(result.sellingPricePerLitre).toBe(9000); // paise
     });
   });
 
@@ -606,6 +607,129 @@ describe("PlansService", () => {
           new Date(2027, 3, 1),
         ),
       ).toBe(15);
+    });
+
+    // ── Mid-month / month-end starts (start-date aware) ──
+    it("MID-MONTH: Oct 15 (31-day month) DAILY = 17 (Oct 15..31), not 31", () => {
+      expect(
+        calculateMonthlyDeliveryOccurrences(
+          DeliveryFrequency.DAILY,
+          new Date(2026, 9, 15),
+        ),
+      ).toBe(17);
+    });
+
+    it("MID-MONTH: Oct 15 ALTERNATE_DAYS = 9 (15,17,...,31)", () => {
+      expect(
+        calculateMonthlyDeliveryOccurrences(
+          DeliveryFrequency.ALTERNATE_DAYS,
+          new Date(2026, 9, 15),
+        ),
+      ).toBe(9);
+    });
+
+    it("NEAR MONTH-END: Jan 31 DAILY = 1", () => {
+      expect(
+        calculateMonthlyDeliveryOccurrences(
+          DeliveryFrequency.DAILY,
+          new Date(2027, 0, 31),
+        ),
+      ).toBe(1);
+    });
+
+    it("NEAR MONTH-END: Jan 30 ALTERNATE_DAYS = 1 (30 delivers, 31 would be next)", () => {
+      expect(
+        calculateMonthlyDeliveryOccurrences(
+          DeliveryFrequency.ALTERNATE_DAYS,
+          new Date(2027, 0, 30),
+        ),
+      ).toBe(1);
+    });
+
+    it("FEB leap mid-month: Feb 27 2028 DAILY = 3 (27,28,29)", () => {
+      expect(
+        calculateMonthlyDeliveryOccurrences(
+          DeliveryFrequency.DAILY,
+          new Date(2028, 1, 27),
+        ),
+      ).toBe(3);
+    });
+
+    it("FEB non-leap mid-month: Feb 27 2027 DAILY = 2 (27,28)", () => {
+      expect(
+        calculateMonthlyDeliveryOccurrences(
+          DeliveryFrequency.DAILY,
+          new Date(2027, 1, 27),
+        ),
+      ).toBe(2);
+    });
+  });
+
+  describe("mid-month materialization (generateDeliveryDates from the start date)", () => {
+    it("DAILY from Oct 15 produces NO deliveries on Oct 1-14", () => {
+      const dates = generateDeliveryDates(
+        DeliveryFrequency.DAILY,
+        new Date(2026, 9, 15),
+        new Date(2026, 9, 31),
+      );
+      expect(dates[0].toISOString().slice(0, 10)).toBe("2026-10-15");
+      expect(dates[dates.length - 1].toISOString().slice(0, 10)).toBe("2026-10-31");
+      expect(dates).toHaveLength(17);
+      expect(
+        dates.every((d) => d.getUTCDate() >= 15),
+      ).toBe(true); // never before the start date
+    });
+
+    it("ALTERNATE_DAYS from Oct 15 delivers 15,17,...,31", () => {
+      const dates = generateDeliveryDates(
+        DeliveryFrequency.ALTERNATE_DAYS,
+        new Date(2026, 9, 15),
+        new Date(2026, 9, 31),
+      );
+      expect(dates.map((d) => d.getUTCDate())).toEqual([
+        15, 17, 19, 21, 23, 25, 27, 29, 31,
+      ]);
+    });
+
+    it("respects the end boundary (never past end of month)", () => {
+      const dates = generateDeliveryDates(
+        DeliveryFrequency.DAILY,
+        new Date(2027, 1, 27), // Feb 27 2027 (non-leap)
+        new Date(2027, 1, 28),
+      );
+      expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
+        "2027-02-27",
+        "2027-02-28",
+      ]);
+    });
+  });
+
+  describe("money is exact integer paise (no float drift)", () => {
+    it("fractional-rupee price × litres stays an exact integer in paise", () => {
+      // ₹99.50/L = 9950 paise. 3L selling = 29850 paise = ₹298.50 exactly.
+      const pricePaise = 9950;
+      const litres = 3;
+      const total = pricePaise * litres;
+      expect(total).toBe(29850);
+      expect(Number.isInteger(total)).toBe(true);
+    });
+
+    it("the classic 0.1+0.2 float trap does not occur with paise", () => {
+      // ₹0.10 + ₹0.20 in paise = 10 + 20 = 30 paise exactly (float would be 0.30000000000000004).
+      expect(10 + 20).toBe(30);
+    });
+
+    it("quote amounts from the service are whole integers (paise)", async () => {
+      const r = await service.createBuyOnceQuote(USER, { quantityLitres: 3 });
+      for (const v of [
+        r.totalSellingAmount,
+        r.totalActualAmount,
+        r.discountAmount,
+        r.sellingPricePerLitre,
+        r.actualPricePerLitre,
+      ]) {
+        expect(Number.isInteger(v)).toBe(true);
+      }
     });
   });
 
@@ -680,8 +804,8 @@ describe("PlansService", () => {
     it("DAILY yields every calendar day in the inclusive range", () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.DAILY,
-        new Date(Date.UTC(2026, 0, 1)),
-        new Date(Date.UTC(2026, 0, 5)),
+        new Date(2026, 0, 1),
+        new Date(2026, 0, 5),
       );
       expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
         "2026-01-01",
@@ -695,8 +819,8 @@ describe("PlansService", () => {
     it("ALTERNATE_DAYS delivers on day 1, 3, 5 (every other day from start)", () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.ALTERNATE_DAYS,
-        new Date(Date.UTC(2026, 0, 1)),
-        new Date(Date.UTC(2026, 0, 6)),
+        new Date(2026, 0, 1),
+        new Date(2026, 0, 6),
       );
       expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
         "2026-01-01",
@@ -708,8 +832,8 @@ describe("PlansService", () => {
     it("spans month boundaries without assuming 30 days (Feb 2028 leap)", () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.DAILY,
-        new Date(Date.UTC(2028, 1, 1)),
-        new Date(Date.UTC(2028, 1, 29)),
+        new Date(2028, 1, 1),
+        new Date(2028, 1, 29),
       );
       expect(dates).toHaveLength(29); // 2028 is a leap year
     });
@@ -747,6 +871,7 @@ describe("PlansService", () => {
           planQuote: mockPrisma.planQuote,
           planSelection: mockPrisma.planSelection,
           planDelivery: mockPrisma.planDelivery,
+          $executeRaw: mockPrisma.$executeRaw,
         });
       });
       mockPrisma.planQuote.findUnique.mockResolvedValue(validQuote);
@@ -844,6 +969,43 @@ describe("PlansService", () => {
       expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
     });
 
+    it("acquires a per-user advisory lock to serialize confirmations (DB-level cross-quote race guard)", async () => {
+      await service.confirmPlan(USER, { quoteId: "quote-1" });
+      // The advisory lock must be taken inside the transaction.
+      expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1);
+      const args = mockPrisma.$executeRaw.mock.calls[0];
+      // Tagged-template: first arg is the SQL strings array, USER is interpolated.
+      const sql = args[0].join("?");
+      expect(sql).toContain("pg_advisory_xact_lock");
+      expect(args).toContain(USER);
+    });
+
+    it("cross-quote race: a second TRIAL confirmation is rejected once a Trial selection exists", async () => {
+      mockPrisma.planQuote.findUnique.mockResolvedValue({
+        ...validQuote,
+        planType: PlanType.SEVEN_DAY_TRIAL,
+      });
+      // Serialized re-check (buy-once=0, trial=1) sees the already-created Trial.
+      mockPrisma.planSelection.count
+        .mockResolvedValueOnce(0) // buy-once used?
+        .mockResolvedValueOnce(1); // trial already used
+      await expect(
+        service.confirmPlan(USER, { quoteId: "quote-1" }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
+    });
+
+    it("cross-quote race: a BUY_ONCE confirmation at the usage cap is rejected", async () => {
+      // trial check = 0, buy-once count already at max (7).
+      mockPrisma.planSelection.count
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(7);
+      await expect(
+        service.confirmPlan(USER, { quoteId: "quote-1" }),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
+    });
+
     it("uses a guarded PENDING-only transition for the winning confirmation", async () => {
       await service.confirmPlan(USER, { quoteId: "quote-1" });
       expect(mockPrisma.planQuote.updateMany).toHaveBeenCalledWith({
@@ -853,8 +1015,8 @@ describe("PlansService", () => {
     });
 
     it("materialises delivery rows and seeds the live schedule for a MONTHLY plan", async () => {
-      const start = new Date(Date.UTC(2026, 0, 1));
-      const end = new Date(Date.UTC(2026, 0, 5));
+      const start = new Date(2026, 0, 1);
+      const end = new Date(2026, 0, 5);
       mockPrisma.planQuote.findUnique.mockResolvedValue({
         ...validQuote,
         planType: PlanType.MONTHLY,

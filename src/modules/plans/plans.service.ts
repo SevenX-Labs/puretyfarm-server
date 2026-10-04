@@ -47,6 +47,8 @@ export interface EligibilityResponse {
   blockedReason?: string;
 }
 
+// NOTE: all monetary fields below (`*PricePerLitre`, `*Amount`, `discountAmount`)
+// are INTEGER PAISE, never rupees and never floats. Divide by 100 for display.
 export interface QuoteResponse {
   quoteId: string;
   plan: string;
@@ -93,16 +95,16 @@ export function calculateMonthlyDeliveryOccurrences(
   frequency: DeliveryFrequency,
   startDate: Date,
 ): number {
-  const year = startDate.getFullYear();
-  const month = startDate.getMonth();
-  // Days in this specific calendar month (28/29/30/31).
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-  if (frequency === DeliveryFrequency.DAILY) {
-    return daysInMonth;
-  }
-  // ALTERNATE_DAYS: delivery on odd-numbered days (1, 3, 5, ...).
-  return Math.ceil(daysInMonth / 2);
+  // Count the actual delivery dates from the plan's START DATE through the end
+  // of that calendar month. This is start-date aware: a plan beginning mid-month
+  // is NOT charged for deliveries before its start date, and the count always
+  // matches the dates produced by generateDeliveryDates (single source of truth).
+  // The calendar month's real length (28/29/30/31) is respected automatically.
+  const start = toDateOnly(startDate);
+  const monthEnd = new Date(
+    Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0),
+  );
+  return generateDeliveryDates(frequency, start, monthEnd).length;
 }
 
 /**
@@ -134,7 +136,9 @@ export function calculateTotalLitres(
  * time component. Delivery dates are calendar days, never instants.
  */
 export function toDateOnly(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // Pin to the LOCAL calendar date (the business day), represented as UTC
+  // midnight so downstream UTC date-stepping and ISO formatting stay stable.
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 }
 
 /**
@@ -467,18 +471,21 @@ export class PlansService {
       this.validateQuantityRange(dto.quantityB, config.quantityMin, config.quantityMax);
     }
 
-    // Calculate delivery occurrences for the current billing month.
-    const billingStart = new Date();
+    // The plan starts today (date-only) and the billing window runs to the end
+    // of the current calendar month. Occurrences are counted from the actual
+    // start date, so a mid-month start is never charged for earlier dates.
+    const billingStart = toDateOnly(new Date());
     const deliveryOccurrences = calculateMonthlyDeliveryOccurrences(
       dto.frequency,
       billingStart,
     );
 
     const billingEnd = new Date(
-      billingStart.getFullYear(),
-      billingStart.getMonth() + 1,
-      0,
-      23, 59, 59, 999,
+      Date.UTC(
+        billingStart.getUTCFullYear(),
+        billingStart.getUTCMonth() + 1,
+        0,
+      ),
     );
 
     const totalLitres = calculateTotalLitres(
@@ -549,6 +556,16 @@ export class PlansService {
     dto: ConfirmPlanDto,
   ): Promise<ConfirmationResponse> {
     return this.prisma.$transaction(async (tx) => {
+      // Serialize ALL confirmations for this customer at the DATABASE level with
+      // a per-user advisory lock held for the duration of the transaction. This
+      // closes the cross-quote eligibility race: two different quotes for the
+      // same customer (e.g. two Trials, or Buy Once + Trial) can no longer be
+      // confirmed concurrently, so the count-based eligibility re-checks below
+      // always observe the committed state. The lock auto-releases on commit or
+      // rollback (safe under transaction pooling). A partial unique index on
+      // Trial selections (see migration) is a second, hard DB-level backstop.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
+
       const quote = await tx.planQuote.findUnique({
         where: { id: dto.quoteId },
       });
