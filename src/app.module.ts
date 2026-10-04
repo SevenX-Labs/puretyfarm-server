@@ -10,6 +10,7 @@ import { validateEnv } from './config/env.validation';
 import { ProfileModule } from './modules/profile/profile.module';
 import { LocationsModule } from './modules/locations/locations.module';
 import { AddressModule } from './modules/address/address.module';
+import { WalletModule } from './modules/wallet/wallet.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { AddressModule } from './modules/address/address.module';
     ProfileModule,
     LocationsModule,
     AddressModule,
+    WalletModule,
   ],
   controllers: [AppController],
   providers: [AppService],
