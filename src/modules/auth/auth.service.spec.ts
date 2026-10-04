@@ -6,6 +6,8 @@ import {
   ConflictException,
   HttpException,
   UnauthorizedException,
+  NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -60,6 +62,11 @@ describe('AuthService', () => {
       update: jest.fn(),
       updateMany: jest.fn(),
       findUnique: jest.fn(),
+    },
+    admin: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
     },
   };
 
@@ -590,6 +597,273 @@ describe('AuthService', () => {
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
       expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
       expect(mockUsersService.updateEmail).toHaveBeenCalledTimes(1);
+    });
+  });
+  // ==========================================
+  // ADMIN AUTHENTICATION TESTS
+  // ==========================================
+
+  describe('adminLogin', () => {
+    it('should successfully login with valid credentials and return tokens + admin info (no passwordHash)', async () => {
+      const plainPassword = 'puretyfarm@2026';
+      const passwordHash = await hashValue(plainPassword);
+
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        passwordHash,
+        isActive: true,
+      });
+
+      mockPrismaService.session.create.mockResolvedValue({
+        id: 'sess-admin-1',
+        adminId: 'admin-uuid-1',
+      });
+
+      const result = await service.adminLogin({
+        email: 'admin@puretyfarm.com',
+        password: plainPassword,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.accessToken).toBeDefined();
+      expect(result.refreshToken).toBeDefined();
+      expect(result.admin).toEqual({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        role: 'ADMIN',
+      });
+      // Ensure passwordHash is NEVER exposed in the response
+      expect((result as any).passwordHash).toBeUndefined();
+      expect((result.admin as any).passwordHash).toBeUndefined();
+
+      // Verify session was created with adminId
+      expect(mockPrismaService.session.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          adminId: 'admin-uuid-1',
+          refreshTokenHash: expect.any(String),
+          expiresAt: expect.any(Date),
+        }),
+      });
+
+      // Verify JWT payload passed to signAsync has sub = admin.id and role = ADMIN
+      expect(mockJwtService.signAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sub: 'admin-uuid-1',
+          role: 'ADMIN',
+          type: 'access',
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('should throw UnauthorizedException if admin does not exist (wrong email)', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.adminLogin({
+          email: 'wrong@puretyfarm.com',
+          password: 'somepassword',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('should throw UnauthorizedException if password does not match', async () => {
+      const correctHash = await hashValue('real-password');
+
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        passwordHash: correctHash,
+        isActive: true,
+      });
+
+      await expect(
+        service.adminLogin({
+          email: 'admin@puretyfarm.com',
+          password: 'wrong-password',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('should throw UnauthorizedException if admin is inactive', async () => {
+      const passwordHash = await hashValue('puretyfarm@2026');
+
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        passwordHash,
+        isActive: false, // inactive!
+      });
+
+      await expect(
+        service.adminLogin({
+          email: 'admin@puretyfarm.com',
+          password: 'puretyfarm@2026',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  describe('adminChangePassword', () => {
+    it('should change password when current password is valid and hash new password', async () => {
+      const currentPassword = 'old-password-123';
+      const currentHash = await hashValue(currentPassword);
+
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        passwordHash: currentHash,
+        isActive: true,
+      });
+
+      mockPrismaService.admin.update.mockResolvedValue({
+        id: 'admin-uuid-1',
+      });
+
+      const result = await service.adminChangePassword('admin-uuid-1', {
+        currentPassword: 'old-password-123',
+        newPassword: 'new-secure-password-456',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('Password changed successfully');
+      expect((result as any).passwordHash).toBeUndefined();
+
+      expect(mockPrismaService.admin.update).toHaveBeenCalledWith({
+        where: { id: 'admin-uuid-1' },
+        data: {
+          passwordHash: expect.any(String),
+        },
+      });
+
+      // Verify the new hash stored in db is an Argon2 hash
+      const updateCall = mockPrismaService.admin.update.mock.calls[0][0];
+      expect(updateCall.data.passwordHash).toMatch(/^\$argon2/);
+      expect(updateCall.data.passwordHash).not.toBe('new-secure-password-456');
+    });
+
+    it('should throw BadRequestException if current password is wrong', async () => {
+      const currentHash = await hashValue('real-current-password');
+
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        passwordHash: currentHash,
+        isActive: true,
+      });
+
+      await expect(
+        service.adminChangePassword('admin-uuid-1', {
+          currentPassword: 'wrong-current-password',
+          newPassword: 'new-password-123',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw NotFoundException if admin does not exist', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.adminChangePassword('non-existent-admin', {
+          currentPassword: 'password',
+          newPassword: 'new-password-123',
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw ForbiddenException if admin is inactive', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        isActive: false,
+      });
+
+      await expect(
+        service.adminChangePassword('admin-uuid-1', {
+          currentPassword: 'password',
+          newPassword: 'new-password-123',
+        }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('adminGetMe', () => {
+    it('should return safe admin details (id, email, role: ADMIN) and never passwordHash', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        passwordHash: '$argon2id$hashedsecret',
+        isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const result = await service.adminGetMe('admin-uuid-1');
+
+      expect(result).toEqual({
+        id: 'admin-uuid-1',
+        email: 'admin@puretyfarm.com',
+        role: 'ADMIN',
+      });
+      expect((result as any).passwordHash).toBeUndefined();
+    });
+
+    it('should throw NotFoundException if admin not found', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue(null);
+
+      await expect(service.adminGetMe('missing-id')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('should throw ForbiddenException if admin is inactive', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'admin-uuid-1',
+        isActive: false,
+      });
+
+      await expect(service.adminGetMe('admin-uuid-1')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+  });
+
+  describe('seedInitialAdmin', () => {
+    it('creates Admin when missing with Argon2 hash', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue(null);
+      mockPrismaService.admin.create.mockResolvedValue({
+        id: 'new-admin-id',
+        email: 'admin@puretyfarm.com',
+      });
+
+      const result = await service.seedInitialAdmin();
+
+      expect(result.created).toBe(true);
+      expect(result.id).toBe('new-admin-id');
+      expect(result.email).toBe('admin@puretyfarm.com');
+
+      expect(mockPrismaService.admin.create).toHaveBeenCalledWith({
+        data: {
+          email: 'admin@puretyfarm.com',
+          passwordHash: expect.stringMatching(/^\$argon2/),
+          isActive: true,
+        },
+      });
+    });
+
+    it('repeated seed does not create duplicate and returns existing admin without modifying password', async () => {
+      mockPrismaService.admin.findUnique.mockResolvedValue({
+        id: 'existing-admin-id',
+        email: 'admin@puretyfarm.com',
+        passwordHash: 'existing-untouched-hash',
+      });
+
+      const result = await service.seedInitialAdmin();
+
+      expect(result.created).toBe(false);
+      expect(result.id).toBe('existing-admin-id');
+      expect(mockPrismaService.admin.create).not.toHaveBeenCalled();
+      expect(mockPrismaService.admin.update).not.toHaveBeenCalled();
     });
   });
 });

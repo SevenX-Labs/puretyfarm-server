@@ -13,13 +13,20 @@ import { CustomerVerifyOtpDto } from './dto/customer/customer-verify-otp.dto';
 import { CustomerRefreshTokenDto } from './dto/customer/customer-refresh-token.dto';
 import { CustomerEmailSendOtpDto } from './dto/customer/customer-email-send-otp.dto';
 import { CustomerEmailVerifyOtpDto } from './dto/customer/customer-email-verify-otp.dto';
+import { AdminLoginDto } from './dto/admin/login.dto';
+import { AdminChangePasswordDto } from './dto/admin/change-password.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 
 @Controller(['api/v1/auth', 'auth'])
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  // ==========================================
+  // CUSTOMER AUTHENTICATION ENDPOINTS
+  // ==========================================
 
   @Post('customer/login')
   @HttpCode(HttpStatus.OK)
@@ -70,5 +77,34 @@ export class AuthController {
     @Body() dto: CustomerEmailVerifyOtpDto,
   ) {
     return this.authService.customerVerifyEmailOtp(user.sub, dto);
+  }
+
+  // ==========================================
+  // ADMIN AUTHENTICATION ENDPOINTS
+  // ==========================================
+
+  @Post('admin/login')
+  @HttpCode(HttpStatus.OK)
+  async adminLogin(@Body() dto: AdminLoginDto) {
+    return this.authService.adminLogin(dto);
+  }
+
+  @Post('admin/change-password')
+  @UseGuards(JwtAuthGuard)
+  @Roles('ADMIN')
+  @HttpCode(HttpStatus.OK)
+  async adminChangePassword(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: AdminChangePasswordDto,
+  ) {
+    return this.authService.adminChangePassword(user.sub, dto);
+  }
+
+  @Get('admin/get-me')
+  @UseGuards(JwtAuthGuard)
+  @Roles('ADMIN')
+  @HttpCode(HttpStatus.OK)
+  async adminGetMe(@CurrentUser() user: JwtPayload) {
+    return this.authService.adminGetMe(user.sub);
   }
 }

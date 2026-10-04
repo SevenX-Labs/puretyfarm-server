@@ -5,10 +5,12 @@ import {
   UnauthorizedException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtPayload } from '../interfaces/jwt-payload.interface';
+import { ROLES_KEY } from '../decorators/roles.decorator';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -16,6 +18,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly reflector?: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -37,9 +40,6 @@ export class JwtAuthGuard implements CanActivate {
 
     const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
     if (!secret) {
-      // Startup config validation guarantees this is set; treat a missing
-      // secret as a server misconfiguration rather than silently trusting a
-      // hardcoded fallback.
       throw new UnauthorizedException('Authentication is not configured');
     }
 
@@ -74,14 +74,36 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Session has been revoked or expired');
     }
 
-    // The session must belong to the user the token claims to be. This prevents
-    // a token whose sessionId points at another user's session from passing.
-    if (session.userId !== payload.sub) {
+    // The session must belong to the subject the token claims to be.
+    const sessionOwnerId =
+      payload.role === 'ADMIN'
+        ? (session.adminId ?? session.userId)
+        : session.userId;
+
+    if (!sessionOwnerId || sessionOwnerId !== payload.sub) {
       throw new UnauthorizedException('Session does not match token subject');
     }
 
-    if (payload.role !== 'CUSTOMER') {
-      throw new ForbiddenException('Access denied for this role');
+    // Role-based access control. If @Roles(...) is declared, enforce it;
+    // otherwise default to CUSTOMER for existing customer endpoints.
+    const handler =
+      typeof context.getHandler === 'function' ? context.getHandler() : null;
+    const cls =
+      typeof context.getClass === 'function' ? context.getClass() : null;
+
+    const requiredRoles =
+      handler && cls && this.reflector
+        ? this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [handler, cls])
+        : undefined;
+
+    if (requiredRoles && requiredRoles.length > 0) {
+      if (!requiredRoles.includes(payload.role)) {
+        throw new ForbiddenException('Access denied for this role');
+      }
+    } else {
+      if (payload.role !== 'CUSTOMER') {
+        throw new ForbiddenException('Access denied for this role');
+      }
     }
 
     request.user = payload;

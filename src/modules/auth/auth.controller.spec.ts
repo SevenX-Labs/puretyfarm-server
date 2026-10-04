@@ -5,6 +5,10 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { AdminLoginDto } from './dto/admin/login.dto';
+import { AdminChangePasswordDto } from './dto/admin/change-password.dto';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 
 jest.mock('@nestjs/config', () => ({
   ConfigService: jest.fn().mockImplementation(() => ({
@@ -49,6 +53,33 @@ describe('AuthController', () => {
     customerVerifyEmailOtp: jest
       .fn()
       .mockResolvedValue({ success: true, message: 'Email verified' }),
+    adminLogin: jest.fn().mockResolvedValue({
+      success: true,
+      message: 'Authentication successful',
+      accessToken: 'admin-acc-token',
+      refreshToken: 'admin-ref-token',
+      admin: {
+        id: 'admin-1',
+        email: 'admin@puretyfarm.com',
+        role: 'ADMIN',
+      },
+    }),
+    adminChangePassword: jest.fn().mockResolvedValue({
+      success: true,
+      message: 'Password changed successfully',
+    }),
+    adminGetMe: jest.fn().mockResolvedValue({
+      id: 'admin-1',
+      email: 'admin@puretyfarm.com',
+      role: 'ADMIN',
+    }),
+  };
+
+  const adminJwtUser = {
+    sub: 'admin-1',
+    role: 'ADMIN',
+    sessionId: 'session-admin-1',
+    type: 'access' as const,
   };
 
   beforeEach(async () => {
@@ -69,6 +100,10 @@ describe('AuthController', () => {
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
+
+  // ==========================================
+  // CUSTOMER AUTH CONTROLLER TESTS
+  // ==========================================
 
   it('should call customerLogin', async () => {
     const res = await controller.customerLogin({ mobile: '9876543210' });
@@ -153,6 +188,103 @@ describe('AuthController', () => {
     expect(mockAuthService.customerVerifyEmailOtp).toHaveBeenCalledWith('u1', {
       email: 't@e.com',
       otp: '123456',
+    });
+  });
+
+  // ==========================================
+  // ADMIN AUTH CONTROLLER TESTS
+  // ==========================================
+
+  it('should call adminLogin', async () => {
+    const dto: AdminLoginDto = {
+      email: 'admin@puretyfarm.com',
+      password: 'puretyfarm@2026',
+    };
+    const res = await controller.adminLogin(dto);
+    expect(res.success).toBe(true);
+    expect(res.accessToken).toBe('admin-acc-token');
+    expect(mockAuthService.adminLogin).toHaveBeenCalledWith(dto);
+  });
+
+  it('should call adminChangePassword with user.sub from JWT', async () => {
+    const dto: AdminChangePasswordDto = {
+      currentPassword: 'old-password',
+      newPassword: 'new-password-123',
+    };
+    const res = await controller.adminChangePassword(adminJwtUser, dto);
+    expect(res.success).toBe(true);
+    expect(mockAuthService.adminChangePassword).toHaveBeenCalledWith(
+      'admin-1',
+      dto,
+    );
+  });
+
+  it('should call adminGetMe with user.sub from JWT', async () => {
+    const res = await controller.adminGetMe(adminJwtUser);
+    expect(res.id).toBe('admin-1');
+    expect(res.role).toBe('ADMIN');
+    expect(mockAuthService.adminGetMe).toHaveBeenCalledWith('admin-1');
+  });
+
+  // ==========================================
+  // DTO VALIDATION TESTS
+  // ==========================================
+
+  describe('AdminLoginDto validation', () => {
+    it('accepts valid credentials', async () => {
+      const dto = plainToInstance(AdminLoginDto, {
+        email: 'admin@puretyfarm.com',
+        password: 'securePassword123',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBe(0);
+    });
+
+    it('rejects an invalid email format', async () => {
+      const dto = plainToInstance(AdminLoginDto, {
+        email: 'not-an-email',
+        password: 'securePassword123',
+      });
+      const errors = await validate(dto);
+      expect(errors.some((e) => e.property === 'email')).toBe(true);
+    });
+
+    it('rejects an empty password', async () => {
+      const dto = plainToInstance(AdminLoginDto, {
+        email: 'admin@puretyfarm.com',
+        password: '',
+      });
+      const errors = await validate(dto);
+      expect(errors.some((e) => e.property === 'password')).toBe(true);
+    });
+  });
+
+  describe('AdminChangePasswordDto validation', () => {
+    it('accepts valid passwords', async () => {
+      const dto = plainToInstance(AdminChangePasswordDto, {
+        currentPassword: 'currentPassword123',
+        newPassword: 'newPassword1234',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBe(0);
+    });
+
+    it('rejects a new password shorter than 8 characters', async () => {
+      const dto = plainToInstance(AdminChangePasswordDto, {
+        currentPassword: 'currentPassword123',
+        newPassword: 'short',
+      });
+      const errors = await validate(dto);
+      expect(errors.some((e) => e.property === 'newPassword')).toBe(true);
+    });
+
+    it('rejects an empty current password', async () => {
+      const dto = plainToInstance(AdminChangePasswordDto, {
+        currentPassword: '',
+        newPassword: 'newPassword1234',
+      });
+      const errors = await validate(dto);
+      expect(errors.some((e) => e.property === 'currentPassword')).toBe(true);
     });
   });
 });

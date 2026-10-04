@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
+import type { Reflector } from '@nestjs/core';
 import type { JwtService } from '@nestjs/jwt';
 import type { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from './jwt-auth.guard';
@@ -21,11 +22,14 @@ describe('JwtAuthGuard', () => {
   const jwt = { verifyAsync: jest.fn() };
   const config = { get: jest.fn() };
   const prisma = { session: { findUnique: jest.fn() } };
+  const reflector = { getAllAndOverride: jest.fn() };
 
   const makeContext = (authorization?: string): ExecutionContext => {
     const req: any = { headers: authorization ? { authorization } : {} };
     return {
       switchToHttp: () => ({ getRequest: () => req }),
+      getHandler: () => ({}),
+      getClass: () => ({}),
     } as unknown as ExecutionContext;
   };
 
@@ -38,12 +42,22 @@ describe('JwtAuthGuard', () => {
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
       prisma as unknown as PrismaService,
+      reflector as unknown as Reflector,
     );
   });
 
   const validSession = {
     id: 'sess-1',
     userId: 'user-1',
+    adminId: null,
+    revokedAt: null,
+    expiresAt: new Date(Date.now() + 1_000_000),
+  };
+
+  const validAdminSession = {
+    id: 'sess-admin-1',
+    userId: null,
+    adminId: 'admin-1',
     revokedAt: null,
     expiresAt: new Date(Date.now() + 1_000_000),
   };
@@ -102,7 +116,8 @@ describe('JwtAuthGuard', () => {
     );
   });
 
-  it('rejects a non-CUSTOMER role with ForbiddenException', async () => {
+  it('rejects a non-CUSTOMER role with ForbiddenException when no role decorator is present', async () => {
+    reflector.getAllAndOverride.mockReturnValue(undefined);
     jwt.verifyAsync.mockResolvedValue({
       sub: 'user-1',
       role: 'ADMIN',
@@ -116,6 +131,7 @@ describe('JwtAuthGuard', () => {
   });
 
   it('allows a valid CUSTOMER access token and attaches user + session', async () => {
+    reflector.getAllAndOverride.mockReturnValue(undefined);
     const payload = {
       sub: 'user-1',
       role: 'CUSTOMER',
@@ -128,11 +144,52 @@ describe('JwtAuthGuard', () => {
     const req: any = { headers: { authorization: 'Bearer tok' } };
     const ctx = {
       switchToHttp: () => ({ getRequest: () => req }),
+      getHandler: () => ({}),
+      getClass: () => ({}),
     } as unknown as ExecutionContext;
 
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(req.user).toEqual(payload);
     expect(req.session).toEqual(validSession);
+  });
+
+  it('allows a valid ADMIN access token when @Roles("ADMIN") is specified', async () => {
+    reflector.getAllAndOverride.mockReturnValue(['ADMIN']);
+    const payload = {
+      sub: 'admin-1',
+      role: 'ADMIN',
+      sessionId: 'sess-admin-1',
+      type: 'access',
+    };
+    jwt.verifyAsync.mockResolvedValue(payload);
+    prisma.session.findUnique.mockResolvedValue(validAdminSession);
+
+    const req: any = { headers: { authorization: 'Bearer tok' } };
+    const ctx = {
+      switchToHttp: () => ({ getRequest: () => req }),
+      getHandler: () => ({}),
+      getClass: () => ({}),
+    } as unknown as ExecutionContext;
+
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect(req.user).toEqual(payload);
+    expect(req.session).toEqual(validAdminSession);
+  });
+
+  it('rejects a CUSTOMER access token when @Roles("ADMIN") is specified', async () => {
+    reflector.getAllAndOverride.mockReturnValue(['ADMIN']);
+    const payload = {
+      sub: 'user-1',
+      role: 'CUSTOMER',
+      sessionId: 'sess-1',
+      type: 'access',
+    };
+    jwt.verifyAsync.mockResolvedValue(payload);
+    prisma.session.findUnique.mockResolvedValue(validSession);
+
+    await expect(guard.canActivate(makeContext('Bearer tok'))).rejects.toThrow(
+      ForbiddenException,
+    );
   });
 
   it('rejects when the access secret is not configured', async () => {

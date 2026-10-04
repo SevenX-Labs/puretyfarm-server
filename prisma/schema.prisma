@@ -153,16 +153,33 @@ model CustomerAddress {
 
 model Session {
   id               String    @id @default(uuid())
-  userId           String
+  userId           String?
+  adminId          String?
   refreshTokenHash String
   expiresAt        DateTime
   revokedAt        DateTime?
   createdAt        DateTime  @default(now())
   lastUsedAt       DateTime  @default(now())
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  admin            Admin?    @relation(fields: [adminId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([adminId])
   @@map("sessions")
+}
+
+model Admin {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  sessions     Session[]
+
+  @@index([email])
+  @@index([isActive])
+  @@map("admins")
 }
 
 // --------------------------------------------------------------------------

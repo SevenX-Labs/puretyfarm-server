@@ -8,6 +8,8 @@ import {
   HttpException,
   HttpStatus,
   InternalServerErrorException,
+  NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -19,6 +21,8 @@ import { CustomerVerifyOtpDto } from './dto/customer/customer-verify-otp.dto';
 import { CustomerRefreshTokenDto } from './dto/customer/customer-refresh-token.dto';
 import { CustomerEmailSendOtpDto } from './dto/customer/customer-email-send-otp.dto';
 import { CustomerEmailVerifyOtpDto } from './dto/customer/customer-email-verify-otp.dto';
+import { AdminLoginDto } from './dto/admin/login.dto';
+import { AdminChangePasswordDto } from './dto/admin/change-password.dto';
 import { normalizeMobile } from '../../common/utils/phone.util';
 import {
   generateSecureOtp,
@@ -306,7 +310,7 @@ export class AuthService {
 
     const session = await this.prisma.session.findUnique({
       where: { id: payload.sessionId },
-      include: { user: true },
+      include: { user: true, admin: true },
     });
 
     if (
@@ -328,8 +332,8 @@ export class AuthService {
     // Generate rotated refresh token
     const newRefreshToken = await this.jwtService.signAsync(
       {
-        sub: session.userId,
-        role: session.user.role,
+        sub: session.userId ?? session.adminId!,
+        role: session.user?.role ?? 'ADMIN',
         sessionId: session.id,
         type: 'refresh',
       },
@@ -364,8 +368,8 @@ export class AuthService {
     // Generate new access token
     const accessToken = await this.jwtService.signAsync(
       {
-        sub: session.userId,
-        role: session.user.role,
+        sub: session.userId ?? session.adminId!,
+        role: session.user?.role ?? 'ADMIN',
         sessionId: session.id,
         type: 'access',
       },
@@ -589,6 +593,169 @@ export class AuthService {
     return {
       success: true,
       message: 'Email verified successfully',
+    };
+  }
+  // ==========================================
+  // ADMIN AUTHENTICATION METHODS
+  // ==========================================
+
+  async adminLogin(dto: AdminLoginDto) {
+    const normalizedEmail = dto.email.toLowerCase().trim();
+
+    const admin = await this.prisma.admin.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (!admin) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+
+    if (!admin.isActive) {
+      throw new UnauthorizedException('Admin account is inactive');
+    }
+
+    const isMatch = await verifyHash(admin.passwordHash, dto.password);
+    if (!isMatch) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+
+    // Build the admin session and real JWT tokens
+    const sessionId = randomUUID();
+    const sessionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+
+    const refreshToken = await this.jwtService.signAsync(
+      {
+        sub: admin.id,
+        role: 'ADMIN',
+        sessionId,
+        type: 'refresh',
+      },
+      {
+        secret: this.refreshSecret,
+        expiresIn: this.refreshExpiresIn as any,
+      },
+    );
+    const refreshTokenHash = await hashValue(refreshToken);
+
+    await this.prisma.session.create({
+      data: {
+        id: sessionId,
+        adminId: admin.id,
+        refreshTokenHash,
+        expiresAt: sessionExpiresAt,
+      },
+    });
+
+    const accessToken = await this.jwtService.signAsync(
+      {
+        sub: admin.id,
+        role: 'ADMIN',
+        sessionId,
+        type: 'access',
+      },
+      {
+        secret: this.accessSecret,
+        expiresIn: this.accessExpiresIn as any,
+      },
+    );
+
+    return {
+      success: true,
+      message: 'Authentication successful',
+      accessToken,
+      refreshToken,
+      admin: {
+        id: admin.id,
+        email: admin.email,
+        role: 'ADMIN',
+      },
+    };
+  }
+
+  async adminChangePassword(adminId: string, dto: AdminChangePasswordDto) {
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('Admin not found');
+    }
+
+    if (!admin.isActive) {
+      throw new ForbiddenException('Admin account is inactive');
+    }
+
+    const isMatch = await verifyHash(admin.passwordHash, dto.currentPassword);
+    if (!isMatch) {
+      throw new BadRequestException('Incorrect current password');
+    }
+
+    const newPasswordHash = await hashValue(dto.newPassword);
+    await this.prisma.admin.update({
+      where: { id: admin.id },
+      data: { passwordHash: newPasswordHash },
+    });
+
+    return {
+      success: true,
+      message: 'Password changed successfully',
+    };
+  }
+
+  async adminGetMe(adminId: string) {
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+    });
+
+    if (!admin) {
+      throw new NotFoundException('Admin not found');
+    }
+
+    if (!admin.isActive) {
+      throw new ForbiddenException('Admin account is inactive');
+    }
+
+    return {
+      id: admin.id,
+      email: admin.email,
+      role: 'ADMIN',
+    };
+  }
+
+  async seedInitialAdmin(options?: {
+    email?: string;
+    password?: string;
+  }): Promise<{ id: string; email: string; created: boolean }> {
+    const email = (options?.email || 'admin@puretyfarm.com').toLowerCase().trim();
+    const password = options?.password || 'puretyfarm@2026';
+
+    const existing = await this.prisma.admin.findUnique({
+      where: { email },
+    });
+
+    if (existing) {
+      this.logger.log(`Initial admin already exists with ID: ${existing.id}`);
+      return {
+        id: existing.id,
+        email: existing.email,
+        created: false,
+      };
+    }
+
+    const passwordHash = await hashValue(password);
+    const admin = await this.prisma.admin.create({
+      data: {
+        email,
+        passwordHash,
+        isActive: true,
+      },
+    });
+
+    this.logger.log(`Seeded initial admin with ID: ${admin.id}`);
+    return {
+      id: admin.id,
+      email: admin.email,
+      created: true,
     };
   }
 }
