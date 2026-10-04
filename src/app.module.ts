@@ -14,6 +14,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PlansModule } from './modules/plans/plans.module';
 import { ManageDeliveryModule } from './modules/manage-delivery/manage-delivery.module';
+import { CustomersModule } from './modules/customers/customers.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ManageDeliveryModule } from './modules/manage-delivery/manage-delivery.
     PaymentsModule,
     PlansModule,
     ManageDeliveryModule,
+    CustomersModule,
   ],
   controllers: [AppController],
   providers: [AppService],
