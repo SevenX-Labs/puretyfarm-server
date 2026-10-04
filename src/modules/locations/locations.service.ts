@@ -27,6 +27,41 @@ export interface AreaResponse {
   pincode: string | null;
 }
 
+export interface ServiceableLocationResponse {
+  serviceable: true;
+  state: {
+    id: string;
+    name: string;
+  };
+  city: {
+    id: string;
+    name: string;
+  };
+  area: {
+    id: string;
+    name: string;
+  };
+  pincode: string | null;
+  latitude: number;
+  longitude: number;
+  formattedAddress: string | null;
+}
+
+export interface UnserviceableLocationResponse {
+  serviceable: false;
+  state: string | null;
+  city: string | null;
+  area: string | null;
+  pincode: string | null;
+  latitude: number;
+  longitude: number;
+  formattedAddress: string | null;
+}
+
+export type DetectLocationResponse =
+  | ServiceableLocationResponse
+  | UnserviceableLocationResponse;
+
 // Rate limit: at most 5 detect requests per rolling 60s window per customer.
 export const DETECT_RATE_LIMIT = 5;
 export const DETECT_RATE_WINDOW_SECONDS = 60;
@@ -63,17 +98,18 @@ export class LocationsService {
   ) {}
 
   /**
-   * Resolves a coordinate pair into a normalized location. Order:
+   * Resolves a coordinate pair into a normalized location matched against
+   * PuretyFarm's active database catalog. Order:
    *   1. per-customer rate limit (counts every call, even cache hits)
-   *   2. Valkey cache lookup
-   *   3. Geoapify on miss, then cache the normalized result
-   * Nothing is written to the database here.
+   *   2. Valkey cache lookup for raw Geoapify result
+   *   3. Geoapify on miss, then cache raw Geoapify result
+   *   4. Match against active DB catalog (State -> City -> Area)
    */
   async detectLocation(
     userId: string,
     latitude: number,
     longitude: number,
-  ): Promise<ResolvedLocation> {
+  ): Promise<DetectLocationResponse> {
     // 1. Rate limit first — a repeated call still consumes the budget even if
     //    it would have been served from cache.
     await this.enforceDetectRateLimit(userId);
@@ -81,18 +117,116 @@ export class LocationsService {
     const cacheKey = this.reverseGeocodeCacheKey(latitude, longitude);
 
     // 2. Cache lookup (best-effort; infra failure falls through to Geoapify).
-    const cached = await this.readCachedLocation(cacheKey);
-    if (cached) {
-      return cached;
+    let resolved = await this.readCachedLocation(cacheKey);
+    if (!resolved) {
+      // 3. Cache miss -> call the provider. A provider failure throws (503) and
+      //    is deliberately NOT cached.
+      resolved = await this.geoapify.reverseGeocode(latitude, longitude);
+      await this.cacheLocation(cacheKey, resolved);
     }
 
-    // 3. Cache miss -> call the provider. A provider failure throws (503) and
-    //    is deliberately NOT cached.
-    const result = await this.geoapify.reverseGeocode(latitude, longitude);
+    // 4. Match against active database catalog
+    return this.matchCatalog(resolved);
+  }
 
-    await this.cacheLocation(cacheKey, result);
+  private normalizeName(val: string | null | undefined): string {
+    if (!val) return "";
+    return val.trim().toLowerCase().replace(/[\s\-_]+/g, " ");
+  }
 
-    return result;
+  private async matchCatalog(
+    geoResult: ResolvedLocation,
+  ): Promise<DetectLocationResponse> {
+    const {
+      state: geoState,
+      city: geoCity,
+      area: geoArea,
+      pincode: geoPincode,
+      latitude,
+      longitude,
+      formattedAddress,
+    } = geoResult;
+
+    const unserviceableResponse: UnserviceableLocationResponse = {
+      serviceable: false,
+      state: geoState,
+      city: geoCity,
+      area: geoArea,
+      pincode: geoPincode,
+      latitude,
+      longitude,
+      formattedAddress,
+    };
+
+    if (!geoState || !geoCity || !geoArea) {
+      return unserviceableResponse;
+    }
+
+    const normGeoState = this.normalizeName(geoState);
+    const normGeoCity = this.normalizeName(geoCity);
+    const normGeoArea = this.normalizeName(geoArea);
+
+    // 1. Match active State in database
+    const activeStates = await this.prisma.state.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true },
+    });
+
+    const matchedState = activeStates.find(
+      (s) => this.normalizeName(s.name) === normGeoState,
+    );
+    if (!matchedState) {
+      return unserviceableResponse;
+    }
+
+    // 2. Match active City under matchedState
+    const activeCities = await this.prisma.city.findMany({
+      where: { stateId: matchedState.id, isActive: true },
+      select: { id: true, name: true },
+    });
+
+    const matchedCity = activeCities.find(
+      (c) => this.normalizeName(c.name) === normGeoCity,
+    );
+    if (!matchedCity) {
+      return unserviceableResponse;
+    }
+
+    // 3. Match active Area under matchedCity
+    const activeAreas = await this.prisma.area.findMany({
+      where: { cityId: matchedCity.id, isActive: true },
+      select: { id: true, name: true, pincode: true },
+    });
+
+    const matchedArea = activeAreas.find(
+      (a) => this.normalizeName(a.name) === normGeoArea,
+    );
+    if (!matchedArea) {
+      return unserviceableResponse;
+    }
+
+    // 4. Supporting pincode check
+    if (geoPincode && matchedArea.pincode) {
+      const normGeoPincode = geoPincode.trim();
+      const normAreaPincode = matchedArea.pincode.trim();
+      if (normGeoPincode !== normAreaPincode) {
+        return unserviceableResponse;
+      }
+    }
+
+    const resolvedPincode =
+      geoPincode?.trim() || matchedArea.pincode?.trim() || null;
+
+    return {
+      serviceable: true,
+      state: { id: matchedState.id, name: matchedState.name },
+      city: { id: matchedCity.id, name: matchedCity.name },
+      area: { id: matchedArea.id, name: matchedArea.name },
+      pincode: resolvedPincode,
+      latitude,
+      longitude,
+      formattedAddress,
+    };
   }
 
   /**

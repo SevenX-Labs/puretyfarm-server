@@ -43,6 +43,17 @@ describe("LocationsService", () => {
     formattedAddress: "Bandra, Mumbai",
   };
 
+  const expectedServiceable = {
+    serviceable: true,
+    state: { id: "state-1", name: "Maharashtra" },
+    city: { id: "city-1", name: "Mumbai" },
+    area: { id: "area-1", name: "Bandra" },
+    pincode: "400050",
+    latitude: 19.076,
+    longitude: 72.878,
+    formattedAddress: "Bandra, Mumbai",
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
     // Defaults: first request in window, cache miss, provider resolves.
@@ -50,6 +61,17 @@ describe("LocationsService", () => {
     mockValkey.get.mockResolvedValue(null);
     mockValkey.set.mockResolvedValue("OK");
     mockGeoapify.reverseGeocode.mockResolvedValue(resolved);
+
+    // Default active catalog setup
+    mockPrisma.state.findMany.mockResolvedValue([
+      { id: "state-1", name: "Maharashtra" },
+    ]);
+    mockPrisma.city.findMany.mockResolvedValue([
+      { id: "city-1", name: "Mumbai" },
+    ]);
+    mockPrisma.area.findMany.mockResolvedValue([
+      { id: "area-1", name: "Bandra", pincode: "400050" },
+    ]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,7 +90,7 @@ describe("LocationsService", () => {
         mockValkey.eval.mockResolvedValueOnce(i);
         await expect(
           service.detectLocation("user-1", 19.076, 72.878),
-        ).resolves.toEqual(resolved);
+        ).resolves.toEqual(expectedServiceable);
       }
     });
 
@@ -113,15 +135,15 @@ describe("LocationsService", () => {
   });
 
   describe("detectLocation — caching", () => {
-    it("7. cache HIT returns cached result without calling Geoapify", async () => {
+    it("7. cache HIT returns cached result and matches against catalog without calling Geoapify", async () => {
       mockValkey.get.mockResolvedValueOnce(JSON.stringify(resolved));
       const result = await service.detectLocation("user-1", 19.076, 72.878);
-      expect(result).toEqual(resolved);
+      expect(result).toEqual(expectedServiceable);
       expect(mockGeoapify.reverseGeocode).not.toHaveBeenCalled();
       expect(mockValkey.set).not.toHaveBeenCalled();
     });
 
-    it("8/9/10. cache MISS calls Geoapify and caches the result for 24h", async () => {
+    it("8/9/10. cache MISS calls Geoapify and caches raw result for 24h", async () => {
       const result = await service.detectLocation("user-1", 19.076, 72.878);
       expect(mockGeoapify.reverseGeocode).toHaveBeenCalledWith(19.076, 72.878);
       expect(mockValkey.set).toHaveBeenCalledWith(
@@ -130,7 +152,7 @@ describe("LocationsService", () => {
         REVERSE_GEOCODE_CACHE_TTL_SECONDS,
       );
       expect(REVERSE_GEOCODE_CACHE_TTL_SECONDS).toBe(86400);
-      expect(result).toEqual(resolved);
+      expect(result).toEqual(expectedServiceable);
     });
 
     it("11. does NOT cache a Geoapify failure", async () => {
@@ -148,21 +170,86 @@ describe("LocationsService", () => {
       expect(keys[0]).toBe("locations:reverse-geocode:19.076:72.878");
       expect(keys[1]).toBe(keys[0]);
     });
+  });
 
-    it("13. the returned result contains only normalized fields (no secret)", async () => {
+  describe("detectLocation — Catalog Matching & Serviceability", () => {
+    it("GPS -> Geoapify successful and catalog match successful (case & space insensitive)", async () => {
+      mockGeoapify.reverseGeocode.mockResolvedValueOnce({
+        ...resolved,
+        state: "  maharashtra ",
+        city: "mumbai",
+        area: "BANDRA ",
+      });
+
       const result = await service.detectLocation("user-1", 19.076, 72.878);
-      expect(Object.keys(result).sort()).toEqual(
-        [
-          "area",
-          "city",
-          "country",
-          "formattedAddress",
-          "latitude",
-          "longitude",
-          "pincode",
-          "state",
-        ].sort(),
-      );
+      expect(result).toEqual(expectedServiceable);
+    });
+
+    it("GPS -> no catalog match when state is not in catalog", async () => {
+      mockPrisma.state.findMany.mockResolvedValueOnce([]); // No active state matches
+
+      const result = await service.detectLocation("user-1", 19.076, 72.878);
+      expect(result).toEqual({
+        serviceable: false,
+        state: "Maharashtra",
+        city: "Mumbai",
+        area: "Bandra",
+        pincode: "400050",
+        latitude: 19.076,
+        longitude: 72.878,
+        formattedAddress: "Bandra, Mumbai",
+      });
+    });
+
+    it("GPS -> no catalog match when city is not under the state", async () => {
+      mockPrisma.city.findMany.mockResolvedValueOnce([]); // City not found under state
+
+      const result = await service.detectLocation("user-1", 19.076, 72.878);
+      expect(result).toEqual({
+        serviceable: false,
+        state: "Maharashtra",
+        city: "Mumbai",
+        area: "Bandra",
+        pincode: "400050",
+        latitude: 19.076,
+        longitude: 72.878,
+        formattedAddress: "Bandra, Mumbai",
+      });
+    });
+
+    it("GPS -> no catalog match when area is not under the city", async () => {
+      mockPrisma.area.findMany.mockResolvedValueOnce([]); // Area not found under city
+
+      const result = await service.detectLocation("user-1", 19.076, 72.878);
+      expect(result).toEqual({
+        serviceable: false,
+        state: "Maharashtra",
+        city: "Mumbai",
+        area: "Bandra",
+        pincode: "400050",
+        latitude: 19.076,
+        longitude: 72.878,
+        formattedAddress: "Bandra, Mumbai",
+      });
+    });
+
+    it("returns unserviceable when Geoapify pincode conflicts with catalog area pincode", async () => {
+      mockGeoapify.reverseGeocode.mockResolvedValueOnce({
+        ...resolved,
+        pincode: "999999", // Different pincode
+      });
+
+      const result = await service.detectLocation("user-1", 19.076, 72.878);
+      expect(result).toEqual({
+        serviceable: false,
+        state: "Maharashtra",
+        city: "Mumbai",
+        area: "Bandra",
+        pincode: "999999",
+        latitude: 19.076,
+        longitude: 72.878,
+        formattedAddress: "Bandra, Mumbai",
+      });
     });
   });
 
@@ -173,27 +260,20 @@ describe("LocationsService", () => {
       );
       const result = await service.detectLocation("user-1", 19.076, 72.878);
       // Request succeeds; no internal error is surfaced to the caller.
-      expect(result).toEqual(resolved);
+      expect(result).toEqual(expectedServiceable);
     });
 
     it("12b. cache read failure falls back to Geoapify", async () => {
       mockValkey.get.mockRejectedValueOnce(new Error("VALKEY read error"));
       const result = await service.detectLocation("user-1", 19.076, 72.878);
       expect(mockGeoapify.reverseGeocode).toHaveBeenCalled();
-      expect(result).toEqual(resolved);
+      expect(result).toEqual(expectedServiceable);
     });
 
     it("cache write failure does not break the response", async () => {
       mockValkey.set.mockRejectedValueOnce(new Error("VALKEY write error"));
       const result = await service.detectLocation("user-1", 19.076, 72.878);
-      expect(result).toEqual(resolved);
-    });
-  });
-
-  describe("detectLocation — delegation", () => {
-    it("forwards coordinates to Geoapify on a miss", async () => {
-      await service.detectLocation("user-1", 15.4, 73.8);
-      expect(mockGeoapify.reverseGeocode).toHaveBeenCalledWith(15.4, 73.8);
+      expect(result).toEqual(expectedServiceable);
     });
   });
 
