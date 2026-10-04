@@ -39,6 +39,13 @@ export enum PlanSelectionStatus {
   CANCELLED = "CANCELLED",
 }
 
+/** Lifecycle of a single scheduled delivery (mirrors the Prisma enum). */
+export enum DeliveryStatus {
+  SCHEDULED = "SCHEDULED",
+  SKIPPED = "SKIPPED",
+  DELIVERED = "DELIVERED",
+}
+
 /** How long a quote remains valid before automatic expiry (in minutes). */
 export const QUOTE_EXPIRY_MINUTES = 30;
 

@@ -3,6 +3,8 @@ import {
   PlansService,
   calculateMonthlyDeliveryOccurrences,
   calculateTotalLitres,
+  generateDeliveryDates,
+  quantityForOccurrence,
 } from "./plans.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
@@ -26,7 +28,13 @@ describe("PlansService", () => {
   const mockPrisma: any = {
     planConfig: { findFirst: jest.fn() },
     planSelection: { count: jest.fn(), create: jest.fn() },
-    planQuote: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    planDelivery: { createMany: jest.fn() },
+    planQuote: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
     $transaction: jest.fn(),
   };
 
@@ -668,6 +676,59 @@ describe("PlansService", () => {
   //  CONFIRM PLAN
   // ══════════════════════════════════════════════════════════════
 
+  describe("generateDeliveryDates (shared delivery helper)", () => {
+    it("DAILY yields every calendar day in the inclusive range", () => {
+      const dates = generateDeliveryDates(
+        DeliveryFrequency.DAILY,
+        new Date(Date.UTC(2026, 0, 1)),
+        new Date(Date.UTC(2026, 0, 5)),
+      );
+      expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
+        "2026-01-01",
+        "2026-01-02",
+        "2026-01-03",
+        "2026-01-04",
+        "2026-01-05",
+      ]);
+    });
+
+    it("ALTERNATE_DAYS delivers on day 1, 3, 5 (every other day from start)", () => {
+      const dates = generateDeliveryDates(
+        DeliveryFrequency.ALTERNATE_DAYS,
+        new Date(Date.UTC(2026, 0, 1)),
+        new Date(Date.UTC(2026, 0, 6)),
+      );
+      expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
+        "2026-01-01",
+        "2026-01-03",
+        "2026-01-05",
+      ]);
+    });
+
+    it("spans month boundaries without assuming 30 days (Feb 2028 leap)", () => {
+      const dates = generateDeliveryDates(
+        DeliveryFrequency.DAILY,
+        new Date(Date.UTC(2028, 1, 1)),
+        new Date(Date.UTC(2028, 1, 29)),
+      );
+      expect(dates).toHaveLength(29); // 2028 is a leap year
+    });
+  });
+
+  describe("quantityForOccurrence (alternating by occurrence, not day)", () => {
+    it("FIXED returns the constant quantity", () => {
+      expect(quantityForOccurrence(QuantityMode.FIXED, 1, 3)).toBe(3);
+      expect(quantityForOccurrence(QuantityMode.FIXED, 4, 3)).toBe(3);
+    });
+
+    it("ALTERNATING maps odd occurrence -> A, even -> B", () => {
+      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 1, null, 1, 2)).toBe(1);
+      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 2, null, 1, 2)).toBe(2);
+      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 3, null, 1, 2)).toBe(1);
+      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 4, null, 1, 2)).toBe(2);
+    });
+  });
+
   describe("confirmPlan", () => {
     const validQuote = {
       id: "quote-1",
@@ -685,6 +746,7 @@ describe("PlansService", () => {
         return fn({
           planQuote: mockPrisma.planQuote,
           planSelection: mockPrisma.planSelection,
+          planDelivery: mockPrisma.planDelivery,
         });
       });
       mockPrisma.planQuote.findUnique.mockResolvedValue(validQuote);
@@ -692,6 +754,8 @@ describe("PlansService", () => {
         ...validQuote,
         status: PlanQuoteStatus.CONFIRMED,
       });
+      // Atomic PENDING -> CONFIRMED transition: by default it wins (count 1).
+      mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
       mockPrisma.planSelection.create.mockImplementation(({ data }: any) => ({
         id: "sel-1",
         ...data,
@@ -763,6 +827,52 @@ describe("PlansService", () => {
       await expect(
         service.confirmPlan(USER, { quoteId: "quote-1" }),
       ).rejects.toThrow(ForbiddenException);
+    });
+
+    it("is race-safe: a concurrent confirmation of the same quote is rejected and creates no second selection", async () => {
+      // Both requests read the quote as PENDING (classic read-then-write race),
+      // but the atomic guarded transition only matches for the first writer.
+      // Simulate the losing request: the PENDING -> CONFIRMED updateMany matches
+      // zero rows because the row is already CONFIRMED by the winner.
+      mockPrisma.planQuote.updateMany.mockResolvedValueOnce({ count: 0 });
+
+      await expect(
+        service.confirmPlan(USER, { quoteId: "quote-1" }),
+      ).rejects.toThrow(BadRequestException);
+
+      // Critically, no duplicate PlanSelection must be created for the loser.
+      expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
+    });
+
+    it("uses a guarded PENDING-only transition for the winning confirmation", async () => {
+      await service.confirmPlan(USER, { quoteId: "quote-1" });
+      expect(mockPrisma.planQuote.updateMany).toHaveBeenCalledWith({
+        where: { id: "quote-1", status: PlanQuoteStatus.PENDING },
+        data: { status: PlanQuoteStatus.CONFIRMED },
+      });
+    });
+
+    it("materialises delivery rows and seeds the live schedule for a MONTHLY plan", async () => {
+      const start = new Date(Date.UTC(2026, 0, 1));
+      const end = new Date(Date.UTC(2026, 0, 5));
+      mockPrisma.planQuote.findUnique.mockResolvedValue({
+        ...validQuote,
+        planType: PlanType.MONTHLY,
+        frequency: DeliveryFrequency.DAILY,
+        quantityMode: QuantityMode.FIXED,
+        quantity: 2,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 5,
+        billingPeriodStart: start,
+        billingPeriodEnd: end,
+      });
+      await service.confirmPlan(USER, { quoteId: "quote-1" });
+      expect(mockPrisma.planDelivery.createMany).toHaveBeenCalledTimes(1);
+      const rows = mockPrisma.planDelivery.createMany.mock.calls[0][0].data;
+      expect(rows).toHaveLength(5); // Jan 1..5
+      expect(rows.every((r: any) => r.quantityLitres === 2)).toBe(true);
+      expect(rows[0].occurrence).toBe(1);
     });
 
     it("quoting does NOT mark Trial or Buy Once as used", async () => {

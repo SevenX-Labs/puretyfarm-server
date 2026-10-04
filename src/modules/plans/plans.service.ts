@@ -12,6 +12,7 @@ import {
   QuantityMode,
   PlanQuoteStatus,
   PlanSelectionStatus,
+  DeliveryStatus,
   QUOTE_EXPIRY_MINUTES,
 } from "./plans.constants";
 import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
@@ -126,6 +127,56 @@ export function calculateTotalLitres(
   const halfCeil = Math.ceil(deliveryOccurrences / 2);
   // A gets the extra occurrence when odd count.
   return halfCeil * qA + halfFloor * qB;
+}
+
+/**
+ * Normalises a Date to a UTC date-only value (midnight UTC), discarding the
+ * time component. Delivery dates are calendar days, never instants.
+ */
+export function toDateOnly(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/**
+ * Generates the ordered list of calendar delivery dates in the inclusive range
+ * [start, end]. DAILY delivers every calendar day; ALTERNATE_DAYS delivers
+ * every other calendar day, with the first delivery on `start` itself.
+ */
+export function generateDeliveryDates(
+  frequency: DeliveryFrequency,
+  start: Date,
+  end: Date,
+): Date[] {
+  const step = frequency === DeliveryFrequency.DAILY ? 1 : 2;
+  const last = toDateOnly(end).getTime();
+  const dates: Date[] = [];
+  let cursor = toDateOnly(start);
+  while (cursor.getTime() <= last) {
+    dates.push(new Date(cursor));
+    const next = new Date(cursor);
+    next.setUTCDate(next.getUTCDate() + step);
+    cursor = next;
+  }
+  return dates;
+}
+
+/**
+ * Resolves the litres for a given 1-based delivery OCCURRENCE. FIXED is constant;
+ * ALTERNATING alternates by occurrence (odd -> A, even -> B) — never by calendar
+ * day. This is the single source of truth for the alternating rule, shared by
+ * quote totals, delivery generation and Manage Delivery.
+ */
+export function quantityForOccurrence(
+  quantityMode: QuantityMode,
+  occurrence: number,
+  quantity?: number | null,
+  quantityA?: number | null,
+  quantityB?: number | null,
+): number {
+  if (quantityMode === QuantityMode.FIXED) {
+    return quantity ?? 0;
+  }
+  return occurrence % 2 === 1 ? (quantityA ?? 0) : (quantityB ?? 0);
 }
 
 // ─── Service ────────────────────────────────────────────────────────
@@ -547,21 +598,69 @@ export class PlansService {
         }
       }
 
-      // Mark the quote as confirmed.
-      await tx.planQuote.update({
-        where: { id: quote.id },
+      // Atomically transition the quote PENDING -> CONFIRMED. Using a guarded
+      // updateMany (rather than a plain update after the status check above)
+      // makes the transition race-safe: under READ COMMITTED isolation Postgres
+      // re-evaluates the `status: PENDING` predicate against the latest
+      // committed row version, so a second concurrent confirmation of the same
+      // quote matches zero rows and is rejected instead of producing a duplicate
+      // PlanSelection (double-spend).
+      const transition = await tx.planQuote.updateMany({
+        where: { id: quote.id, status: PlanQuoteStatus.PENDING },
         data: { status: PlanQuoteStatus.CONFIRMED },
       });
+      if (transition.count === 0) {
+        throw new BadRequestException(
+          "Quote is no longer pending (it may have just been confirmed)",
+        );
+      }
 
-      // Create the plan selection record.
+      // Derive the concrete delivery schedule window + live (mutable) config
+      // from the immutable quote snapshot. This is what Manage Delivery edits.
+      const schedule = this.resolveScheduleFromQuote(quote);
+
+      // Create the plan selection record, seeding the live schedule config.
       const selection = await tx.planSelection.create({
         data: {
           userId,
           quoteId: quote.id,
           planType: quote.planType as PlanType,
           status: PlanSelectionStatus.CONFIRMED,
+          frequency: schedule.frequency,
+          quantityMode: schedule.quantityMode,
+          quantity: schedule.quantity,
+          quantityA: schedule.quantityA,
+          quantityB: schedule.quantityB,
+          startDate: schedule.start,
+          endDate: schedule.end,
         },
       });
+
+      // Materialise one PlanDelivery row per scheduled date so that Manage
+      // Delivery can enforce future-only edits and keep history immutable.
+      const dates = generateDeliveryDates(
+        schedule.frequency,
+        schedule.start,
+        schedule.end,
+      );
+      if (dates.length > 0) {
+        await tx.planDelivery.createMany({
+          data: dates.map((date, i) => ({
+            selectionId: selection.id,
+            userId,
+            deliveryDate: date,
+            occurrence: i + 1,
+            quantityLitres: quantityForOccurrence(
+              schedule.quantityMode,
+              i + 1,
+              schedule.quantity,
+              schedule.quantityA,
+              schedule.quantityB,
+            ),
+            status: DeliveryStatus.SCHEDULED,
+          })),
+        });
+      }
 
       return {
         selectionId: selection.id,
@@ -573,6 +672,70 @@ export class PlansService {
   }
 
   // ── Private helpers ─────────────────────────────────────────────
+
+  /**
+   * Translates an immutable quote into a concrete delivery-schedule window and
+   * the live schedule config to seed onto the selection.
+   *
+   * - MONTHLY: uses the quote's billing period + frequency/quantity config.
+   * - SEVEN_DAY_TRIAL: `deliveryOccurrences` consecutive DAILY deliveries.
+   * - BUY_ONCE: a single DAILY delivery on the start day.
+   */
+  private resolveScheduleFromQuote(quote: {
+    planType: string;
+    frequency: string | null;
+    quantityMode: string | null;
+    quantity: number | null;
+    quantityA: number | null;
+    quantityB: number | null;
+    deliveryOccurrences: number;
+    billingPeriodStart: Date | null;
+    billingPeriodEnd: Date | null;
+  }): {
+    frequency: DeliveryFrequency;
+    quantityMode: QuantityMode;
+    quantity: number | null;
+    quantityA: number | null;
+    quantityB: number | null;
+    start: Date;
+    end: Date;
+  } {
+    if (quote.planType === PlanType.MONTHLY) {
+      const start = toDateOnly(quote.billingPeriodStart ?? new Date());
+      const end = toDateOnly(quote.billingPeriodEnd ?? new Date());
+      return {
+        frequency:
+          (quote.frequency as DeliveryFrequency | null) ??
+          DeliveryFrequency.DAILY,
+        quantityMode:
+          (quote.quantityMode as QuantityMode | null) ?? QuantityMode.FIXED,
+        quantity: quote.quantity,
+        quantityA: quote.quantityA,
+        quantityB: quote.quantityB,
+        start,
+        end,
+      };
+    }
+
+    // BUY_ONCE (1 delivery) and SEVEN_DAY_TRIAL (N daily deliveries) are both
+    // FIXED-quantity DAILY schedules starting today.
+    const start = toDateOnly(new Date());
+    const occurrences =
+      quote.planType === PlanType.SEVEN_DAY_TRIAL
+        ? Math.max(1, quote.deliveryOccurrences)
+        : 1;
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + (occurrences - 1));
+    return {
+      frequency: DeliveryFrequency.DAILY,
+      quantityMode: QuantityMode.FIXED,
+      quantity: quote.quantity,
+      quantityA: null,
+      quantityB: null,
+      start,
+      end,
+    };
+  }
 
   private async getActiveConfig(planType: PlanType) {
     return this.prisma.planConfig.findFirst({

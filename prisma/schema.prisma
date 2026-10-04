@@ -36,6 +36,7 @@ model User {
   addresses       CustomerAddress[]
   planQuotes      PlanQuote[]
   planSelections  PlanSelection[]
+  planDeliveries  PlanDelivery[]
 
   @@map("users")
 }
@@ -200,6 +201,13 @@ enum PlanSelectionStatus {
   CANCELLED
 }
 
+/// Lifecycle of a single scheduled delivery within a plan selection.
+enum DeliveryStatus {
+  SCHEDULED
+  SKIPPED
+  DELIVERED
+}
+
 /// Admin-configured plan definition and pricing. One row per PlanType.
 /// Prices and limits are data, never hardcoded in TypeScript.
 model PlanConfig {
@@ -275,14 +283,61 @@ model PlanSelection {
   quoteId     String
   planType    PlanType
   status      PlanSelectionStatus @default(CONFIRMED)
+
+  // ── Mutable delivery-schedule configuration (Manage Delivery) ──────────
+  // Seeded from the immutable quote snapshot at confirmation, then editable by
+  // the customer for FUTURE deliveries only. The quote stays immutable; this is
+  // the live schedule config.
+  frequency    DeliveryFrequency?
+  quantityMode QuantityMode?
+  quantity     Int?
+  quantityA    Int?
+  quantityB    Int?
+  /// First delivery date of the current schedule window (date-only).
+  startDate    DateTime?
+  /// Last delivery date of the current schedule window (date-only).
+  endDate      DateTime?
+
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
 
   user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   quote       PlanQuote           @relation(fields: [quoteId], references: [id])
+  deliveries  PlanDelivery[]
 
   @@index([userId])
   @@index([planType])
   @@index([userId, planType])
+  @@index([userId, status])
   @@map("plan_selections")
+}
+
+/// One concrete scheduled delivery within a PlanSelection. Persisting each
+/// delivery as its own row is what makes the Manage Delivery "future-only" rule
+/// enforceable: edits touch only rows whose date is in the future, leaving
+/// historical deliveries untouched. The (selectionId, deliveryDate) uniqueness
+/// gives database-level protection against duplicate / racing skip records.
+model PlanDelivery {
+  id             String         @id @default(uuid())
+  selectionId    String
+  /// Denormalised owner for cheap isolation-scoped queries.
+  userId         String
+  /// Date-only (no time component). The delivery day.
+  deliveryDate   DateTime       @db.Date
+  /// 1-based occurrence index within the current schedule window. Drives the
+  /// ALTERNATING pattern (odd -> A, even -> B) by occurrence, never by day.
+  occurrence     Int
+  quantityLitres Int
+  status         DeliveryStatus @default(SCHEDULED)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  selection      PlanSelection  @relation(fields: [selectionId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([selectionId, deliveryDate])
+  @@index([userId])
+  @@index([selectionId])
+  @@index([deliveryDate])
+  @@map("plan_deliveries")
 }

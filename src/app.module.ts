@@ -13,6 +13,7 @@ import { AddressModule } from './modules/address/address.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PlansModule } from './modules/plans/plans.module';
+import { ManageDeliveryModule } from './modules/manage-delivery/manage-delivery.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { PlansModule } from './modules/plans/plans.module';
     WalletModule,
     PaymentsModule,
     PlansModule,
+    ManageDeliveryModule,
   ],
   controllers: [AppController],
   providers: [AppService],
