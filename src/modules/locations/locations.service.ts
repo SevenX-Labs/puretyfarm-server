@@ -1,13 +1,21 @@
 import {
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
 } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { GeoapifyService, ResolvedLocation } from "./geoapify/geoapify.service";
 import { ValkeyService } from "../../valkey/valkey.service";
+import { CreateStateDto } from "./dto/admin/create-state.dto";
+import { UpdateStateDto } from "./dto/admin/update-state.dto";
+import { CreateCityDto } from "./dto/admin/create-city.dto";
+import { UpdateCityDto } from "./dto/admin/update-city.dto";
+import { CreateAreaDto } from "./dto/admin/create-area.dto";
+import { UpdateAreaDto } from "./dto/admin/update-area.dto";
 
 export interface StateResponse {
   id: string;
@@ -61,6 +69,65 @@ export interface UnserviceableLocationResponse {
 export type DetectLocationResponse =
   | ServiceableLocationResponse
   | UnserviceableLocationResponse;
+
+// Admin-facing catalog shapes. Unlike the customer responses these expose the
+// isActive flag and timestamps so admins can manage the full catalog, but they
+// deliberately select only location fields (no unrelated DB columns).
+export interface AdminStateResponse {
+  id: string;
+  name: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AdminCityResponse {
+  id: string;
+  name: string;
+  stateId: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AdminAreaResponse {
+  id: string;
+  name: string;
+  cityId: string;
+  pincode: string | null;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Explicit column selections so admin responses never leak future, unrelated
+// columns that might be added to these models.
+const ADMIN_STATE_SELECT = {
+  id: true,
+  name: true,
+  isActive: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+const ADMIN_CITY_SELECT = {
+  id: true,
+  name: true,
+  stateId: true,
+  isActive: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+const ADMIN_AREA_SELECT = {
+  id: true,
+  name: true,
+  cityId: true,
+  pincode: true,
+  isActive: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 // Rate limit: at most 5 detect requests per rolling 60s window per customer.
 export const DETECT_RATE_LIMIT = 5;
@@ -352,5 +419,341 @@ export class LocationsService {
       orderBy: { name: "asc" },
       select: { id: true, name: true, cityId: true, pincode: true },
     });
+  }
+
+  // ==========================================================================
+  // ADMIN CATALOG MANAGEMENT
+  //
+  // These methods mutate the SAME State/City/Area catalog the customer readers
+  // and matchCatalog() above query. They add no new serviceability flag: the
+  // existing isActive columns are the single source of truth, so toggling
+  // isActive here immediately changes what customers can see and match.
+  // Deletes never cascade into customer data — they refuse (409) when dependent
+  // records exist.
+  // ==========================================================================
+
+  // ----- States -------------------------------------------------------------
+
+  /** Creates a state. The DTO has already trimmed the name. */
+  async createState(dto: CreateStateDto): Promise<AdminStateResponse> {
+    try {
+      return await this.prisma.state.create({
+        data: { name: dto.name },
+        select: ADMIN_STATE_SELECT,
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException("A state with this name already exists");
+      }
+      throw error;
+    }
+  }
+
+  /** Lists ALL states (active + inactive) for admin management. */
+  async getAdminStates(): Promise<AdminStateResponse[]> {
+    return this.prisma.state.findMany({
+      orderBy: { name: "asc" },
+      select: ADMIN_STATE_SELECT,
+    });
+  }
+
+  /** Renames and/or enables/disables a state. 404 if it does not exist. */
+  async updateState(
+    stateId: string,
+    dto: UpdateStateDto,
+  ): Promise<AdminStateResponse> {
+    await this.getStateOr404(stateId);
+
+    const data: Prisma.StateUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name;
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    try {
+      return await this.prisma.state.update({
+        where: { id: stateId },
+        data,
+        select: ADMIN_STATE_SELECT,
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException("A state with this name already exists");
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes a state ONLY when nothing depends on it. A state with cities, or
+   * referenced by any customer address, cannot be hard-deleted (that would
+   * either cascade into the catalog subtree or orphan saved addresses); the
+   * caller is told to disable it instead.
+   */
+  async deleteState(stateId: string): Promise<{ id: string; deleted: true }> {
+    await this.getStateOr404(stateId);
+
+    const cityCount = await this.prisma.city.count({ where: { stateId } });
+    if (cityCount > 0) {
+      throw new ConflictException(
+        "State has dependent cities and cannot be deleted. Disable it instead.",
+      );
+    }
+
+    const addressCount = await this.prisma.customerAddress.count({
+      where: { stateId },
+    });
+    if (addressCount > 0) {
+      throw new ConflictException(
+        "State is referenced by customer addresses and cannot be deleted. Disable it instead.",
+      );
+    }
+
+    await this.prisma.state.delete({ where: { id: stateId } });
+    return { id: stateId, deleted: true };
+  }
+
+  // ----- Cities -------------------------------------------------------------
+
+  /**
+   * Creates a city under an existing state. The parent state must be active —
+   * a city cannot be introduced under a disabled state.
+   */
+  async createCity(dto: CreateCityDto): Promise<AdminCityResponse> {
+    const state = await this.prisma.state.findUnique({
+      where: { id: dto.stateId },
+      select: { id: true, isActive: true },
+    });
+    if (!state) {
+      throw new NotFoundException("State not found");
+    }
+    if (!state.isActive) {
+      throw new ConflictException(
+        "Cannot create a city under an inactive state",
+      );
+    }
+
+    try {
+      return await this.prisma.city.create({
+        data: { name: dto.name, stateId: dto.stateId },
+        select: ADMIN_CITY_SELECT,
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          "A city with this name already exists in this state",
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Lists ALL cities (active + inactive) under a state for admin management.
+   * 404 if the state does not exist.
+   */
+  async getAdminCities(stateId: string): Promise<AdminCityResponse[]> {
+    await this.getStateOr404(stateId);
+
+    return this.prisma.city.findMany({
+      where: { stateId },
+      orderBy: { name: "asc" },
+      select: ADMIN_CITY_SELECT,
+    });
+  }
+
+  /** Renames and/or enables/disables a city. 404 if it does not exist. */
+  async updateCity(
+    cityId: string,
+    dto: UpdateCityDto,
+  ): Promise<AdminCityResponse> {
+    await this.getCityOr404(cityId);
+
+    const data: Prisma.CityUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name;
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    try {
+      return await this.prisma.city.update({
+        where: { id: cityId },
+        data,
+        select: ADMIN_CITY_SELECT,
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          "A city with this name already exists in this state",
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes a city ONLY when nothing depends on it. A city with areas, or
+   * referenced by any customer address, cannot be hard-deleted.
+   */
+  async deleteCity(cityId: string): Promise<{ id: string; deleted: true }> {
+    await this.getCityOr404(cityId);
+
+    const areaCount = await this.prisma.area.count({ where: { cityId } });
+    if (areaCount > 0) {
+      throw new ConflictException(
+        "City has dependent areas and cannot be deleted. Disable it instead.",
+      );
+    }
+
+    const addressCount = await this.prisma.customerAddress.count({
+      where: { cityId },
+    });
+    if (addressCount > 0) {
+      throw new ConflictException(
+        "City is referenced by customer addresses and cannot be deleted. Disable it instead.",
+      );
+    }
+
+    await this.prisma.city.delete({ where: { id: cityId } });
+    return { id: cityId, deleted: true };
+  }
+
+  // ----- Areas --------------------------------------------------------------
+
+  /**
+   * Creates an area under an existing city. The parent city must be active.
+   */
+  async createArea(dto: CreateAreaDto): Promise<AdminAreaResponse> {
+    const city = await this.prisma.city.findUnique({
+      where: { id: dto.cityId },
+      select: { id: true, isActive: true },
+    });
+    if (!city) {
+      throw new NotFoundException("City not found");
+    }
+    if (!city.isActive) {
+      throw new ConflictException("Cannot create an area under an inactive city");
+    }
+
+    try {
+      return await this.prisma.area.create({
+        data: { name: dto.name, cityId: dto.cityId, pincode: dto.pincode },
+        select: ADMIN_AREA_SELECT,
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          "An area with this name already exists in this city",
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Lists ALL areas (active + inactive) under a city for admin management.
+   * 404 if the city does not exist.
+   */
+  async getAdminAreas(cityId: string): Promise<AdminAreaResponse[]> {
+    await this.getCityOr404(cityId);
+
+    return this.prisma.area.findMany({
+      where: { cityId },
+      orderBy: { name: "asc" },
+      select: ADMIN_AREA_SELECT,
+    });
+  }
+
+  /**
+   * Renames, repincodes, and/or enables/disables an area. 404 if it does not
+   * exist. Toggling isActive directly controls customer serviceability.
+   */
+  async updateArea(
+    areaId: string,
+    dto: UpdateAreaDto,
+  ): Promise<AdminAreaResponse> {
+    await this.getAreaOr404(areaId);
+
+    const data: Prisma.AreaUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name;
+    if (dto.pincode !== undefined) data.pincode = dto.pincode;
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    try {
+      return await this.prisma.area.update({
+        where: { id: areaId },
+        data,
+        select: ADMIN_AREA_SELECT,
+      });
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          "An area with this name already exists in this city",
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes an area ONLY when no customer address references it. Customer data
+   * is never cascade-deleted.
+   */
+  async deleteArea(areaId: string): Promise<{ id: string; deleted: true }> {
+    await this.getAreaOr404(areaId);
+
+    const addressCount = await this.prisma.customerAddress.count({
+      where: { areaId },
+    });
+    if (addressCount > 0) {
+      throw new ConflictException(
+        "Area is referenced by customer addresses and cannot be deleted. Disable it instead.",
+      );
+    }
+
+    await this.prisma.area.delete({ where: { id: areaId } });
+    return { id: areaId, deleted: true };
+  }
+
+  // ----- Shared admin helpers ----------------------------------------------
+
+  /** Loads a state or throws 404. */
+  private async getStateOr404(stateId: string): Promise<{ id: string }> {
+    const state = await this.prisma.state.findUnique({
+      where: { id: stateId },
+      select: { id: true },
+    });
+    if (!state) {
+      throw new NotFoundException("State not found");
+    }
+    return state;
+  }
+
+  /** Loads a city or throws 404. */
+  private async getCityOr404(cityId: string): Promise<{ id: string }> {
+    const city = await this.prisma.city.findUnique({
+      where: { id: cityId },
+      select: { id: true },
+    });
+    if (!city) {
+      throw new NotFoundException("City not found");
+    }
+    return city;
+  }
+
+  /** Loads an area or throws 404. */
+  private async getAreaOr404(areaId: string): Promise<{ id: string }> {
+    const area = await this.prisma.area.findUnique({
+      where: { id: areaId },
+      select: { id: true },
+    });
+    if (!area) {
+      throw new NotFoundException("Area not found");
+    }
+    return area;
+  }
+
+  /** True when the error is a Prisma unique-constraint (P2002) violation. */
+  private isUniqueViolation(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    );
   }
 }
