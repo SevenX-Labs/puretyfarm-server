@@ -12,6 +12,7 @@ import { LocationsModule } from './modules/locations/locations.module';
 import { AddressModule } from './modules/address/address.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { PlansModule } from './modules/plans/plans.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
     AddressModule,
     WalletModule,
     PaymentsModule,
+    PlansModule,
   ],
   controllers: [AppController],
   providers: [AppService],
