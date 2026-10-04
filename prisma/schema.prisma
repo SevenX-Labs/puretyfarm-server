@@ -34,6 +34,8 @@ model User {
   sessions        Session[]
   customerProfile CustomerProfile?
   addresses       CustomerAddress[]
+  planQuotes      PlanQuote[]
+  planSelections  PlanSelection[]
 
   @@map("users")
 }
@@ -160,4 +162,127 @@ model Session {
 
   @@index([userId])
   @@map("sessions")
+}
+
+// --------------------------------------------------------------------------
+// Plan Configuration & Pricing.
+// Admin-managed plan definitions with pricing. Customer APIs are read-only.
+// --------------------------------------------------------------------------
+
+enum PlanType {
+  BUY_ONCE
+  SEVEN_DAY_TRIAL
+  MONTHLY
+}
+
+enum DeliveryFrequency {
+  DAILY
+  ALTERNATE_DAYS
+}
+
+enum QuantityMode {
+  FIXED
+  ALTERNATING
+}
+
+enum PlanQuoteStatus {
+  PENDING
+  CONFIRMED
+  EXPIRED
+  CANCELLED
+}
+
+enum PlanSelectionStatus {
+  CONFIRMED
+  PENDING_PAYMENT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+/// Admin-configured plan definition and pricing. One row per PlanType.
+/// Prices and limits are data, never hardcoded in TypeScript.
+model PlanConfig {
+  id                    String   @id @default(uuid())
+  planType              PlanType @unique
+  isActive              Boolean  @default(true)
+  /// Actual MRP price per litre (shown as strikethrough).
+  actualPricePerLitre   Float
+  /// Selling (discounted) price per litre.
+  sellingPricePerLitre  Float
+  /// Minimum litres per order/delivery.
+  quantityMin           Int      @default(1)
+  /// Maximum litres per order/delivery.
+  quantityMax           Int      @default(5)
+  /// BUY_ONCE: max lifetime uses. Ignored for other plan types.
+  maxUsages             Int      @default(7)
+  /// SEVEN_DAY_TRIAL: number of delivery days. Ignored for other plan types.
+  trialDurationDays     Int      @default(7)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([planType])
+  @@map("plan_configs")
+}
+
+/// Immutable server-generated quote. Contains a snapshot of all calculation
+/// inputs so the price cannot be tampered with between quote and confirmation.
+model PlanQuote {
+  id                   String          @id @default(uuid())
+  userId               String
+  planType             PlanType
+  status               PlanQuoteStatus @default(PENDING)
+
+  // Quantity configuration
+  frequency            DeliveryFrequency?
+  quantityMode         QuantityMode?
+  /// For FIXED mode or BUY_ONCE/TRIAL single quantity.
+  quantity             Int?
+  /// For ALTERNATING mode.
+  quantityA            Int?
+  quantityB            Int?
+
+  // Calculation snapshots (immutable once created)
+  actualPricePerLitre  Float
+  sellingPricePerLitre Float
+  deliveryOccurrences  Int
+  totalLitres          Float
+  totalActualAmount    Float
+  totalSellingAmount   Float
+  discountAmount       Float
+
+  // Billing period (for monthly quotes)
+  billingPeriodStart   DateTime?
+  billingPeriodEnd     DateTime?
+
+  expiresAt            DateTime
+  createdAt            DateTime        @default(now())
+
+  user                 User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  selections           PlanSelection[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("plan_quotes")
+}
+
+/// Tracks customer plan selections/usage. This is the source of truth for
+/// eligibility calculations (trial used? buy-once count?).
+model PlanSelection {
+  id          String              @id @default(uuid())
+  userId      String
+  quoteId     String
+  planType    PlanType
+  status      PlanSelectionStatus @default(CONFIRMED)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quote       PlanQuote           @relation(fields: [quoteId], references: [id])
+
+  @@index([userId])
+  @@index([planType])
+  @@index([userId, planType])
+  @@map("plan_selections")
 }
