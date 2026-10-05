@@ -8,8 +8,11 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Inject,
+  forwardRef,
 } from "@nestjs/common";
 import { WalletService } from "./wallet.service";
+import { PaymentsService } from "../payments/payments.service";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -21,7 +24,12 @@ import { RejectCreditRequestDto } from "./dto/admin/reject-credit-request.dto";
 @UseGuards(JwtAuthGuard)
 @Roles("ADMIN")
 export class AdminWalletController {
-  constructor(private readonly walletService: WalletService) {}
+  constructor(
+    private readonly walletService: WalletService,
+    // forwardRef resolves the WalletModule <-> PaymentsModule cycle.
+    @Inject(forwardRef(() => PaymentsService))
+    private readonly paymentsService: PaymentsService,
+  ) {}
 
   @Get("credit-requests")
   @HttpCode(HttpStatus.OK)
@@ -51,7 +59,24 @@ export class AdminWalletController {
     @Param("id") id: string,
     @Body() dto: RejectCreditRequestDto,
   ) {
-    return this.walletService.rejectCreditRequest(id, admin.sub, dto);
+    // Reject the wallet credit request first — this is the authoritative
+    // decision and must succeed before any provider call. The wallet is NEVER
+    // credited on this path.
+    const rejection = await this.walletService.rejectCreditRequest(
+      id,
+      admin.sub,
+      dto,
+    );
+
+    // Then, as part of the same admin action, hand the request to the Payment
+    // module to start the PayU refund if there is a settled ONLINE payment
+    // behind it. The call no-ops for cash top-ups (no PayU payment exists) and
+    // for retried rejections (refund already in progress). The wallet reject
+    // outcome is NOT reversed if the refund request itself fails: the admin
+    // can retry via POST /admin/payments/credit-requests/:id/refund.
+    const refund = await this.paymentsService.initiateRefundIfApplicable(id);
+
+    return { ...rejection, refund };
   }
 
   @Get("customers/:userId")

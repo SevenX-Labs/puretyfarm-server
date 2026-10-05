@@ -28,7 +28,6 @@ export class WalletService {
   private readonly logger = new Logger(WalletService.name);
   private readonly minCreditPaise: number;
   private readonly maxCreditPaise: number;
-  private readonly autoApproveEnabled: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -44,9 +43,9 @@ export class WalletService {
         String(WALLET_CREDIT_MAX_PAISE_DEFAULT),
       10,
     );
-    this.autoApproveEnabled =
-      this.config.get<string>('WALLET_AUTO_CREDIT_ENABLED')?.toLowerCase() ===
-      'true';
+    // Auto-credit is per-wallet (`Wallet.autoCreditEnabled`); there is no
+    // longer a global on/off switch. The previous `WALLET_AUTO_CREDIT_ENABLED`
+    // env variable is intentionally not read here.
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -244,22 +243,32 @@ export class WalletService {
     });
   }
 
+  /**
+   * Decides whether a credit request on this wallet needs admin approval.
+   *
+   * The source of truth is the WALLET ROW's own `autoCreditEnabled` flag:
+   *   false -> admin approval required (this is the default, and the state of
+   *            every brand-new customer; also the state after a first
+   *            rejection, since the flag was never flipped)
+   *   true  -> may be auto-credited
+   *
+   * The flag is only set true as part of the transaction that completes the
+   * customer's first wallet credit (see `approveCreditRequestWithin`), so a
+   * `true` here always means that specific customer has previously completed
+   * at least one admin-reviewed or cash-confirmed credit.
+   *
+   * Customer A's setting cannot affect customer B — each wallet carries its
+   * own flag.
+   */
   private async requiresApproval(
     walletId: string,
     tx: Prisma.TransactionClient,
   ): Promise<boolean> {
-    if (!this.autoApproveEnabled) return true;
-
-    const hasCompletedCredit = await tx.walletTransaction.findFirst({
-      where: {
-        walletId,
-        type: WalletTransactionType.CREDIT,
-        referenceType: WalletTransactionReferenceType.CREDIT_REQUEST,
-      },
-      select: { id: true },
+    const wallet = await tx.wallet.findUnique({
+      where: { id: walletId },
+      select: { autoCreditEnabled: true },
     });
-
-    return !hasCompletedCredit;
+    return !wallet?.autoCreditEnabled;
   }
 
   private computeRequestHash(amountPaise: number): string {
@@ -410,6 +419,16 @@ export class WalletService {
       request!.id,
       description,
     );
+
+    // Enable this customer's auto-credit atomically with the credit itself.
+    // Conditional on the current false so the write is a no-op (and idempotent)
+    // for a wallet that is already enabled, which keeps the second+ credit
+    // path cheap. This is the ONLY place that flips the flag true, so cash
+    // confirmation benefits automatically — it routes through here.
+    await tx.wallet.updateMany({
+      where: { id: request!.walletId, autoCreditEnabled: false },
+      data: { autoCreditEnabled: true },
+    });
 
     return {
       success: true,
@@ -972,6 +991,13 @@ export class WalletService {
       request.id,
       'Wallet credit (auto-credited after verified payment)',
     );
+
+    // Defensive: the wallet is already enabled for this branch to run, but we
+    // keep the invariant that any completed credit guarantees the flag is set.
+    await tx.wallet.updateMany({
+      where: { id: request.walletId, autoCreditEnabled: false },
+      data: { autoCreditEnabled: true },
+    });
 
     return {
       credited: true,

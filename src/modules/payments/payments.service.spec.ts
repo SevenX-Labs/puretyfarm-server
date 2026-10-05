@@ -952,6 +952,91 @@ describe('PaymentsService', () => {
   //  REFUND
   // ══════════════════════════════════════════════════════════════════
 
+  describe('initiateRefundIfApplicable (admin-reject orchestration)', () => {
+    it('returns refundInitiated=true when there is a settled ONLINE payment', async () => {
+      provider.refundPayment.mockResolvedValue({
+        accepted: true,
+        providerRefundId: 'r-1',
+        message: null,
+      });
+      const cr = seedCreditRequest({
+        status: WalletCreditRequestStatus.REJECTED,
+      });
+      seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.SUCCESS,
+        providerPaymentId: 'PAYU1',
+      });
+
+      const result = await service.initiateRefundIfApplicable(cr.id);
+
+      expect(result.refundInitiated).toBe(true);
+      expect(provider.refundPayment).toHaveBeenCalledTimes(1);
+      expect(db.payments[0].status).toBe(
+        PaymentTransactionStatus.REFUND_PENDING,
+      );
+    });
+
+    it('returns refundInitiated=false for a cash credit request (no PayU payment)', async () => {
+      const cr = seedCreditRequest({
+        status: WalletCreditRequestStatus.REJECTED,
+        source: PaymentMethod.CASH,
+      });
+
+      const result = await service.initiateRefundIfApplicable(cr.id);
+
+      expect(result.refundInitiated).toBe(false);
+      expect(result.reason).toBe('NO_REFUNDABLE_PAYMENT');
+      expect(provider.refundPayment).not.toHaveBeenCalled();
+    });
+
+    it('returns refundInitiated=false (not throw) when a refund is already in progress', async () => {
+      provider.refundPayment.mockResolvedValue({
+        accepted: true,
+        providerRefundId: 'r-1',
+        message: null,
+      });
+      const cr = seedCreditRequest({
+        status: WalletCreditRequestStatus.REJECTED,
+      });
+      seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.SUCCESS,
+        providerPaymentId: 'PAYU1',
+      });
+
+      const first = await service.initiateRefundIfApplicable(cr.id);
+      const second = await service.initiateRefundIfApplicable(cr.id);
+
+      expect(first.refundInitiated).toBe(true);
+      expect(second.refundInitiated).toBe(false);
+      // On the second call the payment is already REFUND_PENDING, so the
+      // "no refundable SUCCESS payment" branch wins — same outcome: the
+      // provider is NOT called a second time.
+      expect([
+        'REFUND_ALREADY_IN_PROGRESS',
+        'NO_REFUNDABLE_PAYMENT',
+      ]).toContain(second.reason);
+      expect(provider.refundPayment).toHaveBeenCalledTimes(1);
+    });
+
+    it('rethrows a genuine provider failure (does not swallow silently)', async () => {
+      provider.refundPayment.mockRejectedValue(new Error('network down'));
+      const cr = seedCreditRequest({
+        status: WalletCreditRequestStatus.REJECTED,
+      });
+      seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.SUCCESS,
+        providerPaymentId: 'PAYU1',
+      });
+
+      await expect(service.initiateRefundIfApplicable(cr.id)).rejects.toThrow(
+        'network down',
+      );
+    });
+  });
+
   describe('refund', () => {
     const refunded = (transactionId: string) =>
       verification({

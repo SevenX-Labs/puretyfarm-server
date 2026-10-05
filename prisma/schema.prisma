@@ -586,6 +586,14 @@ model Wallet {
   id           String   @id @default(uuid())
   userId       String   @unique
   balancePaise Int      @default(0)
+  /// Whether this specific customer's wallet auto-credits a verified ONLINE
+  /// top-up without admin approval. Customer-specific, never global. Default
+  /// false so a brand-new customer's first credit always goes through admin
+  /// approval (or cash confirmation). Flipped to true, atomically, as part of
+  /// the transaction that completes that customer's first wallet credit — see
+  /// `WalletService.approveCreditRequestWithin`. Never set from a request
+  /// body; no customer endpoint exposes it.
+  autoCreditEnabled Boolean @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

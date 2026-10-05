@@ -930,6 +930,46 @@ export class PaymentsService {
    * refund request. The payment is moved to REFUND_PENDING only — it becomes
    * REFUNDED exclusively via a verified refund webhook.
    */
+  /**
+   * Fire-and-check variant of {@link initiateRefundForRejectedCreditRequest}
+   * intended for the admin-reject orchestration.
+   *
+   * Returns `{ refundInitiated: false }` instead of throwing in the two
+   * benign cases that come up on that path:
+   *   - the credit request is a CASH top-up (no PayU payment exists), or
+   *   - a previous reject already produced the refund request (idempotent
+   *     retries).
+   *
+   * All other failures still bubble up so a genuine problem is not swallowed.
+   */
+  async initiateRefundIfApplicable(
+    creditRequestId: string,
+  ): Promise<{ refundInitiated: boolean; reason?: string }> {
+    try {
+      const result =
+        await this.initiateRefundForRejectedCreditRequest(creditRequestId);
+      return { refundInitiated: !!result?.success };
+    } catch (error) {
+      // Benign: cash requests have no settled online Payment to refund, and a
+      // retried rejection may hit "already in progress".
+      if (error && typeof error === 'object' && 'response' in error) {
+        const code = ((error as { response: { error?: string } }).response
+          ?.error) as string | undefined;
+        if (
+          code === 'NO_REFUNDABLE_PAYMENT' ||
+          code === 'REFUND_ALREADY_IN_PROGRESS' ||
+          code === 'CREDIT_REQUEST_NOT_REJECTED'
+        ) {
+          this.logger.log(
+            `Refund skipped creditRequestId=${creditRequestId} reason=${code}`,
+          );
+          return { refundInitiated: false, reason: code };
+        }
+      }
+      throw error;
+    }
+  }
+
   async initiateRefundForRejectedCreditRequest(creditRequestId: string) {
     const creditRequest = await this.prisma.walletCreditRequest.findUnique({
       where: { id: creditRequestId },

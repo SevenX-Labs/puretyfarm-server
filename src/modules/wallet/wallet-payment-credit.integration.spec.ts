@@ -50,12 +50,32 @@ describe('WalletService — payment-backed credits', () => {
             id: WALLET_ID,
             userId: create.userId,
             balancePaise: 0,
+            autoCreditEnabled: false,
             createdAt: new Date(),
             updatedAt: new Date(),
           };
           db.wallets.push(row);
         }
         return { ...row };
+      },
+      updateMany: async ({ where, data }: any) => {
+        // Flag flip from WalletService.approveCreditRequestWithin and the
+        // auto-credit branch of settleAfterVerifiedPayment: conditional on
+        // the current value so a replay is a no-op.
+        const hits = db.wallets.filter((w) => {
+          if (w.id !== where.id) return false;
+          if (
+            where.autoCreditEnabled !== undefined &&
+            w.autoCreditEnabled !== where.autoCreditEnabled
+          ) {
+            return false;
+          }
+          return true;
+        });
+        hits.forEach((w) =>
+          Object.assign(w, data, { updatedAt: new Date() }),
+        );
+        return { count: hits.length };
       },
       findUnique: async ({ where }: any) => {
         const row = db.wallets.find(
@@ -161,11 +181,16 @@ describe('WalletService — payment-backed credits', () => {
     $transaction: async (cb: any) => cb(prisma),
   };
 
-  const makeService = (autoCredit: boolean) =>
+  /**
+   * Builds a WalletService over the stateful DB fake. There is no global
+   * auto-credit toggle any more — the per-wallet `autoCreditEnabled` field on
+   * the Wallet row is the source of truth. Each test either lets the wallet
+   * stay at its default (false) or completes a first credit so the flag flips.
+   */
+  const makeService = () =>
     new WalletService(prisma, {
       get: (key: string) =>
         ({
-          WALLET_AUTO_CREDIT_ENABLED: autoCredit ? 'true' : 'false',
           WALLET_CREDIT_MIN_PAISE: '100',
           WALLET_CREDIT_MAX_PAISE: '1000000',
         })[key],
@@ -202,47 +227,47 @@ describe('WalletService — payment-backed credits', () => {
 
   describe('createPaymentBackedCreditRequest', () => {
     it('always lands PENDING even with auto-credit enabled', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
       expect(request.status).toBe(WalletCreditRequestStatus.PENDING);
     });
 
     it('never credits the wallet at creation time', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await createRequest(service);
       expect(balance()).toBe(0);
       expect(db.transactions).toHaveLength(0);
     });
 
     it('tags the funding source', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service, 100_000, 'CASH');
       expect(request.source).toBe('CASH');
     });
 
     it('rejects an amount below the configured minimum', async () => {
-      const service = makeService(false);
+      const service = makeService();
       await expect(createRequest(service, 50)).rejects.toThrow(
         /between 100 and 1000000/,
       );
     });
 
     it('rejects an amount above the configured maximum', async () => {
-      const service = makeService(false);
+      const service = makeService();
       await expect(createRequest(service, 2_000_000)).rejects.toThrow(
         /between 100 and 1000000/,
       );
     });
 
     it('rejects a non-integer amount', async () => {
-      const service = makeService(false);
+      const service = makeService();
       await expect(createRequest(service, 1000.5)).rejects.toThrow(
         /integer number of paise/,
       );
     });
 
     it('replays the original request for the same idempotency key', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const first = await createRequest(service, 100_000, 'ONLINE', 'k1');
       const second = await createRequest(service, 100_000, 'ONLINE', 'k1');
 
@@ -252,7 +277,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('409s for the same key with a different amount', async () => {
-      const service = makeService(false);
+      const service = makeService();
       await createRequest(service, 100_000, 'ONLINE', 'k1');
       await expect(
         createRequest(service, 50_000, 'ONLINE', 'k1'),
@@ -260,7 +285,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('409s a second concurrent top-up while one is pending', async () => {
-      const service = makeService(false);
+      const service = makeService();
       await createRequest(service, 100_000, 'ONLINE', 'k1');
       await expect(
         createRequest(service, 50_000, 'ONLINE', 'k2'),
@@ -268,7 +293,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('takes the wallet lock before deciding', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const spy = jest.spyOn(prisma, '$queryRaw');
       await createRequest(service);
       const sql = spy.mock.calls.map((c) =>
@@ -285,7 +310,7 @@ describe('WalletService — payment-backed credits', () => {
 
   describe('first credit', () => {
     it('stays PENDING after a verified payment, even with auto-credit ON', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
 
       const settlement = await prisma.$transaction((tx: any) =>
@@ -298,7 +323,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('leaves the wallet balance untouched after a verified payment', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
       await prisma.$transaction((tx: any) =>
         service.settleAfterVerifiedPayment(tx, request.id),
@@ -308,7 +333,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('credits exactly once when the admin approves', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
       await prisma.$transaction((tx: any) =>
         service.settleAfterVerifiedPayment(tx, request.id),
@@ -325,7 +350,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('rejects a second approval and does not double-credit', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
       await service.approveCreditRequest(request.id, 'admin-1');
 
@@ -338,7 +363,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('concurrent approvals credit exactly once', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
 
       const results = await Promise.allSettled([
@@ -352,7 +377,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('404s settling an unknown credit request', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await expect(
         prisma.$transaction((tx: any) =>
           service.settleAfterVerifiedPayment(tx, 'nope'),
@@ -378,8 +403,8 @@ describe('WalletService — payment-backed credits', () => {
       return request;
     }
 
-    it('auto-credits when WALLET_AUTO_CREDIT_ENABLED is true', async () => {
-      const service = makeService(true);
+    it('auto-credits after the per-wallet flag has been set by a first completed credit', async () => {
+      const service = makeService();
       await completeFirstCredit(service);
 
       const { request } = await createRequest(
@@ -398,7 +423,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('increases the balance and appends exactly one ledger row', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await completeFirstCredit(service);
 
       const { request } = await createRequest(
@@ -417,7 +442,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('marks the request as auto-approved', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await completeFirstCredit(service);
       const { request } = await createRequest(
         service,
@@ -432,9 +457,14 @@ describe('WalletService — payment-backed credits', () => {
       expect(stored.autoApproved).toBe(true);
     });
 
-    it('still requires admin approval when auto-credit is OFF', async () => {
-      const service = makeService(false);
+    it('still requires admin approval when the per-wallet flag is manually disabled', async () => {
+      const service = makeService();
       await completeFirstCredit(service);
+
+      // Simulate an admin (or future admin API) turning this specific
+      // customer's auto-credit back off: subsequent credits must then route
+      // through admin approval again.
+      db.wallets[0].autoCreditEnabled = false;
 
       const { request } = await createRequest(
         service,
@@ -451,7 +481,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('a duplicate settlement cannot double-credit', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await completeFirstCredit(service);
       const { request } = await createRequest(
         service,
@@ -474,7 +504,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('stays correct across many repeated settlements', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await completeFirstCredit(service);
       const { request } = await createRequest(
         service,
@@ -493,7 +523,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('concurrent settlements credit exactly once', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await completeFirstCredit(service);
       const { request } = await createRequest(
         service,
@@ -517,7 +547,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('a zero balance does not make the customer a first-timer again', async () => {
-      const service = makeService(true);
+      const service = makeService();
       await completeFirstCredit(service);
       // Spend everything.
       await service.debitWallet(
@@ -548,7 +578,7 @@ describe('WalletService — payment-backed credits', () => {
 
   describe('cash credits', () => {
     it('credits on admin confirmation', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service, 100_000, 'CASH', 'cash');
 
       await prisma.$transaction((tx: any) =>
@@ -561,7 +591,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('records the confirming admin as the reviewer', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service, 100_000, 'CASH', 'cash');
       await prisma.$transaction((tx: any) =>
         service.creditConfirmedCashRequest(tx, request.id, 'admin-7'),
@@ -571,7 +601,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('is never auto-credited, even with auto-credit ON and a prior credit', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const first = await createRequest(service, 100_000, 'ONLINE', 'first');
       await service.approveCreditRequest(first.request.id, 'admin-1');
 
@@ -585,7 +615,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('rejects a duplicate confirmation and credits only once', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service, 100_000, 'CASH', 'cash');
 
       await prisma.$transaction((tx: any) =>
@@ -608,7 +638,7 @@ describe('WalletService — payment-backed credits', () => {
 
   describe('cancelCreditRequest', () => {
     it('moves a PENDING request to CANCELLED without crediting', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
 
       const cancelled = await prisma.$transaction((tx: any) =>
@@ -624,7 +654,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('releases the pending slot so the customer can retry', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service, 100_000, 'ONLINE', 'k1');
       await prisma.$transaction((tx: any) =>
         service.cancelCreditRequest(tx, request.id, 'payment failed'),
@@ -636,7 +666,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('carries no refund obligation (unlike REJECTED)', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service);
       await prisma.$transaction((tx: any) =>
         service.cancelCreditRequest(tx, request.id, 'expired'),
@@ -647,7 +677,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('cannot cancel an already COMPLETED request', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
       await service.approveCreditRequest(request.id, 'admin-1');
 
@@ -660,7 +690,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('is idempotent', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service);
       const first = await prisma.$transaction((tx: any) =>
         service.cancelCreditRequest(tx, request.id, 'failed'),
@@ -673,7 +703,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('a cancelled request can never be settled afterwards', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const first = await createRequest(service, 100_000, 'ONLINE', 'first');
       await service.approveCreditRequest(first.request.id, 'admin-1');
 
@@ -697,7 +727,7 @@ describe('WalletService — payment-backed credits', () => {
 
   describe('markRefundOutcome', () => {
     it('records a confirmed refund on the credit request', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service);
       await service.rejectCreditRequest(request.id, 'admin-1', {
         note: 'suspicious',
@@ -717,7 +747,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('a rejection never credits the wallet', async () => {
-      const service = makeService(false);
+      const service = makeService();
       const { request } = await createRequest(service);
       await service.rejectCreditRequest(request.id, 'admin-1', {
         note: 'suspicious',
@@ -733,7 +763,7 @@ describe('WalletService — payment-backed credits', () => {
 
   describe('ledger integrity', () => {
     it('the unique (type, referenceType, referenceId) index blocks a replayed credit', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service);
       await service.approveCreditRequest(request.id, 'admin-1');
 
@@ -754,7 +784,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('every credit records a running balance consistent with the wallet', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const first = await createRequest(service, 100_000, 'ONLINE', 'first');
       await service.approveCreditRequest(first.request.id, 'admin-1');
       const second = await createRequest(service, 50_000, 'ONLINE', 'second');
@@ -768,7 +798,7 @@ describe('WalletService — payment-backed credits', () => {
     });
 
     it('all amounts stay integer paise', async () => {
-      const service = makeService(true);
+      const service = makeService();
       const { request } = await createRequest(service, 100_001);
       await service.approveCreditRequest(request.id, 'admin-1');
 

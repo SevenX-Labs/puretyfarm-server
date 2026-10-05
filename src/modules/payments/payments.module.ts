@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { PaymentsController } from './payments.controller';
 import { AdminPaymentsController } from './admin-payments.controller';
@@ -25,7 +25,7 @@ import { WalletModule } from '../wallet/wallet.module';
  * adding a provider class and changing this one binding.
  */
 @Module({
-  imports: [PrismaModule, AuthModule, WalletModule],
+  imports: [PrismaModule, AuthModule, forwardRef(() => WalletModule)],
   controllers: [
     PaymentsController,
     AdminPaymentsController,

@@ -8,6 +8,7 @@ jest.mock("@nestjs/jwt", () => ({
 import { Test, TestingModule } from "@nestjs/testing";
 import { AdminWalletController } from "./admin-wallet.controller";
 import { WalletService } from "./wallet.service";
+import { PaymentsService } from "../payments/payments.service";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { ROLES_KEY } from "../../common/decorators/roles.decorator";
 import { validate } from "class-validator";
@@ -26,6 +27,14 @@ describe("AdminWalletController", () => {
     getAdminCustomerWallet: jest.fn().mockResolvedValue({}),
   };
 
+  // PaymentsService stub for the auto-refund orchestration the admin reject
+  // endpoint now triggers.
+  const mockPayments = {
+    initiateRefundIfApplicable: jest
+      .fn()
+      .mockResolvedValue({ refundInitiated: true }),
+  };
+
   const adminJwt = {
     sub: "admin-1",
     role: "ADMIN",
@@ -37,7 +46,10 @@ describe("AdminWalletController", () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AdminWalletController],
-      providers: [{ provide: WalletService, useValue: mockService }],
+      providers: [
+        { provide: WalletService, useValue: mockService },
+        { provide: PaymentsService, useValue: mockPayments },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({ canActivate: () => true })
@@ -82,11 +94,38 @@ describe("AdminWalletController", () => {
   });
 
   describe("rejectCreditRequest", () => {
-    it("uses admin.sub and passes note", async () => {
+    it("uses admin.sub and passes note, then triggers the PayU refund orchestration", async () => {
       await controller.rejectCreditRequest(adminJwt, "req-1", { note: "Bad request" });
-      expect(mockService.rejectCreditRequest).toHaveBeenCalledWith("req-1", "admin-1", {
-        note: "Bad request",
+
+      // Wallet reject is the authoritative decision — happens first.
+      expect(mockService.rejectCreditRequest).toHaveBeenCalledWith(
+        "req-1",
+        "admin-1",
+        { note: "Bad request" },
+      );
+
+      // The admin reject MUST then invoke the refund orchestration on the
+      // Payments module exactly once. The admin never has to issue a second
+      // call for the refund to begin.
+      expect(mockPayments.initiateRefundIfApplicable).toHaveBeenCalledTimes(1);
+      expect(mockPayments.initiateRefundIfApplicable).toHaveBeenCalledWith(
+        "req-1",
+      );
+    });
+
+    it("still succeeds for a cash reject (refund orchestration is a no-op)", async () => {
+      mockPayments.initiateRefundIfApplicable.mockResolvedValueOnce({
+        refundInitiated: false,
+        reason: "NO_REFUNDABLE_PAYMENT",
       });
+
+      const result = await controller.rejectCreditRequest(adminJwt, "cash-req", {
+        note: "Cash not received",
+      });
+
+      expect(result.refund.refundInitiated).toBe(false);
+      expect(result.refund.reason).toBe("NO_REFUNDABLE_PAYMENT");
+      expect(mockService.rejectCreditRequest).toHaveBeenCalledTimes(1);
     });
   });
 

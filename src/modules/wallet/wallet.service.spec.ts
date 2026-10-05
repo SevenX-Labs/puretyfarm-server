@@ -2,7 +2,8 @@ jest.mock("@nestjs/config", () => ({
   ConfigService: jest.fn().mockImplementation(() => ({
     get: jest.fn((key: string) => {
       const map: Record<string, string> = {
-        WALLET_AUTO_CREDIT_ENABLED: "false",
+        // WALLET_AUTO_CREDIT_ENABLED is intentionally absent — auto-credit is
+        // per-wallet (`Wallet.autoCreditEnabled`), not an env flag.
         WALLET_CREDIT_MIN_PAISE: "100",
         WALLET_CREDIT_MAX_PAISE: "1000000",
       };
@@ -32,6 +33,7 @@ function makeMockPrisma() {
     wallet: {
       upsert: jest.fn(),
       findUnique: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     walletCreditRequest: {
       findUnique: jest.fn(),
@@ -104,7 +106,12 @@ describe("WalletService", () => {
     beforeEach(() => {
       tx = makeMockPrisma();
       prisma.$transaction.mockImplementation((cb: any) => cb(tx));
-      tx.wallet.upsert.mockResolvedValue(wallet);
+      tx.wallet.upsert.mockResolvedValue({ ...wallet, autoCreditEnabled: false });
+      // `requiresApproval` reads the wallet row's flag.
+      tx.wallet.findUnique.mockResolvedValue({
+        ...wallet,
+        autoCreditEnabled: false,
+      });
       tx.$queryRaw.mockResolvedValue([]);
     });
 
@@ -201,7 +208,7 @@ describe("WalletService", () => {
             useValue: {
               get: (key: string) => {
                 const map: Record<string, string> = {
-                  WALLET_AUTO_CREDIT_ENABLED: "true",
+                  // No global auto-credit flag; the wallet row decides.
                   WALLET_CREDIT_MIN_PAISE: "100",
                   WALLET_CREDIT_MAX_PAISE: "1000000",
                 };
@@ -214,13 +221,34 @@ describe("WalletService", () => {
       serviceAutoOn = module.get(WalletService);
       tx = makeMockPrisma();
       prismaAutoOn.$transaction.mockImplementation((cb: any) => cb(tx));
-      tx.wallet.upsert.mockResolvedValue({ id: "w-1", userId: "u-1", balancePaise: 0 });
+      tx.wallet.upsert.mockResolvedValue({
+        id: "w-1",
+        userId: "u-1",
+        balancePaise: 0,
+        autoCreditEnabled: true,
+      });
+      // `requiresApproval` reads the wallet row's flag.
+      tx.wallet.findUnique.mockResolvedValue({
+        id: "w-1",
+        userId: "u-1",
+        balancePaise: 0,
+        autoCreditEnabled: true,
+      });
       tx.$queryRaw.mockResolvedValue([]);
     });
 
-    it("first request still needs approval even with auto ON", async () => {
+    it("first request still needs approval when the wallet flag is false", async () => {
+      // Override to a FRESH wallet (autoCreditEnabled=false). Even inside this
+      // 'returning customer' describe block, a wallet that has not yet
+      // completed a credit still requires admin approval.
+      tx.wallet.findUnique.mockResolvedValue({
+        id: "w-1",
+        userId: "u-1",
+        balancePaise: 0,
+        autoCreditEnabled: false,
+      });
       tx.walletCreditRequest.findUnique.mockResolvedValue(null);
-      tx.walletTransaction.findFirst.mockResolvedValue(null); // no completed credits
+      tx.walletTransaction.findFirst.mockResolvedValue(null);
       tx.walletCreditRequest.findFirst.mockResolvedValue(null);
       tx.walletCreditRequest.create.mockResolvedValue({
         id: "req-1",
