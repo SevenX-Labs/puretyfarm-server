@@ -50,6 +50,40 @@ export function validateEnv(
   requireNonEmpty('GEOAPIFY_API_KEY');
   requireNonEmpty('GEOAPIFY_BASE_URL');
 
+  // PayU merchant credentials. Required so a misconfigured deployment fails at
+  // boot rather than when a customer tries to pay. PAYU_SALT is the signing
+  // secret: it is read here only to assert presence, and is never logged,
+  // persisted, or returned in any API response.
+  requireNonEmpty('PAYU_KEY');
+  requireNonEmpty('PAYU_SALT');
+
+  // Public base URL of THIS API. Used to build the PayU `surl`/`furl` callback
+  // URLs server-side so a client can never redirect a payment result anywhere
+  // of its choosing.
+  const apiBaseUrl = requireNonEmpty('PUBLIC_API_BASE_URL');
+
+  // Frontend page the customer's browser is redirected to after PayU posts the
+  // result back. Must be absolute so the 302 cannot be turned into an open
+  // redirect by a relative path.
+  const resultRedirectUrl = requireNonEmpty('PAYMENT_RESULT_REDIRECT_URL');
+
+  const requireAbsoluteHttpUrl = (key: string, value: string): void => {
+    if (!value) return;
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      errors.push(`${key} must be an absolute URL`);
+      return;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      errors.push(`${key} must use http or https`);
+    }
+  };
+
+  requireAbsoluteHttpUrl('PUBLIC_API_BASE_URL', apiBaseUrl);
+  requireAbsoluteHttpUrl('PAYMENT_RESULT_REDIRECT_URL', resultRedirectUrl);
+
   if (errors.length > 0) {
     throw new Error(
       `Invalid environment configuration:\n- ${errors.join('\n- ')}`,

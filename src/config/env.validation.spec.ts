@@ -8,6 +8,10 @@ describe('validateEnv', () => {
     VALKEY_URL: 'rediss://localhost:6379',
     GEOAPIFY_API_KEY: 'test-geoapify-key',
     GEOAPIFY_BASE_URL: 'https://api.geoapify.com',
+    PAYU_KEY: 'test-payu-key',
+    PAYU_SALT: 'test-payu-salt',
+    PUBLIC_API_BASE_URL: 'https://api.example.com',
+    PAYMENT_RESULT_REDIRECT_URL: 'https://app.example.com/payment/result',
   };
 
   it('accepts a complete, valid configuration', () => {
@@ -37,5 +41,56 @@ describe('validateEnv', () => {
   it('throws when DATABASE_URL or VALKEY_URL is missing', () => {
     const { VALKEY_URL, ...rest } = base;
     expect(() => validateEnv(rest)).toThrow(/VALKEY_URL is required/);
+  });
+
+  // ── PayU / payment configuration ──────────────────────────────────
+
+  it('throws when PAYU_KEY is missing', () => {
+    const { PAYU_KEY, ...rest } = base;
+    expect(() => validateEnv(rest)).toThrow(/PAYU_KEY is required/);
+  });
+
+  it('throws when PAYU_SALT is missing', () => {
+    const { PAYU_SALT, ...rest } = base;
+    expect(() => validateEnv(rest)).toThrow(/PAYU_SALT is required/);
+  });
+
+  it('throws when PUBLIC_API_BASE_URL is missing', () => {
+    const { PUBLIC_API_BASE_URL, ...rest } = base;
+    expect(() => validateEnv(rest)).toThrow(/PUBLIC_API_BASE_URL is required/);
+  });
+
+  it('throws when PAYMENT_RESULT_REDIRECT_URL is missing', () => {
+    const { PAYMENT_RESULT_REDIRECT_URL, ...rest } = base;
+    expect(() => validateEnv(rest)).toThrow(
+      /PAYMENT_RESULT_REDIRECT_URL is required/,
+    );
+  });
+
+  it('rejects a non-absolute PUBLIC_API_BASE_URL', () => {
+    expect(() =>
+      validateEnv({ ...base, PUBLIC_API_BASE_URL: '/api/v1' }),
+    ).toThrow(/PUBLIC_API_BASE_URL must be an absolute URL/);
+  });
+
+  it('rejects a non-http scheme for the payment redirect', () => {
+    expect(() =>
+      validateEnv({
+        ...base,
+        PAYMENT_RESULT_REDIRECT_URL: 'javascript:alert(1)',
+      }),
+    ).toThrow(/PAYMENT_RESULT_REDIRECT_URL must use http or https/);
+  });
+
+  it('does not echo secret values in the error message', () => {
+    const { PAYU_SALT, ...rest } = base;
+    try {
+      validateEnv({ ...rest, PAYU_KEY: 'super-secret-key-value' });
+      throw new Error('expected validateEnv to throw');
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toMatch(/PAYU_SALT is required/);
+      expect(message).not.toContain('super-secret-key-value');
+    }
   });
 });

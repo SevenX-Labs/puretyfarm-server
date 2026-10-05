@@ -40,6 +40,8 @@ model User {
   changeRequests  ManageDeliveryChangeRequest[]
   orders          Order[]
   wallet          Wallet?
+  payments        Payment[]
+  cashCollections CashCollection[]
 
   @@map("users")
 }
@@ -181,6 +183,7 @@ model Admin {
   sessions       Session[]
   changeReviews       ManageDeliveryChangeRequest[]
   walletCreditReviews WalletCreditRequest[]
+  cashConfirmations   CashCollection[]
 
   @@index([email])
   @@index([isActive])
@@ -495,6 +498,7 @@ model Order {
   reorders      Order[]        @relation("Reorder")
   items         OrderItem[]
   invoice       Invoice?
+  payments      Payment[]
 
   @@index([userId])
   @@index([userId, status])
@@ -553,6 +557,12 @@ enum WalletCreditRequestStatus {
   PENDING
   COMPLETED
   REJECTED
+  /// Terminal state for a credit request whose funding never arrived (PayU
+  /// payment failed / was cancelled / expired, or a cash collection was
+  /// cancelled). Distinct from REJECTED, which is an admin decision on money
+  /// that WAS received and therefore implies a refund obligation. CANCELLED
+  /// releases the one-PENDING-per-wallet slot without any refund semantics.
+  CANCELLED
 }
 
 enum WalletRefundStatus {
@@ -593,6 +603,9 @@ model WalletCreditRequest {
   status              WalletCreditRequestStatus  @default(PENDING)
   refundStatus        WalletRefundStatus         @default(NOT_REQUIRED)
   autoApproved        Boolean                    @default(false)
+  /// How this credit request is funded. Null for requests created directly
+  /// through the Wallet API before the Payment module existed.
+  source              PaymentMethod?
   idempotencyKey      String
   requestHash         String
   reviewedByAdminId   String?
@@ -605,6 +618,8 @@ model WalletCreditRequest {
   wallet              Wallet                     @relation(fields: [walletId], references: [id], onDelete: Cascade)
   reviewedByAdmin     Admin?                     @relation(fields: [reviewedByAdminId], references: [id])
   transaction         WalletTransaction?
+  payments            Payment[]
+  cashCollection      CashCollection?
 
   @@unique([walletId, idempotencyKey])
   @@index([walletId, createdAt])
@@ -630,4 +645,145 @@ model WalletTransaction {
   @@unique([type, referenceType, referenceId])
   @@index([walletId, createdAt])
   @@map("wallet_transactions")
+}
+
+// --------------------------------------------------------------------------
+// Payments, PayU Transactions & Cash Collection.
+//
+// Responsibility split (do not blur these):
+//   Payment        — verifies and records MONEY MOVEMENT.
+//   CashCollection — records PHYSICAL CASH confirmation.
+//   Wallet*        — owns WALLET BALANCE and the WALLET LEDGER.
+//
+// A Payment never mutates a wallet balance directly. It gates a
+// WalletCreditRequest, and WalletService performs the only balance change.
+// --------------------------------------------------------------------------
+
+/// Payment gateway / provider. Named `PaymentProviderType` rather than
+/// `PaymentProvider` so it does not collide with the `IPaymentProvider`
+/// TypeScript abstraction in the payments module.
+enum PaymentProviderType {
+  PAYU
+}
+
+/// What the money is for. ORDER is modelled now so order checkout can be
+/// added later without a migration; only WALLET_TOPUP is wired up today.
+enum PaymentPurpose {
+  ORDER
+  WALLET_TOPUP
+}
+
+/// Lifecycle of a single payment attempt.
+///
+/// NOTE: the pre-existing `PaymentStatus` enum belongs to `Order.paymentStatus`
+/// and has entirely different values. It is deliberately left untouched.
+enum PaymentTransactionStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+  EXPIRED
+  REFUND_PENDING
+  REFUNDED
+}
+
+/// How the money reaches PuretyFarm.
+enum PaymentMethod {
+  ONLINE
+  CASH
+}
+
+enum CashCollectionStatus {
+  PENDING
+  COLLECTED
+  CONFIRMED
+  CANCELLED
+}
+
+/// One payment attempt against one provider. `transactionId` is the
+/// server-generated merchant reference sent to PayU as `txnid`; it is globally
+/// unique and is never supplied by a client.
+model Payment {
+  id                    String                   @id @default(uuid())
+  userId                String
+  /// Set when purpose = ORDER. Null for wallet top-ups.
+  orderId               String?
+  /// The credit request this payment funds. NOT uniquely constrained in Prisma:
+  /// a retry after a failed attempt is a second Payment row for the same
+  /// request. A partial unique index (see migration
+  /// `add_payment_retry_support`) still guarantees at most ONE payment per
+  /// credit request in a live or settled status, so a request can never be
+  /// funded twice.
+  walletCreditRequestId String?
+  provider              PaymentProviderType
+  purpose               PaymentPurpose
+  paymentMethod         PaymentMethod            @default(ONLINE)
+  /// Merchant transaction id (PayU `txnid`). Server-generated, immutable.
+  transactionId         String                   @unique
+  /// Provider-side id (PayU `mihpayid`). Only known after a callback/webhook.
+  providerPaymentId     String?
+  /// INTEGER PAISE. The authoritative amount; the client can never change it.
+  amountPaise           Int
+  currency              String                   @default("INR")
+  status                PaymentTransactionStatus @default(PENDING)
+  failureCode           String?
+  failureMessage        String?
+  /// Sanitised provider payload snapshot. Hashes and secrets are stripped
+  /// before storage; PAYU_SALT is never written here.
+  providerResponse      Json?
+  /// Client-supplied Idempotency-Key header, scoped per user.
+  idempotencyKey        String
+  /// Fingerprint of the creation parameters. A replay with the same key but a
+  /// different fingerprint is a 409, never a silent new payment.
+  requestHash           String
+  /// After this instant an unpaid payment may be swept to EXPIRED.
+  expiresAt             DateTime?
+  completedAt           DateTime?
+  /// Provider refund reference (PayU `request_id` / refund mihpayid).
+  providerRefundId      String?
+  refundedAt            DateTime?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order               Order?               @relation(fields: [orderId], references: [id])
+  walletCreditRequest WalletCreditRequest? @relation(fields: [walletCreditRequestId], references: [id])
+
+  @@unique([userId, idempotencyKey])
+  @@index([walletCreditRequestId])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([purpose, status])
+  @@index([orderId])
+  @@map("payments")
+}
+
+/// A physical cash top-up. The CONFIRMED transition by an admin is the
+/// operational gate that proves the money actually arrived; only then is the
+/// linked WalletCreditRequest allowed to credit the wallet.
+model CashCollection {
+  id                    String               @id @default(uuid())
+  userId                String
+  /// One cash collection per credit request.
+  walletCreditRequestId String               @unique
+  /// INTEGER PAISE. Mirrors the credit request amount.
+  amountPaise           Int
+  status                CashCollectionStatus @default(PENDING)
+  /// When the delivery partner reported collecting the cash.
+  collectedAt           DateTime?
+  /// When an admin confirmed the cash was handed over and banked.
+  confirmedAt           DateTime?
+  confirmedByAdminId    String?
+  adminNote             String?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletCreditRequest WalletCreditRequest @relation(fields: [walletCreditRequestId], references: [id], onDelete: Cascade)
+  confirmedByAdmin    Admin?              @relation(fields: [confirmedByAdminId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("cash_collections")
 }

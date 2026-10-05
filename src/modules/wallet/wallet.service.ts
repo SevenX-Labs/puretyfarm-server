@@ -4,10 +4,10 @@ import {
   NotFoundException,
   ConflictException,
   Logger,
-} from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { PrismaService } from "../../prisma/prisma.service";
-import { Prisma } from "@prisma/client";
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import {
   WalletCreditRequestStatus,
   WalletRefundStatus,
@@ -16,12 +16,12 @@ import {
   WALLET_CREDIT_MIN_PAISE_DEFAULT,
   WALLET_CREDIT_MAX_PAISE_DEFAULT,
   WALLET_MAX_BALANCE_PAISE,
-} from "./wallet.constants";
-import { CreateCreditRequestDto } from "./dto/customer/create-credit-request.dto";
-import { ListTransactionsQueryDto } from "./dto/customer/list-transactions-query.dto";
-import { ListCreditRequestsQueryDto } from "./dto/customer/list-credit-requests-query.dto";
-import { AdminListCreditRequestsQueryDto } from "./dto/admin/list-credit-requests-query.dto";
-import { RejectCreditRequestDto } from "./dto/admin/reject-credit-request.dto";
+} from './wallet.constants';
+import { CreateCreditRequestDto } from './dto/customer/create-credit-request.dto';
+import { ListTransactionsQueryDto } from './dto/customer/list-transactions-query.dto';
+import { ListCreditRequestsQueryDto } from './dto/customer/list-credit-requests-query.dto';
+import { AdminListCreditRequestsQueryDto } from './dto/admin/list-credit-requests-query.dto';
+import { RejectCreditRequestDto } from './dto/admin/reject-credit-request.dto';
 
 @Injectable()
 export class WalletService {
@@ -35,15 +35,18 @@ export class WalletService {
     private readonly config: ConfigService,
   ) {
     this.minCreditPaise = parseInt(
-      this.config.get<string>("WALLET_CREDIT_MIN_PAISE") || String(WALLET_CREDIT_MIN_PAISE_DEFAULT),
+      this.config.get<string>('WALLET_CREDIT_MIN_PAISE') ||
+        String(WALLET_CREDIT_MIN_PAISE_DEFAULT),
       10,
     );
     this.maxCreditPaise = parseInt(
-      this.config.get<string>("WALLET_CREDIT_MAX_PAISE") || String(WALLET_CREDIT_MAX_PAISE_DEFAULT),
+      this.config.get<string>('WALLET_CREDIT_MAX_PAISE') ||
+        String(WALLET_CREDIT_MAX_PAISE_DEFAULT),
       10,
     );
     this.autoApproveEnabled =
-      this.config.get<string>("WALLET_AUTO_CREDIT_ENABLED")?.toLowerCase() === "true";
+      this.config.get<string>('WALLET_AUTO_CREDIT_ENABLED')?.toLowerCase() ===
+      'true';
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -73,8 +76,8 @@ export class WalletService {
 
     if (result.length === 0) {
       throw new BadRequestException({
-        error: "INSUFFICIENT_WALLET_BALANCE",
-        message: "Insufficient wallet balance",
+        error: 'INSUFFICIENT_WALLET_BALANCE',
+        message: 'Insufficient wallet balance',
       });
     }
 
@@ -82,8 +85,8 @@ export class WalletService {
 
     if (balanceAfterPaise > WALLET_MAX_BALANCE_PAISE) {
       throw new BadRequestException({
-        error: "INVALID_CREDIT_AMOUNT",
-        message: "Credit would exceed maximum wallet balance",
+        error: 'INVALID_CREDIT_AMOUNT',
+        message: 'Credit would exceed maximum wallet balance',
       });
     }
 
@@ -107,7 +110,10 @@ export class WalletService {
   //  CUSTOMER — GET WALLET (lazy create)
   // ══════════════════════════════════════════════════════════════════
 
-  private async getOrCreateWallet(userId: string, tx?: Prisma.TransactionClient) {
+  private async getOrCreateWallet(
+    userId: string,
+    tx?: Prisma.TransactionClient,
+  ) {
     const client = tx || this.prisma;
     return client.wallet.upsert({
       where: { userId },
@@ -120,7 +126,7 @@ export class WalletService {
     const wallet = await this.getOrCreateWallet(userId);
     return {
       balancePaise: wallet.balancePaise,
-      currency: "INR",
+      currency: 'INR',
       createdAt: wallet.createdAt,
       updatedAt: wallet.updatedAt,
     };
@@ -137,9 +143,12 @@ export class WalletService {
   ) {
     const amountPaise = dto.amount;
 
-    if (amountPaise < this.minCreditPaise || amountPaise > this.maxCreditPaise) {
+    if (
+      amountPaise < this.minCreditPaise ||
+      amountPaise > this.maxCreditPaise
+    ) {
       throw new BadRequestException({
-        error: "INVALID_CREDIT_AMOUNT",
+        error: 'INVALID_CREDIT_AMOUNT',
         message: `Amount must be between ${this.minCreditPaise} and ${this.maxCreditPaise} paise`,
       });
     }
@@ -154,15 +163,18 @@ export class WalletService {
 
       // Idempotency check
       const existing = await tx.walletCreditRequest.findUnique({
-        where: { walletId_idempotencyKey: { walletId: wallet.id, idempotencyKey } },
+        where: {
+          walletId_idempotencyKey: { walletId: wallet.id, idempotencyKey },
+        },
         include: { transaction: true },
       });
 
       if (existing) {
         if (existing.requestHash !== requestHash) {
           throw new ConflictException({
-            error: "IDEMPOTENCY_KEY_REUSED",
-            message: "Idempotency key has already been used with different parameters",
+            error: 'IDEMPOTENCY_KEY_REUSED',
+            message:
+              'Idempotency key has already been used with different parameters',
           });
         }
         return this.formatCreditRequestResponse(existing, true);
@@ -173,12 +185,15 @@ export class WalletService {
       if (requiresApproval) {
         // Check for existing PENDING request (also enforced by partial unique index)
         const pendingExists = await tx.walletCreditRequest.findFirst({
-          where: { walletId: wallet.id, status: WalletCreditRequestStatus.PENDING },
+          where: {
+            walletId: wallet.id,
+            status: WalletCreditRequestStatus.PENDING,
+          },
         });
         if (pendingExists) {
           throw new ConflictException({
-            error: "WALLET_PENDING_REQUEST_EXISTS",
-            message: "A credit request is already pending approval",
+            error: 'WALLET_PENDING_REQUEST_EXISTS',
+            message: 'A credit request is already pending approval',
           });
         }
 
@@ -217,7 +232,7 @@ export class WalletService {
         WalletTransactionReferenceType.CREDIT_REQUEST,
         request.id,
         request.id,
-        "Wallet credit (auto-approved)",
+        'Wallet credit (auto-approved)',
       );
 
       const updated = await tx.walletCreditRequest.findUnique({
@@ -276,7 +291,7 @@ export class WalletService {
     const [transactions, total] = await Promise.all([
       this.prisma.walletTransaction.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -314,7 +329,7 @@ export class WalletService {
     const [requests, total] = await Promise.all([
       this.prisma.walletCreditRequest.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -332,61 +347,79 @@ export class WalletService {
   // ══════════════════════════════════════════════════════════════════
 
   async approveCreditRequest(requestId: string, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
-      const now = new Date();
+    return this.prisma.$transaction(async (tx) =>
+      this.approveCreditRequestWithin(tx, requestId, adminId),
+    );
+  }
 
-      // Atomic conditional update: PENDING -> COMPLETED
-      const updated = await tx.walletCreditRequest.updateMany({
-        where: { id: requestId, status: WalletCreditRequestStatus.PENDING },
-        data: {
-          status: WalletCreditRequestStatus.COMPLETED,
-          reviewedByAdminId: adminId,
-          reviewedAt: now,
-          completedAt: now,
-        },
-      });
+  /**
+   * Transaction-scoped approval: atomic PENDING -> COMPLETED followed by the
+   * single balance-changing path. Extracted so a caller that already owns a
+   * transaction (the Payment module confirming physical cash) credits the
+   * wallet through exactly this code rather than reimplementing it.
+   *
+   * The conditional `updateMany` guarded on `status: PENDING` is what makes a
+   * second concurrent approval a no-op: it matches zero rows and throws.
+   */
+  private async approveCreditRequestWithin(
+    tx: Prisma.TransactionClient,
+    requestId: string,
+    adminId: string,
+    description = 'Wallet credit (admin-approved)',
+  ) {
+    const now = new Date();
 
-      if (updated.count === 0) {
-        const exists = await tx.walletCreditRequest.findUnique({
-          where: { id: requestId },
-        });
-        if (!exists) {
-          throw new NotFoundException({
-            error: "CREDIT_REQUEST_NOT_FOUND",
-            message: "Credit request not found",
-          });
-        }
-        throw new ConflictException({
-          error: "CREDIT_REQUEST_ALREADY_PROCESSED",
-          message: `Credit request has already been ${exists.status.toLowerCase()}`,
-        });
-      }
+    // Atomic conditional update: PENDING -> COMPLETED
+    const updated = await tx.walletCreditRequest.updateMany({
+      where: { id: requestId, status: WalletCreditRequestStatus.PENDING },
+      data: {
+        status: WalletCreditRequestStatus.COMPLETED,
+        reviewedByAdminId: adminId,
+        reviewedAt: now,
+        completedAt: now,
+      },
+    });
 
-      const request = await tx.walletCreditRequest.findUnique({
+    if (updated.count === 0) {
+      const exists = await tx.walletCreditRequest.findUnique({
         where: { id: requestId },
       });
+      if (!exists) {
+        throw new NotFoundException({
+          error: 'CREDIT_REQUEST_NOT_FOUND',
+          message: 'Credit request not found',
+        });
+      }
+      throw new ConflictException({
+        error: 'CREDIT_REQUEST_ALREADY_PROCESSED',
+        message: `Credit request has already been ${exists.status.toLowerCase()}`,
+      });
+    }
 
-      await this.applyBalanceChange(
-        tx,
-        request!.walletId,
-        WalletTransactionType.CREDIT,
-        request!.amountPaise,
-        WalletTransactionReferenceType.CREDIT_REQUEST,
-        request!.id,
-        request!.id,
-        "Wallet credit (admin-approved)",
-      );
-
-      return {
-        success: true,
-        message: "Credit request approved and wallet credited.",
-        request: {
-          id: request!.id,
-          status: WalletCreditRequestStatus.COMPLETED,
-          amountPaise: request!.amountPaise,
-        },
-      };
+    const request = await tx.walletCreditRequest.findUnique({
+      where: { id: requestId },
     });
+
+    await this.applyBalanceChange(
+      tx,
+      request!.walletId,
+      WalletTransactionType.CREDIT,
+      request!.amountPaise,
+      WalletTransactionReferenceType.CREDIT_REQUEST,
+      request!.id,
+      request!.id,
+      description,
+    );
+
+    return {
+      success: true,
+      message: 'Credit request approved and wallet credited.',
+      request: {
+        id: request!.id,
+        status: WalletCreditRequestStatus.COMPLETED,
+        amountPaise: request!.amountPaise,
+      },
+    };
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -418,19 +451,19 @@ export class WalletService {
         });
         if (!exists) {
           throw new NotFoundException({
-            error: "CREDIT_REQUEST_NOT_FOUND",
-            message: "Credit request not found",
+            error: 'CREDIT_REQUEST_NOT_FOUND',
+            message: 'Credit request not found',
           });
         }
         throw new ConflictException({
-          error: "CREDIT_REQUEST_ALREADY_PROCESSED",
+          error: 'CREDIT_REQUEST_ALREADY_PROCESSED',
           message: `Credit request has already been ${exists.status.toLowerCase()}`,
         });
       }
 
       return {
         success: true,
-        message: "Credit request rejected.",
+        message: 'Credit request rejected.',
         request: {
           id: requestId,
           status: WalletCreditRequestStatus.REJECTED,
@@ -464,13 +497,23 @@ export class WalletService {
       where.wallet = {
         user: {
           OR: [
-            { mobile: { contains: query.customerSearch, mode: "insensitive" } },
-            { email: { contains: query.customerSearch, mode: "insensitive" } },
+            { mobile: { contains: query.customerSearch, mode: 'insensitive' } },
+            { email: { contains: query.customerSearch, mode: 'insensitive' } },
             {
               customerProfile: {
                 OR: [
-                  { firstName: { contains: query.customerSearch, mode: "insensitive" } },
-                  { lastName: { contains: query.customerSearch, mode: "insensitive" } },
+                  {
+                    firstName: {
+                      contains: query.customerSearch,
+                      mode: 'insensitive',
+                    },
+                  },
+                  {
+                    lastName: {
+                      contains: query.customerSearch,
+                      mode: 'insensitive',
+                    },
+                  },
                 ],
               },
             },
@@ -482,7 +525,7 @@ export class WalletService {
     const [requests, total] = await Promise.all([
       this.prisma.walletCreditRequest.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
         include: {
@@ -493,7 +536,9 @@ export class WalletService {
                   id: true,
                   mobile: true,
                   email: true,
-                  customerProfile: { select: { firstName: true, lastName: true } },
+                  customerProfile: {
+                    select: { firstName: true, lastName: true },
+                  },
                 },
               },
             },
@@ -551,7 +596,9 @@ export class WalletService {
                 id: true,
                 mobile: true,
                 email: true,
-                customerProfile: { select: { firstName: true, lastName: true } },
+                customerProfile: {
+                  select: { firstName: true, lastName: true },
+                },
               },
             },
           },
@@ -562,8 +609,8 @@ export class WalletService {
 
     if (!request) {
       throw new NotFoundException({
-        error: "CREDIT_REQUEST_NOT_FOUND",
-        message: "Credit request not found",
+        error: 'CREDIT_REQUEST_NOT_FOUND',
+        message: 'Credit request not found',
       });
     }
 
@@ -617,14 +664,14 @@ export class WalletService {
           },
         },
         transactions: {
-          orderBy: { createdAt: "desc" },
+          orderBy: { createdAt: 'desc' },
           take: 10,
         },
       },
     });
 
     if (!wallet) {
-      throw new NotFoundException("Customer wallet not found");
+      throw new NotFoundException('Customer wallet not found');
     }
 
     const [totalCredits, totalDebits] = await Promise.all([
@@ -684,8 +731,8 @@ export class WalletService {
   ) {
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new BadRequestException({
-        error: "INVALID_CREDIT_AMOUNT",
-        message: "Debit amount must be a positive integer",
+        error: 'INVALID_CREDIT_AMOUNT',
+        message: 'Debit amount must be a positive integer',
       });
     }
 
@@ -693,8 +740,8 @@ export class WalletService {
       const wallet = await tx.wallet.findUnique({ where: { userId } });
       if (!wallet) {
         throw new BadRequestException({
-          error: "INSUFFICIENT_WALLET_BALANCE",
-          message: "Wallet not found",
+          error: 'INSUFFICIENT_WALLET_BALANCE',
+          message: 'Wallet not found',
         });
       }
 
@@ -718,6 +765,290 @@ export class WalletService {
   }
 
   // ══════════════════════════════════════════════════════════════════
+  //  PAYMENT-BACKED CREDIT REQUESTS (consumed by the Payment module)
+  //
+  //  These exist because `createCreditRequest` above credits immediately when
+  //  the customer is not a first-timer. That is correct for a direct wallet
+  //  request, but it would credit money that PayU has not yet collected. The
+  //  methods below split creation from settlement so a credit request can sit
+  //  PENDING until the Payment module has VERIFIED the money arrived.
+  //
+  //  Every one of them takes the caller's transaction client: the Payment
+  //  module updates the payment row and settles the wallet in one atomic unit.
+  //  The wallet remains the only component that touches a balance or writes a
+  //  ledger row — all of these funnel into `applyBalanceChange`.
+  // ══════════════════════════════════════════════════════════════════
+
+  /**
+   * Validates a top-up amount against the wallet's configured bounds. Exposed
+   * so the Payment module enforces the same limits without duplicating them.
+   */
+  validateCreditAmount(amountPaise: number): void {
+    if (!Number.isInteger(amountPaise)) {
+      throw new BadRequestException({
+        error: 'INVALID_CREDIT_AMOUNT',
+        message: 'Amount must be an integer number of paise',
+      });
+    }
+    if (
+      amountPaise < this.minCreditPaise ||
+      amountPaise > this.maxCreditPaise
+    ) {
+      throw new BadRequestException({
+        error: 'INVALID_CREDIT_AMOUNT',
+        message: `Amount must be between ${this.minCreditPaise} and ${this.maxCreditPaise} paise`,
+      });
+    }
+  }
+
+  /**
+   * Creates a credit request that is funded by an external payment.
+   *
+   * ALWAYS lands in PENDING and NEVER credits the wallet, regardless of
+   * WALLET_AUTO_CREDIT_ENABLED or whether the customer has credited before.
+   * Settlement happens only via {@link settleAfterVerifiedPayment} (online,
+   * after hash-verified success) or {@link creditConfirmedCashRequest} (cash,
+   * after an admin confirms the physical money).
+   *
+   * Idempotency and the one-PENDING-per-wallet rule reuse the existing
+   * constraints: `(walletId, idempotencyKey)` unique plus the partial unique
+   * index on PENDING rows.
+   */
+  async createPaymentBackedCreditRequest(
+    tx: Prisma.TransactionClient,
+    params: {
+      userId: string;
+      amountPaise: number;
+      source: 'ONLINE' | 'CASH';
+      idempotencyKey: string;
+    },
+  ) {
+    this.validateCreditAmount(params.amountPaise);
+
+    const wallet = await this.getOrCreateWallet(params.userId, tx);
+
+    // Serialise concurrent top-up attempts for this wallet so the pending
+    // check below cannot be read-then-raced by a second request.
+    await tx.$queryRaw`SELECT 1 FROM "wallets" WHERE "id" = ${wallet.id} FOR UPDATE`;
+
+    const requestHash = this.computeRequestHash(params.amountPaise);
+
+    const existing = await tx.walletCreditRequest.findUnique({
+      where: {
+        walletId_idempotencyKey: {
+          walletId: wallet.id,
+          idempotencyKey: params.idempotencyKey,
+        },
+      },
+    });
+
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw new ConflictException({
+          error: 'IDEMPOTENCY_KEY_REUSED',
+          message:
+            'Idempotency key has already been used with different parameters',
+        });
+      }
+      return { request: existing, walletId: wallet.id, replayed: true };
+    }
+
+    const pendingExists = await tx.walletCreditRequest.findFirst({
+      where: { walletId: wallet.id, status: WalletCreditRequestStatus.PENDING },
+      select: { id: true },
+    });
+    if (pendingExists) {
+      throw new ConflictException({
+        error: 'WALLET_PENDING_REQUEST_EXISTS',
+        message: 'A credit request is already pending for this wallet',
+      });
+    }
+
+    const request = await tx.walletCreditRequest.create({
+      data: {
+        walletId: wallet.id,
+        amountPaise: params.amountPaise,
+        status: WalletCreditRequestStatus.PENDING,
+        autoApproved: false,
+        source: params.source,
+        idempotencyKey: params.idempotencyKey,
+        requestHash,
+      },
+    });
+
+    return { request, walletId: wallet.id, replayed: false };
+  }
+
+  /**
+   * Settles a credit request whose ONLINE payment has been verified.
+   *
+   * Applies the existing, unchanged first-credit rule via `requiresApproval`:
+   * the first ever credit — and every credit while WALLET_AUTO_CREDIT_ENABLED
+   * is off — stays PENDING for an admin. Only a genuinely subsequent credit
+   * with auto-credit enabled is credited here, through the same atomic
+   * conditional update and the same ledger path as an admin approval.
+   *
+   * Safe to call twice: the second call finds no PENDING row and reports
+   * `credited: false` rather than crediting again.
+   */
+  async settleAfterVerifiedPayment(
+    tx: Prisma.TransactionClient,
+    creditRequestId: string,
+  ): Promise<{
+    credited: boolean;
+    requiresAdminApproval: boolean;
+    status: WalletCreditRequestStatus;
+    balanceAfterPaise: number | null;
+    transactionId: string | null;
+  }> {
+    const request = await tx.walletCreditRequest.findUnique({
+      where: { id: creditRequestId },
+    });
+
+    if (!request) {
+      throw new NotFoundException({
+        error: 'CREDIT_REQUEST_NOT_FOUND',
+        message: 'Credit request not found',
+      });
+    }
+
+    // Already settled or closed by a previous (possibly concurrent) call.
+    if (request.status !== WalletCreditRequestStatus.PENDING) {
+      return {
+        credited: false,
+        requiresAdminApproval: false,
+        status: request.status as WalletCreditRequestStatus,
+        balanceAfterPaise: null,
+        transactionId: null,
+      };
+    }
+
+    const requiresApproval = await this.requiresApproval(request.walletId, tx);
+
+    if (requiresApproval) {
+      // First credit, or auto-credit disabled: the money is collected but the
+      // wallet stays untouched until an admin approves. This is the point at
+      // which "Payment Successful" and "Wallet Credited" are different events.
+      return {
+        credited: false,
+        requiresAdminApproval: true,
+        status: WalletCreditRequestStatus.PENDING,
+        balanceAfterPaise: null,
+        transactionId: null,
+      };
+    }
+
+    const now = new Date();
+    const updated = await tx.walletCreditRequest.updateMany({
+      where: {
+        id: creditRequestId,
+        status: WalletCreditRequestStatus.PENDING,
+      },
+      data: {
+        status: WalletCreditRequestStatus.COMPLETED,
+        autoApproved: true,
+        completedAt: now,
+      },
+    });
+
+    // Lost the race to a concurrent callback/webhook. The winner credited.
+    if (updated.count === 0) {
+      return {
+        credited: false,
+        requiresAdminApproval: false,
+        status: WalletCreditRequestStatus.COMPLETED,
+        balanceAfterPaise: null,
+        transactionId: null,
+      };
+    }
+
+    const result = await this.applyBalanceChange(
+      tx,
+      request.walletId,
+      WalletTransactionType.CREDIT,
+      request.amountPaise,
+      WalletTransactionReferenceType.CREDIT_REQUEST,
+      request.id,
+      request.id,
+      'Wallet credit (auto-credited after verified payment)',
+    );
+
+    return {
+      credited: true,
+      requiresAdminApproval: false,
+      status: WalletCreditRequestStatus.COMPLETED,
+      balanceAfterPaise: result.balanceAfterPaise,
+      transactionId: result.transactionId,
+    };
+  }
+
+  /**
+   * Credits a credit request whose PHYSICAL CASH an admin has just confirmed.
+   *
+   * Cash is never auto-credited: the admin confirmation IS the approval, so
+   * this routes straight through the shared approval path. The first-credit
+   * rule is satisfied by the same human gate.
+   */
+  async creditConfirmedCashRequest(
+    tx: Prisma.TransactionClient,
+    creditRequestId: string,
+    adminId: string,
+  ) {
+    return this.approveCreditRequestWithin(
+      tx,
+      creditRequestId,
+      adminId,
+      'Wallet credit (cash collection confirmed)',
+    );
+  }
+
+  /**
+   * Closes a credit request whose funding never arrived: a failed, cancelled
+   * or expired PayU payment, or a cancelled cash collection.
+   *
+   * CANCELLED — not REJECTED — because REJECTED means an admin refused money
+   * that WAS received and therefore implies a refund obligation. CANCELLED
+   * carries no refund semantics and releases the one-PENDING-per-wallet slot
+   * so the customer can try again.
+   *
+   * Idempotent: a second call matches no PENDING row and returns false.
+   */
+  async cancelCreditRequest(
+    tx: Prisma.TransactionClient,
+    creditRequestId: string,
+    reason: string,
+  ): Promise<boolean> {
+    const updated = await tx.walletCreditRequest.updateMany({
+      where: {
+        id: creditRequestId,
+        status: WalletCreditRequestStatus.PENDING,
+      },
+      data: {
+        status: WalletCreditRequestStatus.CANCELLED,
+        adminNote: reason,
+        reviewedAt: new Date(),
+      },
+    });
+    return updated.count > 0;
+  }
+
+  /**
+   * Marks the wallet-side refund outcome for a rejected credit request. Called
+   * by the Payment module once PayU has CONFIRMED the refund — never
+   * optimistically when the refund is merely requested.
+   */
+  async markRefundOutcome(
+    tx: Prisma.TransactionClient,
+    creditRequestId: string,
+    refundStatus: WalletRefundStatus,
+  ): Promise<void> {
+    await tx.walletCreditRequest.updateMany({
+      where: { id: creditRequestId },
+      data: { refundStatus },
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
   //  FORMATTING HELPERS
   // ══════════════════════════════════════════════════════════════════
 
@@ -735,9 +1066,9 @@ export class WalletService {
     }
 
     if (request.status === WalletCreditRequestStatus.PENDING) {
-      base.message = "Credit request submitted for admin approval.";
+      base.message = 'Credit request submitted for admin approval.';
     } else if (request.status === WalletCreditRequestStatus.COMPLETED) {
-      base.message = "Wallet credited successfully.";
+      base.message = 'Wallet credited successfully.';
     }
 
     return base;
