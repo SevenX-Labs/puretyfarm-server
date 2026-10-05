@@ -44,6 +44,8 @@ Detailed endpoint specifications, DTOs, response schemas, and cURL examples are 
 - **[Admin Plans & Manage Delivery](./docs/admin/plans.md)** (`https://api-puretyfarm.onrender.com/api/v1/admin/plans` & `.../manage-delivery`)
   - Plan Pricing, Limits, Frequency & Quantity Mode Config (`/plans`)
   - Customer Delivery Change Requests (Pause, Resume, Skip, Change Qty) Review & Approvals (`/manage-delivery/requests`)
+- **[Admin Serviceability & Locations](./docs/admin/serviceability.md)** (`https://api-puretyfarm.onrender.com/api/v1/admin/locations`)
+  - State, City, and Serviceable Area / Pincode Hierarchy Management & Active Toggling (`/locations`)
 
 ---
 

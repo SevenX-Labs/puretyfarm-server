@@ -15,3 +15,4 @@ https://api-puretyfarm.onrender.com
 1. **[Admin Auth Documentation](./admin/auth.md)**: Dedicated admin login, session management, and password change.
 2. **[Admin Customer Management Documentation](./admin/customers.md)**: Admin customer queries, filtering, search, and detailed profile inspection.
 3. **[Admin Plans & Manage Delivery Documentation](./admin/plans.md)**: Plan pricing/configuration management, and customer delivery change request approval/rejection workflows.
+4. **[Admin Serviceability & Locations Documentation](./admin/serviceability.md)**: State, city, and serviceable area / pincode CRUD with active/inactive availability toggling.
