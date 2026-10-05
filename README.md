@@ -41,6 +41,9 @@ Detailed endpoint specifications, DTOs, response schemas, and cURL examples are 
 - **[Customer Management](./docs/admin/customers.md)** (`https://api-puretyfarm.onrender.com/api/v1/admin/customers`)
   - Paginated Customer Listing with Search & Filters (`/`)
   - Single Customer Detail View with Profiles, Subscriptions & Addresses (`/:id`)
+- **[Admin Plans & Manage Delivery](./docs/admin/plans.md)** (`https://api-puretyfarm.onrender.com/api/v1/admin/plans` & `.../manage-delivery`)
+  - Plan Pricing, Limits, Frequency & Quantity Mode Config (`/plans`)
+  - Customer Delivery Change Requests (Pause, Resume, Skip, Change Qty) Review & Approvals (`/manage-delivery/requests`)
 
 ---
 
@@ -67,6 +70,7 @@ JWT_REFRESH_SECRET="..."
 JWT_ADMIN_ACCESS_SECRET="..."
 JWT_ADMIN_REFRESH_SECRET="..."
 GEOAPIFY_API_KEY="..."
+CORS_ORIGIN="https://puretyfarm.in,http://localhost:3000"
 ```
 
 ### Database Setup & Migrations

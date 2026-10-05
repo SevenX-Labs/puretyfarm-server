@@ -14,3 +14,4 @@ https://api-puretyfarm.onrender.com
 ## Admin Modules
 1. **[Admin Auth Documentation](./admin/auth.md)**: Dedicated admin login, session management, and password change.
 2. **[Admin Customer Management Documentation](./admin/customers.md)**: Admin customer queries, filtering, search, and detailed profile inspection.
+3. **[Admin Plans & Manage Delivery Documentation](./admin/plans.md)**: Plan pricing/configuration management, and customer delivery change request approval/rejection workflows.
