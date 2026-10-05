@@ -19,6 +19,7 @@ import {
   PlanQuoteStatus,
   PlanSelectionStatus,
   QUOTE_EXPIRY_MINUTES,
+  TRIAL_DURATION_DAYS,
 } from "./plans.constants";
 
 describe("PlansService", () => {
@@ -881,6 +882,7 @@ describe("PlansService", () => {
           planQuote: mockPrisma.planQuote,
           planSelection: mockPrisma.planSelection,
           planDelivery: mockPrisma.planDelivery,
+          planConfig: mockPrisma.planConfig,
           $executeRaw: mockPrisma.$executeRaw,
         });
       });
@@ -1517,6 +1519,76 @@ describe("PlansService", () => {
         await expect(
           service.confirmPlan(USER, { quoteId: "quote-1" }),
         ).resolves.toMatchObject({ selectionId: "sel-1" });
+      });
+    });
+  });
+
+  // ── Issue #1: Trial duration uses constant, not DB ────────────────
+
+  describe("Trial customer logic uses TRIAL_DURATION_DAYS constant, not DB value", () => {
+    beforeEach(() => {
+      mockPrisma.planConfig.findFirst.mockImplementation(({ where }: any) => {
+        if (where.planType === PlanType.SEVEN_DAY_TRIAL) {
+          return { ...trialConfig, trialDurationDays: 10 };
+        }
+        return buyOnceConfig;
+      });
+    });
+
+    it("eligibility returns TRIAL_DURATION_DAYS (7) even when DB has 10", async () => {
+      const result = await service.getTrialEligibility(USER);
+      expect(result.trialDurationDays).toBe(TRIAL_DURATION_DAYS);
+      expect(result.trialDurationDays).toBe(7);
+    });
+
+    it("Trial quote produces exactly TRIAL_DURATION_DAYS delivery occurrences despite DB=10", async () => {
+      mockPrisma.planQuote.create.mockImplementation(({ data }: any) => ({
+        id: "q-trial",
+        ...data,
+      }));
+      const q = await service.createTrialQuote(USER, { quantityLitres: 2 });
+      expect(q.durationDays).toBe(TRIAL_DURATION_DAYS);
+      expect(q.deliveryOccurrences).toBe(TRIAL_DURATION_DAYS);
+      expect(q.deliveryOccurrences).toBe(7);
+    });
+  });
+
+  // ── Issue #2: confirmPlan uses transaction client for PlanConfig ───
+
+  describe("confirmPlan uses transaction client for PlanConfig lookups", () => {
+    const pendingBuyOnce = {
+      id: "quote-tx",
+      userId: USER,
+      planType: PlanType.BUY_ONCE,
+      status: PlanQuoteStatus.PENDING,
+      totalSellingAmount: 10000,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    };
+
+    it("calls tx.planConfig.findFirst, not this.prisma.planConfig.findFirst", async () => {
+      const txPlanConfig = {
+        findFirst: jest.fn().mockResolvedValue(buyOnceConfig),
+      };
+      mockPrisma.$transaction.mockImplementation(async (fn: any) =>
+        fn({
+          planQuote: mockPrisma.planQuote,
+          planSelection: mockPrisma.planSelection,
+          planDelivery: mockPrisma.planDelivery,
+          planConfig: txPlanConfig,
+          $executeRaw: mockPrisma.$executeRaw,
+        }),
+      );
+      mockPrisma.planQuote.findUnique.mockResolvedValue(pendingBuyOnce);
+      mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.planSelection.create.mockResolvedValue({
+        id: "sel-tx",
+        status: PlanSelectionStatus.CONFIRMED,
+      });
+
+      await service.confirmPlan(USER, { quoteId: "quote-tx" });
+
+      expect(txPlanConfig.findFirst).toHaveBeenCalledWith({
+        where: { planType: PlanType.BUY_ONCE, isActive: true },
       });
     });
   });

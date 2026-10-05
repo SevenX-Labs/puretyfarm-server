@@ -439,7 +439,7 @@ export class PlansService {
       return {
         eligible: false,
         used: false,
-        trialDurationDays: config.trialDurationDays,
+        trialDurationDays: TRIAL_DURATION_DAYS,
         maxQuantityLitres: config.quantityMax,
         blockedReason: "BUY_ONCE_ALREADY_USED",
       };
@@ -450,7 +450,7 @@ export class PlansService {
       return {
         eligible: false,
         used: true,
-        trialDurationDays: config.trialDurationDays,
+        trialDurationDays: TRIAL_DURATION_DAYS,
         maxQuantityLitres: config.quantityMax,
         blockedReason: "TRIAL_ALREADY_USED",
       };
@@ -459,7 +459,7 @@ export class PlansService {
     return {
       eligible: true,
       used: false,
-      trialDurationDays: config.trialDurationDays,
+      trialDurationDays: TRIAL_DURATION_DAYS,
       maxQuantityLitres: config.quantityMax,
     };
   }
@@ -478,7 +478,7 @@ export class PlansService {
     const config = await this.requireActiveConfig(PlanType.SEVEN_DAY_TRIAL);
     this.validateQuantityRange(dto.quantityLitres, config.quantityMin, config.quantityMax);
 
-    const deliveryOccurrences = config.trialDurationDays;
+    const deliveryOccurrences = TRIAL_DURATION_DAYS;
     const totalLitres = deliveryOccurrences * dto.quantityLitres;
     const totalActual = totalLitres * config.actualPricePerLitre;
     const totalSelling = totalLitres * config.sellingPricePerLitre;
@@ -509,7 +509,7 @@ export class PlansService {
       quoteId: quote.id,
       plan: PlanType.SEVEN_DAY_TRIAL,
       quantity: dto.quantityLitres,
-      durationDays: config.trialDurationDays,
+      durationDays: TRIAL_DURATION_DAYS,
       deliveryOccurrences,
       actualPricePerLitre: config.actualPricePerLitre,
       sellingPricePerLitre: config.sellingPricePerLitre,
@@ -696,7 +696,7 @@ export class PlansService {
 
       // A plan disabled by the admin after this quote was issued accepts no new
       // selections. Existing selections are untouched.
-      const activeConfig = await this.getActiveConfig(quote.planType as PlanType);
+      const activeConfig = await this.getActiveConfigTx(tx, quote.planType as PlanType);
       if (!activeConfig) {
         throw new ForbiddenException(
           `Plan ${quote.planType} is not currently available`,
@@ -718,7 +718,7 @@ export class PlansService {
           throw new ForbiddenException("Buy Once is no longer available");
         }
         const usageCount = await this.countUsagesTx(tx, userId, PlanType.BUY_ONCE);
-        const config = await this.getActiveConfig(PlanType.BUY_ONCE);
+        const config = await this.getActiveConfigTx(tx, PlanType.BUY_ONCE);
         if (!config || usageCount >= config.maxUsages) {
           throw new ForbiddenException("Buy Once maximum uses reached");
         }
@@ -996,6 +996,15 @@ export class PlansService {
 
   private async getActiveConfig(planType: PlanType) {
     return this.prisma.planConfig.findFirst({
+      where: { planType, isActive: true },
+    });
+  }
+
+  private async getActiveConfigTx(
+    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    planType: PlanType,
+  ) {
+    return (tx as any).planConfig.findFirst({
       where: { planType, isActive: true },
     });
   }
