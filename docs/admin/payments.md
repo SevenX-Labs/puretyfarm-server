@@ -1,162 +1,147 @@
 # Admin Payments & Cash Collection API
 
-## Overview
+Admin reference for the payment ledger, cash-collection reconciliation and
+manual PayU refund retry.
 
-Admin APIs for managing the financial lifecycle of PuretyFarm: inspecting the unified payment ledger, reconciling offline physical cash collections, and triggering gateway refunds for rejected wallet top-ups.
-
-### Architectural Separation
-- **Payment Verification Gate**: Online payment records (`Payment`) transition to `SUCCESS` **only** via cryptographically verified PayU callbacks/webhooks. Admins cannot manually force an online payment status.
-- **Physical Cash Gate**: Cash collections (`CashCollection`) do not interact with PayU. Admin confirmation is the operational trigger that authorizes [`WalletService`](file:///home/sahil-hode/Workspace/sevenx%20labs/purety%20farm/puretyfarm-server/src/modules/wallet/wallet.service.ts) to credit the wallet ledger.
-- **Wallet Ledger Ownership**: All balance increments and transaction logs are owned exclusively by [`WalletService`](file:///home/sahil-hode/Workspace/sevenx%20labs/purety%20farm/puretyfarm-server/src/modules/wallet/wallet.service.ts).
+> **Related docs:**
+> - `docs/admin/wallet.md` — admin approval/rejection; the rejection endpoint already auto-initiates the PayU refund
+> - `docs/customer/payments.md` — top-up creation, verification, PayU callbacks
+> - `docs/customer/wallet.md` — wallet balance / ledger / credit-request lifecycle
 
 ---
 
-## Authentication & Authorization
+## 1. Overview
 
-All endpoints in this document require an **Admin JWT**:
+Admins have three kinds of control over money:
+
+| Area | Where | Behaviour |
+|------|-------|-----------|
+| **Online payments** | this document (read-only) + wallet reject | Admins can only read online payment state. The payment becomes `SUCCESS` strictly through verified PayU communication — never through an admin action. |
+| **Cash collections** | this document | Admins confirm or cancel physical cash. Confirmation is the operational gate that credits the wallet. |
+| **Refunds** | wallet reject auto-initiates; this document exposes a manual retry | A rejected online credit request triggers a PayU refund automatically (see `docs/admin/wallet.md` §5). This document's refund endpoint exists for manual retry if the automatic call failed. |
+
+### Architectural separation (non-negotiable)
+
+- **Payment verification gate**: `Payment.status = SUCCESS` happens only via a
+  hash-verified PayU callback or webhook. No admin endpoint can set it.
+- **Physical cash gate**: cash credits land only after an admin confirms the
+  physical collection.
+- **Wallet ledger ownership**: `WalletService` is the only writer of
+  `Wallet.balancePaise` and `WalletTransaction`.
+
+### Authentication & authorization
+
 ```http
 Authorization: Bearer <ADMIN_ACCESS_TOKEN>
 ```
-- Protected with `@UseGuards(JwtAuthGuard)` and `@Roles('ADMIN')`.
-- Acting admin identity is always derived from `JWT.sub`. Request bodies never accept an `adminId`.
-- Customer tokens receive `403 Forbidden`. Missing or invalid tokens receive `401 Unauthorized`.
+
+Protected with `@UseGuards(JwtAuthGuard)` and `@Roles('ADMIN')`.
+
+- Admin identity for cash confirmation always comes from `JWT.sub` —
+  `adminId` is never read from the body.
+- Customer tokens → `403`. Missing/invalid tokens → `401`.
+
+### Money & route conventions
+
+- All amounts are **integer paise**.
+- No response contains `PAYU_SALT`, raw card data, provider tokens or private
+  keys. The stored `providerResponse` is sanitised before persistence.
+- Every route is served at both `/api/v1/admin/payments/...` and
+  `/admin/payments/...`.
 
 ---
 
-## Money & Data Conventions
+## 2. Endpoints at a glance
 
-- **Amounts in Paise**: All amounts (`amountPaise`) are integer paise (₹1 = `100`, ₹1,000 = `100000`).
-- **Security & Redaction**: Responses never contain `PAYU_SALT`, raw card data, tokens, or private gateway keys.
-- **Route Prefixes**: All routes support both prefixed `/api/v1/admin/payments` and non-prefixed `/admin/payments`.
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET`  | `/api/v1/admin/payments` | List payments with filters |
+| `GET`  | `/api/v1/admin/payments/:id` | Payment detail (sanitised provider payload) |
+| `GET`  | `/api/v1/admin/payments/cash-collections` | List cash collections |
+| `GET`  | `/api/v1/admin/payments/cash-collections/:id` | Cash collection detail |
+| `POST` | `/api/v1/admin/payments/cash-collections/:id/confirm` | Confirm cash + credit wallet |
+| `POST` | `/api/v1/admin/payments/cash-collections/:id/cancel` | Cancel cash (no wallet credit, no refund) |
+| `POST` | `/api/v1/admin/payments/credit-requests/:creditRequestId/refund` | Manual refund retry |
 
----
-
-## Endpoints Summary
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/v1/admin/payments` | List and filter all online payments |
-| `GET` | `/api/v1/admin/payments/:id` | Get details of a single payment by ID |
-| `GET` | `/api/v1/admin/payments/cash-collections` | List and filter cash collection requests |
-| `GET` | `/api/v1/admin/payments/cash-collections/:id` | Get single cash collection details |
-| `POST` | `/api/v1/admin/payments/cash-collections/:id/confirm` | Confirm physical cash receipt & credit wallet |
-| `POST` | `/api/v1/admin/payments/cash-collections/:id/cancel` | Cancel an uncollected cash top-up |
-| `POST` | `/api/v1/admin/payments/credit-requests/:creditRequestId/refund` | Trigger PayU gateway refund for rejected credit request |
+> **Deliberately absent**: no endpoint lets an admin set a payment's status,
+> approve a payment, mark one `SUCCESS`, or back-date a refund. These would
+> break the verification gate.
 
 ---
 
-## 1. List Payments
+## 3. `GET /api/v1/admin/payments` — list
 
-`GET /api/v1/admin/payments`
+**Query:**
 
-Retrieves a paginated list of all payments across the system.
+| Param | Type | Notes |
+|-------|------|-------|
+| `status` | `PaymentTransactionStatus` | `PENDING` \| `PROCESSING` \| `SUCCESS` \| `FAILED` \| `CANCELLED` \| `EXPIRED` \| `REFUND_PENDING` \| `REFUNDED` |
+| `purpose` | `ORDER` \| `WALLET_TOPUP` | |
+| `paymentMethod` | `ONLINE` \| `CASH` | |
+| `transactionId` | string ≤ 64 | Exact match on merchant txnid (e.g. `PFMH2K8A1B2C3D4E5F`) |
+| `customerSearch` | string ≤ 100 | Case-insensitive partial match on mobile / email / firstName / lastName |
+| `startDate` | `YYYY-MM-DD` | Inclusive on `createdAt` |
+| `endDate` | `YYYY-MM-DD` | Inclusive end date |
+| `page` | int ≥ 1 | default `1` |
+| `limit` | int 1–100 | default `20` |
 
-### Query Parameters
+**Response `200`:**
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `status` | string | No | Filter by `PaymentTransactionStatus`: `PENDING`, `PROCESSING`, `SUCCESS`, `FAILED`, `CANCELLED`, `EXPIRED`, `REFUND_PENDING`, `REFUNDED` |
-| `purpose` | string | No | Filter by `PaymentPurpose`: `ORDER`, `WALLET_TOPUP` |
-| `paymentMethod` | string | No | Filter by `PaymentMethod`: `ONLINE`, `CASH` |
-| `transactionId` | string | No | Search by merchant transaction ID (e.g., `PF...`) |
-| `customerSearch` | string | No | Search customer by mobile, email, or name |
-| `startDate` | string | No | Filter created date from (`YYYY-MM-DD`) |
-| `endDate` | string | No | Filter created date to (`YYYY-MM-DD`) |
-| `page` | integer | No | Page number (default: `1`, min: `1`) |
-| `limit` | integer | No | Items per page (default: `20`, min: `1`, max: `100`) |
-
-### Example Request
-```http
-GET /api/v1/admin/payments?status=SUCCESS&purpose=WALLET_TOPUP&page=1&limit=20
-Authorization: Bearer <ADMIN_JWT>
-```
-
-### Example Response (`200 OK`)
 ```json
 {
   "data": [
     {
-      "id": "a814c11b-756f-474c-a19c-112fb94ad076",
+      "id": "pay-...",
+      "transactionId": "PFMH2K8A1B2C3D4E5F",
+      "providerPaymentId": "403993715530182741",
+      "provider": "PAYU",
       "purpose": "WALLET_TOPUP",
       "paymentMethod": "ONLINE",
-      "provider": "PAYU",
-      "transactionId": "PFM8J1X091A2B3C4D5",
-      "providerPaymentId": "403993715530182741",
       "amountPaise": 100000,
       "currency": "INR",
       "status": "SUCCESS",
-      "createdAt": "2026-10-05T18:30:00.000Z",
-      "completedAt": "2026-10-05T18:31:00.000Z",
+      "failureCode": null,
+      "failureMessage": null,
+      "walletCreditRequestId": "wcr-...",
+      "orderId": null,
+      "expiresAt": "2026-10-06T00:30:00.000Z",
+      "completedAt": "2026-10-06T00:05:00.000Z",
       "refundedAt": null,
-      "providerRefundId": null,
+      "createdAt": "2026-10-06T00:00:00.000Z",
+      "updatedAt": "2026-10-06T00:05:00.000Z",
       "customer": {
-        "id": "usr-8812c3f1-0a12",
+        "id": "usr-...",
         "mobile": "+919876543210",
         "email": "customer@example.com",
         "name": "Rahul Sharma"
       }
     }
   ],
-  "pagination": {
-    "page": 1,
-    "limit": 20,
-    "total": 1,
-    "totalPages": 1
-  }
+  "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
 }
 ```
 
 ---
 
-## 2. Get Single Payment
+## 4. `GET /api/v1/admin/payments/:id` — detail
 
-`GET /api/v1/admin/payments/:id`
+**Response `200`:** every field from the list form, plus:
 
-Retrieves detailed information for a specific payment, including customer details, sanitized provider response payload, and linked wallet credit request.
-
-### URL Parameters
-- `id` (UUID, required): The internal payment ID.
-
-### Example Request
-```http
-GET /api/v1/admin/payments/a814c11b-756f-474c-a19c-112fb94ad076
-Authorization: Bearer <ADMIN_JWT>
-```
-
-### Example Response (`200 OK`)
 ```json
 {
-  "id": "a814c11b-756f-474c-a19c-112fb94ad076",
-  "purpose": "WALLET_TOPUP",
-  "paymentMethod": "ONLINE",
-  "provider": "PAYU",
-  "transactionId": "PFM8J1X091A2B3C4D5",
-  "providerPaymentId": "403993715530182741",
-  "amountPaise": 100000,
-  "currency": "INR",
-  "status": "SUCCESS",
-  "createdAt": "2026-10-05T18:30:00.000Z",
-  "completedAt": "2026-10-05T18:31:00.000Z",
-  "refundedAt": null,
-  "providerRefundId": null,
+  "...": "every field as above",
   "providerResponse": {
     "mode": "UPI",
     "bankcode": "UPI",
     "status": "success",
     "unmappedstatus": "captured"
   },
-  "customer": {
-    "id": "usr-8812c3f1-0a12",
-    "mobile": "+919876543210",
-    "email": "customer@example.com",
-    "name": "Rahul Sharma"
-  },
   "walletCredit": {
-    "id": "wcr-1092a3f0-4491",
+    "id": "wcr-...",
     "status": "PENDING",
     "amountPaise": 100000,
     "autoApproved": false,
-    "refundStatus": null,
+    "refundStatus": "NOT_REQUIRED",
     "adminNote": null,
     "completedAt": null,
     "transactionId": null
@@ -164,215 +149,215 @@ Authorization: Bearer <ADMIN_JWT>
 }
 ```
 
+Notes:
+- `providerResponse` is **always** sanitised: `hash`, `salt`, `key`, card
+  numbers, tokens are stripped before persistence; only primitive echo values
+  survive. `PAYU_SALT` is never written to the database.
+- `walletCredit.transactionId` is the id of the matching `WalletTransaction`
+  ledger row (not the PayU txnid); null when the credit has not been applied.
+
+**Errors:** `404 PAYMENT_NOT_FOUND`.
+
 ---
 
-## 3. List Cash Collections
+## 5. `GET /api/v1/admin/payments/cash-collections` — list
 
-`GET /api/v1/admin/payments/cash-collections`
+**Query:**
 
-Retrieves a paginated list of offline physical cash collection requests submitted by customers.
+| Param | Type | Notes |
+|-------|------|-------|
+| `status` | `PENDING` \| `COLLECTED` \| `CONFIRMED` \| `CANCELLED` | |
+| `customerSearch` | string ≤ 100 | Partial match on mobile / email / name |
+| `startDate` / `endDate` | `YYYY-MM-DD` | Inclusive on `createdAt` |
+| `page` | int ≥ 1 | default `1` |
+| `limit` | int 1–100 | default `20` |
 
-### Query Parameters
+**Response `200`:**
 
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `status` | string | No | Filter by status: `PENDING`, `COLLECTED`, `CONFIRMED`, `CANCELLED` |
-| `customerSearch` | string | No | Search customer by mobile, email, or name |
-| `startDate` | string | No | Filter created date from (`YYYY-MM-DD`) |
-| `endDate` | string | No | Filter created date to (`YYYY-MM-DD`) |
-| `page` | integer | No | Page number (default: `1`, min: `1`) |
-| `limit` | integer | No | Items per page (default: `20`, min: `1`, max: `100`) |
-
-### Example Response (`200 OK`)
 ```json
 {
   "data": [
     {
-      "id": "csh-9901e12a-3341",
+      "id": "csh-...",
       "amountPaise": 50000,
       "status": "PENDING",
-      "walletCreditRequestId": "wcr-5512b9a0-8811",
+      "walletCreditRequestId": "wcr-...",
       "collectedAt": null,
       "confirmedAt": null,
-      "createdAt": "2026-10-05T19:00:00.000Z",
+      "createdAt": "2026-10-06T19:00:00.000Z",
       "customer": {
-        "id": "usr-8812c3f1-0a12",
+        "id": "usr-...",
         "mobile": "+919876543210",
         "email": "customer@example.com",
         "name": "Rahul Sharma"
       }
     }
   ],
-  "pagination": {
-    "page": 1,
-    "limit": 20,
-    "total": 1,
-    "totalPages": 1
-  }
+  "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
 }
 ```
 
 ---
 
-## 4. Get Single Cash Collection
+## 6. `GET /api/v1/admin/payments/cash-collections/:id` — detail
 
-`GET /api/v1/admin/payments/cash-collections/:id`
+**Response `200`:**
 
-Retrieves details for a specific cash collection request.
-
-### Example Response (`200 OK`)
 ```json
 {
-  "id": "csh-9901e12a-3341",
+  "id": "csh-...",
   "amountPaise": 50000,
   "status": "CONFIRMED",
-  "collectedAt": "2026-10-05T19:20:00.000Z",
-  "confirmedAt": "2026-10-05T19:25:00.000Z",
-  "confirmedByAdminId": "adm-0012a99c",
+  "collectedAt": "2026-10-06T19:20:00.000Z",
+  "confirmedAt": "2026-10-06T19:25:00.000Z",
+  "confirmedByAdminId": "adm-...",
   "adminNote": "Cash handed over by delivery partner",
-  "createdAt": "2026-10-05T19:00:00.000Z",
-  "updatedAt": "2026-10-05T19:25:00.000Z",
+  "createdAt": "2026-10-06T19:00:00.000Z",
+  "updatedAt": "2026-10-06T19:25:00.000Z",
   "customer": {
-    "id": "usr-8812c3f1-0a12",
+    "id": "usr-...",
     "mobile": "+919876543210",
     "email": "customer@example.com",
     "name": "Rahul Sharma"
   },
   "walletCredit": {
-    "id": "wcr-5512b9a0-8811",
+    "id": "wcr-...",
     "status": "COMPLETED",
     "amountPaise": 50000,
-    "completedAt": "2026-10-05T19:25:00.000Z",
-    "transactionId": "txn-7712c00a"
+    "completedAt": "2026-10-06T19:25:00.000Z",
+    "transactionId": "txn-..."
   }
 }
 ```
 
+**Errors:** `404 CASH_COLLECTION_NOT_FOUND`.
+
 ---
 
-## 5. Confirm Cash Collection
+## 7. `POST /api/v1/admin/payments/cash-collections/:id/confirm`
 
-`POST /api/v1/admin/payments/cash-collections/:id/confirm`
+Confirms physical cash was received. **This is the only trigger that credits a
+cash wallet top-up.**
 
-Confirms that physical cash was received. This is the **authoritative trigger** that credits the customer's wallet.
+**Request body (all optional):**
 
-### Workflow & Invariants:
-1. Validates that `CashCollection` is in `PENDING` or `COLLECTED` status.
-2. Atomically updates status to `CONFIRMED`, setting `confirmedByAdminId = JWT.sub` and `confirmedAt = NOW()`.
-3. Invokes [`WalletService.creditConfirmedCashRequest()`](file:///home/sahil-hode/Workspace/sevenx%20labs/purety%20farm/puretyfarm-server/src/modules/wallet/wallet.service.ts#L992) within the same database transaction:
-   - Transitions `WalletCreditRequest` to `COMPLETED`.
-   - Increments customer's `Wallet.balancePaise`.
-   - Creates an immutable `WalletTransaction` with type `CREDIT` and referenceType `CREDIT_REQUEST`.
-4. **Idempotency**: Repeated confirmation calls return `409 Conflict` (`CASH_COLLECTION_ALREADY_PROCESSED`) and never double-credit.
-
-### Request Body
 ```json
-{
-  "note": "Cash received and reconciled from delivery partner"
-}
+{ "note": "Cash received and reconciled from delivery partner" }
 ```
 
-| Field | Type | Required | Rules |
-|---|---|---|---|
-| `note` | string | No | Optional reconciliation note (max 1000 characters) |
+| Field | Type | Rules |
+|-------|------|-------|
+| `note` | string | Optional; trimmed; max 1000 chars |
 
-### Example Response (`200 OK`)
+**Response `200`:**
+
 ```json
 {
   "success": true,
   "message": "Cash confirmed and wallet credited.",
   "cashCollection": {
-    "id": "csh-9901e12a-3341",
+    "id": "csh-...",
     "status": "CONFIRMED",
     "amountPaise": 50000,
-    "confirmedAt": "2026-10-05T19:25:00.000Z"
+    "confirmedAt": "2026-10-06T19:25:00.000Z"
   },
   "walletCredit": {
-    "id": "wcr-5512b9a0-8811",
+    "id": "wcr-...",
     "status": "COMPLETED",
     "amountPaise": 50000
   }
 }
 ```
 
+**Side effects (atomic, single DB transaction):**
+
+1. `CashCollection.status`: `PENDING | COLLECTED → CONFIRMED` with
+   `confirmedByAdminId = JWT.sub`, `confirmedAt = NOW()`, `collectedAt = NOW()`.
+2. `WalletCreditRequest.status`: `PENDING → COMPLETED`.
+3. `Wallet.balancePaise` incremented by `amountPaise`.
+4. Immutable `WalletTransaction` written (`type=CREDIT`, `referenceType=CREDIT_REQUEST`).
+5. If this is the customer's first completed credit,
+   `Wallet.autoCreditEnabled` flips to `true`.
+
+**Errors:**
+
+| HTTP | Code | Scenario |
+|------|------|----------|
+| 404 | `CASH_COLLECTION_NOT_FOUND` | Unknown id |
+| 409 | `CASH_COLLECTION_ALREADY_PROCESSED` | Status is not `PENDING` or `COLLECTED` |
+
+**Idempotency:** a second confirmation hits the conditional guard and returns
+`409`; wallet is credited exactly once.
+
 ---
 
-## 6. Cancel Cash Collection
+## 8. `POST /api/v1/admin/payments/cash-collections/:id/cancel`
 
-`POST /api/v1/admin/payments/cash-collections/:id/cancel`
+Cancels a cash collection — cash was never received.
 
-Cancels an offline cash top-up if the cash was never collected or could not be reconciled.
+**Request body:**
 
-### Workflow & Invariants:
-1. Validates that `CashCollection` is in `PENDING` or `COLLECTED` status.
-2. Updates `CashCollection` status to `CANCELLED`.
-3. Closes the linked `WalletCreditRequest` as `CANCELLED`, releasing the one-pending-per-wallet slot so the customer can start a new top-up.
-4. No wallet credit is applied and no refund obligation is created.
-
-### Request Body
 ```json
-{
-  "note": "Customer was unavailable at the address during collection"
-}
+{ "note": "Customer unavailable at the collection address." }
 ```
 
-| Field | Type | Required | Rules |
-|---|---|---|---|
-| `note` | string | **Yes** | Mandatory cancellation reason (3 to 1000 characters) |
+| Field | Type | Rules |
+|-------|------|-------|
+| `note` | string | **Required**; trimmed; 3–1000 chars |
 
-### Example Response (`200 OK`)
+**Response `200`:**
+
 ```json
 {
   "success": true,
-  "message": "Cash collection cancelled.",
+  "message": "Cash collection cancelled. No wallet credit was made.",
   "cashCollection": {
-    "id": "csh-9901e12a-3341",
+    "id": "csh-...",
     "status": "CANCELLED",
-    "adminNote": "Customer was unavailable at the address during collection"
+    "amountPaise": 50000,
+    "adminNote": "Customer unavailable at the collection address."
   }
 }
 ```
 
+**Side effects:**
+
+- `CashCollection.status`: `PENDING | COLLECTED → CANCELLED`.
+- Linked `WalletCreditRequest.status`: `PENDING → CANCELLED` (frees the
+  one-pending-per-wallet slot).
+- **No wallet credit, no PayU refund call** — cash was never collected and
+  there is no PayU payment to reverse. Any physical cash that did arrive is
+  reconciled offline.
+
+**Errors:**
+
+| HTTP | Code | Scenario |
+|------|------|----------|
+| 400 | — | Missing or too-short `note` |
+| 404 | `CASH_COLLECTION_NOT_FOUND` | Unknown id |
+| 409 | `CASH_COLLECTION_ALREADY_PROCESSED` | Status is not `PENDING` or `COLLECTED` |
+
 ---
 
-## 7. Initiate PayU Gateway Refund
+## 9. `POST /api/v1/admin/payments/credit-requests/:creditRequestId/refund`
 
-`POST /api/v1/admin/payments/credit-requests/:creditRequestId/refund`
+**Manual refund retry.** The wallet reject endpoint
+(`POST /admin/wallet/credit-requests/:id/reject`) already triggers this
+orchestration automatically. Use this endpoint only when the automatic call
+failed (provider timeout, upstream 5xx) and you need to retry.
 
-Initiates an automated PayU gateway refund for an online payment whose wallet credit request was **rejected** by an admin via `POST /api/v1/admin/wallet/credit-requests/:id/reject`.
+**Request body:** none. The amount is read from the stored `Payment` row — the
+admin cannot change it.
 
-### Flow:
-```
-1. Admin rejects wallet credit request
-   POST /api/v1/admin/wallet/credit-requests/:id/reject
-   => WalletCreditRequest: REJECTED | refundStatus: REFUND_PENDING
-   ↓
-2. Admin calls refund endpoint
-   POST /api/v1/admin/payments/credit-requests/:creditRequestId/refund
-   ├─ Finds settled online Payment (status: SUCCESS)
-   ├─ Claims payment: status -> REFUND_PENDING
-   ├─ Calls PayU cancel_refund_transaction API
-   └─ Saves providerRefundId
-   ↓
-3. PayU sends refund webhook
-   POST /api/v1/payments/webhooks/payu (status: 'refunded')
-   => Payment: REFUNDED | WalletCreditRequest: refundStatus = REFUNDED
-```
+**Response `200`:**
 
-### URL Parameters
-- `creditRequestId` (UUID, required): The ID of the rejected `WalletCreditRequest`.
-
-### Request Body
-*None (Amount is derived strictly from the stored `Payment` row).*
-
-### Example Response (`200 OK`)
 ```json
 {
   "success": true,
   "message": "Refund requested. It is marked REFUNDED only after the provider confirms it.",
   "payment": {
-    "id": "a814c11b-756f-474c-a19c-112fb94ad076",
-    "transactionId": "PFM8J1X091A2B3C4D5",
+    "id": "pay-...",
+    "transactionId": "PFMH2K8A1B2C3D4E5F",
     "status": "REFUND_PENDING",
     "amountPaise": 100000,
     "providerRefundId": "918237461"
@@ -380,20 +365,152 @@ Initiates an automated PayU gateway refund for an online payment whose wallet cr
 }
 ```
 
+**Full refund flow (same for the automatic path):**
+
+```text
+1. WalletCreditRequest is in REJECTED status
+   ↓
+2. Find the matching ONLINE Payment with status=SUCCESS
+   ↓
+3. Atomic claim:
+      UPDATE payments SET status='REFUND_PENDING'
+      WHERE id=:id AND status='SUCCESS'
+   (second caller matches 0 rows → 409)
+   ↓
+4. PayuService.refundPayment(providerPaymentId, amountPaise, refundToken)
+      - refundToken = `RFND-<transactionId>` (deterministic; PayU dedupes retries)
+   ↓
+5. PayU accepts → store providerRefundId
+   PayU refuses  → release claim: REFUND_PENDING → SUCCESS,
+                   refundStatus → REFUND_FAILED, return 409
+   Network error → release claim, bubble up as 5xx
+   ↓
+6. (Asynchronously) PayU sends refund webhook
+      POST /api/v1/payments/webhooks/payu  (status='refunded')
+   ↓
+7. Payment REFUND_PENDING → REFUNDED, refundedAt=NOW
+   WalletCreditRequest.refundStatus → REFUNDED
+```
+
+**Errors:**
+
+| HTTP | Code | Scenario |
+|------|------|----------|
+| 404 | `CREDIT_REQUEST_NOT_FOUND` | Unknown id |
+| 409 | `CREDIT_REQUEST_NOT_REJECTED` | The credit request is not in `REJECTED` |
+| 409 | `NO_REFUNDABLE_PAYMENT` | No settled ONLINE payment exists (cash top-up) |
+| 409 | `PROVIDER_PAYMENT_ID_MISSING` | Online payment has no PayU payment reference |
+| 409 | `REFUND_ALREADY_IN_PROGRESS` | Another request already claimed the refund |
+| 409 | `REFUND_REJECTED_BY_PROVIDER` | PayU refused the refund |
+
+**Idempotency:**
+- The `SUCCESS → REFUND_PENDING` conditional update means a second concurrent
+  caller fails with `409 REFUND_ALREADY_IN_PROGRESS`.
+- The refund token sent to PayU is `RFND-<transactionId>`, deterministic per
+  payment, so repeated attempts at the provider for the same payment are the
+  same request to PayU rather than two separate refunds.
+
 ---
 
-## Error Handling Matrix
+## 10. The PayU webhook (public)
 
-| HTTP Status | Error Code | Scenario |
-|---|---|---|
-| `400 Bad Request` | `VALIDATION_ERROR` | Malformed body, invalid date string, or missing mandatory note |
-| `401 Unauthorized` | `UNAUTHORIZED` | Missing or invalid Bearer token |
-| `403 Forbidden` | `FORBIDDEN` | Caller token does not have `ADMIN` role |
-| `404 Not Found` | `PAYMENT_NOT_FOUND` | Payment ID does not exist |
-| `404 Not Found` | `CASH_COLLECTION_NOT_FOUND` | Cash collection ID does not exist |
-| `404 Not Found` | `CREDIT_REQUEST_NOT_FOUND` | Credit request ID does not exist |
-| `409 Conflict` | `CASH_COLLECTION_ALREADY_PROCESSED` | Attempting to confirm or cancel an already processed cash collection |
-| `409 Conflict` | `CREDIT_REQUEST_NOT_REJECTED` | Attempting to refund a credit request that is not in `REJECTED` status |
-| `409 Conflict` | `NO_REFUNDABLE_PAYMENT` | No settled online payment exists for the given credit request |
-| `409 Conflict` | `REFUND_ALREADY_IN_PROGRESS` | Concurrent refund request already claimed the payment |
-| `409 Conflict` | `REFUND_REJECTED_BY_PROVIDER` | PayU gateway rejected the refund command |
+PayU calls `POST /api/v1/payments/webhooks/payu` for successful, failed and
+refund events. The admin app does not call this. For completeness:
+
+- **Public endpoint**, no JWT.
+- Authentication is **PayU hash verification only** — a forged payload returns
+  `403 PAYMENT_SIGNATURE_INVALID`.
+- Idempotent: a replayed webhook matches no row via conditional updates and
+  returns `{ outcome: "DUPLICATE" }`.
+- Settles the payment through the exact same state machine as the browser
+  callback, so even if the user closed the tab the webhook still credits the
+  wallet (for subsequent auto-credit) or holds the credit request pending (for
+  first credit).
+
+---
+
+## 11. Error code reference
+
+| HTTP | Code | Scenario |
+|------|------|----------|
+| 400 | — | DTO validation (missing note, invalid date, etc.) |
+| 401 | — | Missing / expired token |
+| 403 | — | Non-admin token |
+| 404 | `PAYMENT_NOT_FOUND` | Unknown payment id |
+| 404 | `CASH_COLLECTION_NOT_FOUND` | Unknown cash-collection id |
+| 404 | `CREDIT_REQUEST_NOT_FOUND` | Unknown credit-request id |
+| 409 | `CASH_COLLECTION_ALREADY_PROCESSED` | Confirmed/cancelled already |
+| 409 | `CREDIT_REQUEST_NOT_REJECTED` | Refund attempted on a non-rejected request |
+| 409 | `NO_REFUNDABLE_PAYMENT` | Cash top-up or no settled payment |
+| 409 | `PROVIDER_PAYMENT_ID_MISSING` | Online payment missing providerPaymentId |
+| 409 | `REFUND_ALREADY_IN_PROGRESS` | A refund is in flight |
+| 409 | `REFUND_REJECTED_BY_PROVIDER` | PayU refused the refund |
+
+---
+
+## 12. Step-by-step cURL
+
+```bash
+export BASE_URL="https://api-puretyfarm.onrender.com"
+export ADMIN_TOKEN="<admin access token>"
+```
+
+### List pending cash collections
+```bash
+curl -i -X GET \
+  "$BASE_URL/api/v1/admin/payments/cash-collections?status=PENDING&page=1&limit=20" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Confirm a cash collection (credits the wallet)
+```bash
+curl -i -X POST \
+  "$BASE_URL/api/v1/admin/payments/cash-collections/<CSH_ID>/confirm" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "note": "Cash received at depot" }'
+```
+
+### Cancel a cash collection
+```bash
+curl -i -X POST \
+  "$BASE_URL/api/v1/admin/payments/cash-collections/<CSH_ID>/cancel" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "note": "Customer unavailable" }'
+```
+
+### List online payments in REFUND_PENDING
+```bash
+curl -i -X GET \
+  "$BASE_URL/api/v1/admin/payments?status=REFUND_PENDING&paymentMethod=ONLINE" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Manually retry a refund (only after an auto-refund failure)
+```bash
+curl -i -X POST \
+  "$BASE_URL/api/v1/admin/payments/credit-requests/<WCR_ID>/refund" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+---
+
+## 13. Frontend integration checklist
+
+1. **Do not call the refund endpoint after a reject under normal circumstances**
+   — the wallet reject already does this. Only use it as a retry button when
+   `response.refund.refundInitiated === false` and the reason indicates a
+   genuine failure (not `NO_REFUNDABLE_PAYMENT`).
+2. After cash confirmation, refetch both the cash-collection detail and the
+   customer's wallet view — the wallet now shows the new balance.
+3. For a cash top-up, the refund button must be hidden in the UI. Cash
+   refunds happen offline.
+4. Treat `REFUND_PENDING` as "awaiting PayU confirmation". Only when the
+   payment lands in `REFUNDED` should the UI show "Refund complete".
+5. The admin **cannot** change a refund amount — it always matches the stored
+   `Payment.amountPaise`. If the UI shows an input for refund amount, remove
+   it.
+6. Payment status changes landing without an admin action (e.g. a payment
+   flipping from `PENDING` to `SUCCESS` or `EXPIRED` while the admin was
+   viewing it) are the webhook / scheduler at work; just refetch.

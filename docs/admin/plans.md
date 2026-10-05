@@ -23,6 +23,7 @@ All admin plan and delivery management routes support dual routing prefixes:
 
 ### Core Business Rules
 - **Fixed Plan Types**: Exactly three plan types exist: `BUY_ONCE`, `SEVEN_DAY_TRIAL`, and `MONTHLY`. Plans cannot be arbitrarily created or deleted.
+- **Integration with Wallet & Payment Modules**: Configured plan prices feed into customer quotes and ultimately into `POST /api/v1/customer/payments/create` for wallet top-ups. The wallet enforces a configured min/max top-up (default ₹1.00 – ₹10,000.00); keep plan quote totals within that bound so a customer can actually fund them. See `docs/admin/payments.md` and `docs/admin/wallet.md`. The Plans module itself never credits or debits a wallet.
 - **Integer Paise Pricing**: All prices are stored and transmitted as **integer paise** (₹1 = 100 paise). Floating point currency or string numbers are rejected.
 - **Cross-Field Validation**:
   - `sellingPricePerLitre` must never exceed `actualPricePerLitre`.
@@ -447,3 +448,21 @@ curl -i -X POST "$BASE_URL/api/v1/admin/manage-delivery/requests/<REQUEST_ID>/re
     "note": "Cut-off time for tomorrow has already passed."
   }'
 ```
+
+---
+
+## 5. Cross-module notes for Admins
+
+- **No refunds here**: approving or rejecting a *delivery change request* has
+  no monetary effect. Refunds only exist for a rejected `WalletCreditRequest`
+  that was funded by an online PayU payment — see
+  `docs/admin/wallet.md` §5 (automatic refund) and
+  `docs/admin/payments.md` §9 (manual retry).
+- **Wallet credit on plan payment**: when a plan is paid for by wallet top-up,
+  the customer's first wallet credit still requires admin approval via
+  `POST /api/v1/admin/wallet/credit-requests/:id/approve`. Subsequent
+  verified online top-ups auto-credit based on that customer's own
+  `Wallet.autoCreditEnabled`.
+- **Scheduler**: an abandoned PayU checkout for a wallet top-up expires via
+  the payment-expiry cron (every 10 minutes). See
+  `docs/admin/scheduler.md`. The scheduler never changes plan state.

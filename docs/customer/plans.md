@@ -43,6 +43,24 @@ This document provides complete, all-in-one documentation for the **Customer Pla
 
 ---
 
+---
+
+### Money Convention
+
+**All monetary values in requests and responses are INTEGER PAISE** (never rupees, never floats).
+
+| Rupees | Paise |
+|--------|-------|
+| ₹1 | `100` |
+| ₹85 | `8500` |
+| ₹95 | `9500` |
+| ₹190 | `19000` |
+| ₹5,000 | `500000` |
+
+The frontend must divide by 100 only at display time. Any `*PricePerLitre`, `*Amount` or `discountAmount` field is paise.
+
+---
+
 ### Base URLs & Dual Routing
 All customer plan endpoints support dual routing seamlessly:
 - **Prefix A**: `https://api-puretyfarm.onrender.com/api/v1/customer/plans/...`
@@ -213,12 +231,12 @@ Requests a server-calculated pricing quote for a single-bottle test order.
     "plan": "BUY_ONCE",
     "quantity": 2,
     "deliveryOccurrences": 1,
-    "actualPricePerLitre": 95.0,
-    "sellingPricePerLitre": 85.0,
-    "totalLitres": 2.0,
-    "totalActualAmount": 190.0,
-    "totalSellingAmount": 170.0,
-    "discountAmount": 20.0,
+    "actualPricePerLitre": 9500,
+    "sellingPricePerLitre": 8500,
+    "totalLitres": 2,
+    "totalActualAmount": 19000,
+    "totalSellingAmount": 17000,
+    "discountAmount": 2000,
     "expiresAt": "2026-10-04T18:15:30.000Z"
   }
   ```
@@ -310,12 +328,12 @@ Requests a server-calculated pricing quote for 7 consecutive deliveries.
     "quantity": 1,
     "durationDays": 7,
     "deliveryOccurrences": 7,
-    "actualPricePerLitre": 95.0,
-    "sellingPricePerLitre": 75.0,
-    "totalLitres": 7.0,
-    "totalActualAmount": 665.0,
-    "totalSellingAmount": 525.0,
-    "discountAmount": 140.0,
+    "actualPricePerLitre": 9500,
+    "sellingPricePerLitre": 7500,
+    "totalLitres": 7,
+    "totalActualAmount": 66500,
+    "totalSellingAmount": 52500,
+    "discountAmount": 14000,
     "expiresAt": "2026-10-04T18:15:30.000Z"
   }
   ```
@@ -356,8 +374,8 @@ Returns the available configuration parameters, frequencies, modes, and admin-se
     ],
     "quantityMin": 1,
     "quantityMax": 5,
-    "actualPricePerLitre": 90.0,
-    "sellingPricePerLitre": 80.0
+    "actualPricePerLitre": 9000,
+    "sellingPricePerLitre": 8000
   }
   ```
 
@@ -393,12 +411,12 @@ Delivers the same quantity every day of the month.
     "quantityMode": "FIXED",
     "quantity": 2,
     "deliveryOccurrences": 31,
-    "actualPricePerLitre": 90.0,
-    "sellingPricePerLitre": 80.0,
-    "totalLitres": 62.0,
-    "totalActualAmount": 5580.0,
-    "totalSellingAmount": 4960.0,
-    "discountAmount": 620.0,
+    "actualPricePerLitre": 9000,
+    "sellingPricePerLitre": 8000,
+    "totalLitres": 62,
+    "totalActualAmount": 558000,
+    "totalSellingAmount": 496000,
+    "discountAmount": 62000,
     "expiresAt": "2026-10-04T18:15:30.000Z"
   }
   ```
@@ -424,12 +442,12 @@ Delivers every alternate day with alternating quantities: $Q_A$ on delivery 1, $
     "quantityA": 1,
     "quantityB": 3,
     "deliveryOccurrences": 16,
-    "actualPricePerLitre": 90.0,
-    "sellingPricePerLitre": 80.0,
-    "totalLitres": 32.0,
-    "totalActualAmount": 2880.0,
-    "totalSellingAmount": 2560.0,
-    "discountAmount": 320.0,
+    "actualPricePerLitre": 9000,
+    "sellingPricePerLitre": 8000,
+    "totalLitres": 32,
+    "totalActualAmount": 288000,
+    "totalSellingAmount": 256000,
+    "discountAmount": 32000,
     "expiresAt": "2026-10-04T18:15:30.000Z"
   }
   ```
@@ -695,6 +713,25 @@ curl -i -X POST "$BASE_URL/confirm" \
   -d "{\"quoteId\": \"$MONTHLY_QUOTE_ID\"}"
 ```
 **Expected Response**: `400 Bad Request` (`Quote is no longer pending (status: CONFIRMED)`).
+
+---
+
+## 3B. Confirmed plan → payment & wallet behaviour
+
+Confirming a plan produces a `PlanSelection`. Charging the customer and
+crediting their wallet happens through the Payment and Wallet modules, not the
+Plans module. In particular:
+
+- **Wallet top-ups** needed to pay for a plan go through
+  `POST /api/v1/customer/payments/create` (see `docs/customer/payments.md`).
+- **First wallet credit** always requires admin approval, regardless of plan
+  type. Subsequent verified online credits auto-credit per the customer's
+  `Wallet.autoCreditEnabled` flag (see `docs/customer/wallet.md` §3).
+- **Order payment** flow is implemented separately when an order is created
+  from the confirmed `PlanSelection`.
+
+Nothing in the Plans module can bypass the wallet first-credit admin-approval
+rule or the PayU hash-verification gate.
 
 ---
 

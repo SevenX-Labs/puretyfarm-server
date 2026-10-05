@@ -93,7 +93,7 @@ Payment SUCCESS
    ↓
 Existing WalletService logic     ← scheduler is not involved
    ↓
-WALLET_AUTO_CREDIT_ENABLED=true
+Wallet.autoCreditEnabled = true  ← per-wallet flag, not a global env variable
    ↓
 Auto Credit
    ↓

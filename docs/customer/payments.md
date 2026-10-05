@@ -1,216 +1,204 @@
 # Customer Payments API
 
-## Overview
+Complete customer-facing reference for the PuretyFarm Payment module. The
+frontend must implement the top-up and payment-result UX strictly from this
+document.
 
-The Payment module is how money enters PuretyFarm. It verifies and records
-**money movement**; it never changes a wallet balance itself. The Wallet module
-remains the single owner of the balance and the ledger.
+> **Related docs:**
+> - `docs/customer/wallet.md` — wallet balance, ledger, credit-request lifecycle
+> - `docs/admin/payments.md` — admin cash-collection and refund controls
+> - `docs/admin/wallet.md` — approval / rejection / auto-refund orchestration
+
+---
+
+## 1. Overview
+
+The Payment module verifies and records **money movement**. It never mutates a
+wallet balance itself — that is the Wallet module's single responsibility.
 
 Two ways to top up a wallet:
 
-| Method | Gateway | What proves the money arrived |
-|--------|---------|-------------------------------|
-| `ONLINE` | PayU Hosted Checkout | A SHA-512 hash-verified PayU callback/webhook |
-| `CASH` | None | An admin confirming the physical cash |
+| Method | Gateway | What proves the money arrived | Wallet is credited by |
+|--------|---------|-------------------------------|-----------------------|
+| `ONLINE` | PayU Hosted Checkout | SHA-512 hash-verified PayU callback or webhook | Admin approval (first time) or automatic (per-wallet `autoCreditEnabled=true`) |
+| `CASH` | None | Admin confirmation after physical cash reaches the depot | Admin confirmation only — never automatic |
 
-## Authentication
+### Authentication
 
-Every endpoint in this document requires a **Customer JWT**
-(`Authorization: Bearer <access token>`). Customer identity always comes from
-`JWT.sub`. No endpoint accepts a `userId` in the request body — the global
-validation pipe runs with `whitelist: true`, so such a field is stripped before
-it reaches any handler.
+```http
+Authorization: Bearer <CUSTOMER_ACCESS_TOKEN>
+```
 
-## Money convention
+- Customer identity always comes from `JWT.sub`.
+- No field in any request body is trusted for `userId`, `walletId`,
+  `transactionId` (output only), `status`, `amount` (except on `/create`),
+  `autoCreditEnabled`, or `adminId`. Unknown fields are stripped by
+  `whitelist: true`.
 
-All amounts are **integer paise**. ₹1 = `100`, ₹500 = `50000`, ₹1000 = `100000`.
-No floating-point currency value is accepted or returned. The rupee-decimal
-string PayU requires (`"1000.00"`) is produced server-side by integer
-arithmetic, never by dividing into a float.
+### Money convention
+
+**Integer paise everywhere in the API.** The server does the
+paise → rupee-decimal conversion itself when calling PayU (`"1000.00"`), using
+integer arithmetic — never floats.
+
+### Route prefixes
+
+Each route is served at both `/api/v1/customer/payments/...` and
+`/customer/payments/...` for backwards compatibility.
 
 ---
 
-## Payment architecture
+## 2. Architecture overview
 
 ```text
-                    PAYMENT MODULE
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-             PayU                 Cash
-              │                     │
-              ↓                     ↓
-        Payment Record       CashCollection
-              │                     │
-              └──────────┬──────────┘
-                         ↓
-               WalletCreditRequest
-                         │
-               ┌─────────┴─────────┐
-               │                   │
-             FIRST              SUBSEQUENT
-               │                   │
-          Admin approval       Auto credit
-               │                   │
-               └─────────┬─────────┘
-                         ↓
-                       Wallet
-                         ↓
-                  WalletTransaction
+                        PAYMENT MODULE
+                              │
+                 ┌────────────┴────────────┐
+                 │                         │
+               ONLINE                    CASH
+            (PayU gateway)       (physical collection)
+                 │                         │
+                 ↓                         ↓
+          Payment record            CashCollection
+                 │                         │
+                 └────────────┬────────────┘
+                              ↓
+                   WalletCreditRequest
+                              │
+                  ┌───────────┴───────────┐
+                  │                       │
+               FIRST                  SUBSEQUENT
+          (autoCredit=false)      (autoCredit=true, online only)
+                  │                       │
+                  ↓                       ↓
+            Admin approve /          Auto credit
+          cash confirmation
+                  │                       │
+                  └───────────┬───────────┘
+                              ↓
+                     WalletService ledger
+                              ↓
+                    Wallet balance change
 ```
 
-## Customer flow
-
-```text
-                    ┌──────────────┐
-                    │   Customer   │
-                    └──────┬───────┘
-                           │
-                      Add ₹1000
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-           ONLINE                     CASH
-            PayU                 Cash Collection
-              │                         │
-              ↓                         ↓
-        PayU Payment              Cash Request
-              │                         │
-              ↓                         ↓
-       Payment SUCCESS          Partner collects cash
-              │                         │
-              ↓                         ↓
-      Wallet Credit Request      Admin confirms cash
-              │                         │
-       ┌──────┴──────┐                  │
-       │             │                  │
-    FIRST         SECOND+               │
-       │             │                  │
-  Admin approve  Auto-credit       Credit wallet
-       │             │                  │
-       └─────────────┴──────────────────┘
-                       ↓
-                 WALLET +₹1000
-```
-
-## PayU flow
-
-```text
-Customer
-   ↓
-Create Payment              (POST /customer/payments/create)
-   ↓
-PayU Hosted Checkout        (browser form POST, server-signed)
-   ↓
-PayU
-   ├── SUCCESS
-   └── FAILED
-   ↓
-Webhook / Callback          (both land on the same state machine)
-   ↓
-Verify Hash                 ← reject here if it does not match
-   ↓
-Verify Transaction          ← unknown txnid is rejected
-   ↓
-Verify Amount               ← mismatch is rejected
-   ↓
-Update Payment              ← conditional, so duplicates are no-ops
-   ↓
-Wallet Logic
-```
+> **Scheduler**: a cron (every 10 minutes) expires PayU payments the customer
+> never completed, so an abandoned checkout does not block future top-ups.
+> See `docs/admin/scheduler.md`. The scheduler never credits a wallet.
 
 ---
 
-## Two events, not one
+## 3. The two-events rule (first credit)
 
-For a **first** wallet credit, "payment successful" and "wallet credited" are
-different things and the app must show them differently.
+For a customer's **first** wallet credit, "Payment Successful" and "Wallet
+Credited" are **two different events**. The UI must show them differently:
 
 ```text
 FIRST CREDIT
 
 PayU SUCCESS
    ↓
-Payment SUCCESS            ← money collected
+Payment SUCCESS                       ← money collected, show "Payment Successful"
    ↓
-WalletCreditRequest PENDING ← balance unchanged
+WalletCreditRequest PENDING            ← balance unchanged
    ↓
-Admin Approval
+(wait for admin approval)
    ↓
-WalletService
+Admin APPROVE
    ↓
-WalletTransaction
-   ↓
-Wallet Balance             ← money usable
+WalletCreditRequest COMPLETED           ← now show "Wallet Credited"
+Wallet balance increases
+Wallet.autoCreditEnabled → true
 ```
 
-```text
-SUBSEQUENT ONLINE CREDIT
+For every **subsequent** online credit (per-wallet `autoCreditEnabled = true`):
 
+```text
 PayU SUCCESS
    ↓
 Payment SUCCESS
    ↓
-Existing Wallet Logic
-   ↓
-Auto Credit                ← only if WALLET_AUTO_CREDIT_ENABLED=true
-   ↓
-WalletTransaction
-   ↓
-Wallet Balance
+WalletCreditRequest COMPLETED, Wallet credited          ← one event
 ```
 
-The first credit **always** requires admin approval, even when
-`WALLET_AUTO_CREDIT_ENABLED=true`. When that flag is off (the default), every
-credit requires approval.
-
-Read this from the API as:
+Read these fields from the API:
 
 | Field | Meaning |
 |-------|---------|
-| `payment.status = "SUCCESS"` | The money was collected and verified |
-| `walletCredit.status = "PENDING"` | Awaiting admin approval; balance unchanged |
-| `walletCredit.status = "COMPLETED"` | Balance has increased |
+| `payment.status = "SUCCESS"` | Money reached PayU and we verified it |
+| `walletCredit.status = "PENDING"` | Awaiting admin approval — balance unchanged |
+| `walletCredit.status = "COMPLETED"` | Balance has already increased |
 
 ---
 
-## Cash flow
+## 4. Cash flow
 
 ```text
-Customer requests cash top-up
+POST /customer/payments/create { amount, paymentMethod: "CASH" }
    ↓
-CashCollection PENDING       ← nothing credited
+CashCollection PENDING, WalletCreditRequest PENDING, NO Payment row
    ↓
-Partner collects cash
+Delivery partner collects physical cash
    ↓
-CashCollection COLLECTED
+Admin → POST /admin/payments/cash-collections/:id/confirm
    ↓
-Admin confirms               ← the operational gate
-   ↓
-WalletService
-   ↓
-WalletTransaction
-   ↓
-Wallet Balance
+Wallet credited, autoCreditEnabled → true (if first credit)
 ```
 
-A cash **request** does not mean cash was **received**. Nothing is credited
-until an admin confirms. `WALLET_AUTO_CREDIT_ENABLED` does not apply to cash:
-unverified physical money is never auto-credited, no matter how many successful
-top-ups the customer has made before.
+Cash **never** auto-credits, even if `autoCreditEnabled = true`. The admin
+confirmation is the only trigger.
+
+Cash is also **never refunded through PayU**. Cash cancellation
+(`/admin/payments/cash-collections/:id/cancel`) moves the credit request to
+`CANCELLED` and the cash is reconciled offline.
 
 ---
 
-## Endpoints
+## 5. Rejection → automatic PayU refund
 
-All paths are also served without the `/api/v1` prefix, matching the rest of
-the project (`/customer/payments/...`).
+When an admin rejects a credit request that had a settled ONLINE payment, the
+Payment module **automatically** starts the refund during that same admin
+request. The customer does not need to do anything.
 
-### POST `/api/v1/customer/payments/create`
+```text
+Payment SUCCESS → WalletCreditRequest PENDING
+   ↓
+Admin REJECT  (POST /admin/wallet/credit-requests/:id/reject)
+   ↓
+Wallet NEVER credited, no ledger row
+   ↓
+Payment SUCCESS → REFUND_PENDING  (atomic claim; a second reject can't double-call PayU)
+   ↓
+PayU cancel_refund_transaction API called
+   ↓
+(wait for PayU verified refund webhook)
+   ↓
+Payment REFUNDED, WalletCreditRequest.refundStatus = REFUNDED
+```
 
-Starts a top-up. **Requires an `Idempotency-Key` header.**
+`REFUNDED` is only reached after a signed, hash-verified refund webhook from
+PayU — never on the back of PayU merely accepting the request.
 
-Request:
+The customer can read the current state at any time:
+- `GET /customer/payments/:id` — includes `walletCredit.refundStatus`
+- `GET /customer/wallet/credit-requests` — filter by `status=REJECTED`
+
+---
+
+## 6. Endpoints
+
+### 6.1 `POST /api/v1/customer/payments/create`
+
+Starts a wallet top-up.
+
+**Headers:**
+
+| Header | Required | Notes |
+|--------|----------|-------|
+| `Authorization: Bearer <token>` | yes | Customer JWT |
+| `Idempotency-Key: <string>` | yes | Fresh UUID per user intent; reuse on retry |
+| `Content-Type: application/json` | yes | |
+
+**Request body:**
 
 ```json
 {
@@ -219,32 +207,41 @@ Request:
 }
 ```
 
-| Field | Type | Notes |
+| Field | Type | Rules |
 |-------|------|-------|
-| `amount` | integer | Paise. Validated against the wallet's configured min/max. |
-| `paymentMethod` | `"ONLINE"` \| `"CASH"` | |
+| `amount` | integer (paise) | Must fall within wallet min/max (default 100 – 1,000,000) |
+| `paymentMethod` | `"ONLINE"` \| `"CASH"` | required |
 
-`201` for `ONLINE`:
+**Response `201` — ONLINE:**
 
 ```json
 {
   "payment": {
-    "id": "...",
+    "id": "pay-...",
     "transactionId": "PFMH2K8A1B2C3D4E5F",
+    "providerPaymentId": null,
     "provider": "PAYU",
     "purpose": "WALLET_TOPUP",
     "paymentMethod": "ONLINE",
     "amountPaise": 100000,
     "currency": "INR",
     "status": "PENDING",
-    "expiresAt": "2026-10-06T00:30:00.000Z"
+    "failureCode": null,
+    "failureMessage": null,
+    "walletCreditRequestId": "wcr-...",
+    "orderId": null,
+    "expiresAt": "2026-10-06T00:30:00.000Z",
+    "completedAt": null,
+    "refundedAt": null,
+    "createdAt": "2026-10-06T00:00:00.000Z",
+    "updatedAt": "2026-10-06T00:00:00.000Z"
   },
-  "walletCreditRequestId": "...",
+  "walletCreditRequestId": "wcr-...",
   "checkout": {
     "endpoint": "https://secure.payu.in/_payment",
     "method": "POST",
     "fields": {
-      "key": "...",
+      "key": "<merchant key>",
       "txnid": "PFMH2K8A1B2C3D4E5F",
       "amount": "1000.00",
       "productinfo": "PuretyFarm Wallet Top-up",
@@ -253,46 +250,66 @@ Request:
       "phone": "9876543210",
       "surl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/success",
       "furl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/failure",
-      "udf1": "", "udf2": "", "udf3": "", "udf4": "", "udf5": "",
-      "hash": "<128-char sha512>"
+      "udf1": "",
+      "udf2": "",
+      "udf3": "",
+      "udf4": "",
+      "udf5": "",
+      "hash": "<128-char SHA-512>"
     }
-  }
+  },
+  "message": "Payment created. Submit the checkout fields to the payment gateway to complete it."
 }
 ```
 
-**Submit `checkout.fields` as a form POST to `checkout.endpoint`.** Do not
-build a payment UI; PayU hosts it. Do not modify any field — every hashed field
-is covered by the server-computed `hash`, so any change makes PayU reject it.
+**How the frontend uses `checkout`:**
 
-`201` for `CASH`:
+1. Build an HTML form with `action = checkout.endpoint` and `method = "POST"`.
+2. Add one hidden `<input name="...">` for every key in `checkout.fields` with
+   its exact value.
+3. Submit it (`form.submit()`). The browser lands on PayU Hosted Checkout.
+4. Do **not** modify any field — every one is covered by `hash`.
+5. PayU redirects the browser back to the configured
+   `PAYMENT_RESULT_REDIRECT_URL` with query params `txnid`, `result`, `status`.
+
+**Response `201` — CASH:**
 
 ```json
 {
   "cashCollection": {
-    "id": "...",
+    "id": "csh-...",
     "amountPaise": 100000,
     "status": "PENDING",
     "createdAt": "2026-10-06T00:00:00.000Z"
   },
-  "walletCreditRequestId": "...",
+  "walletCreditRequestId": "wcr-...",
   "message": "Cash collection requested. Your wallet is credited only after the cash is collected and confirmed by an admin."
 }
 ```
 
-Errors:
+Both responses may include `"replayed": true` when the same idempotency key
+was already used with the same parameters.
 
-| Status | `error` | Cause |
-|--------|---------|-------|
+**Errors:**
+
+| HTTP | `error` | Cause |
+|------|---------|-------|
 | 400 | — | Missing `Idempotency-Key` header |
-| 400 | `INVALID_CREDIT_AMOUNT` | Amount outside the wallet's configured bounds |
-| 400 | `CUSTOMER_EMAIL_REQUIRED` | Online payment with no email on the profile |
-| 409 | `IDEMPOTENCY_KEY_REUSED` | Same key, different amount or payment method |
-| 409 | `WALLET_PENDING_REQUEST_EXISTS` | A top-up is already pending for this wallet |
+| 400 | `INVALID_CREDIT_AMOUNT` | Amount out of wallet bounds or not an integer |
+| 400 | `CUSTOMER_EMAIL_REQUIRED` | ONLINE top-up without a verified email on the profile |
+| 404 | `CUSTOMER_NOT_FOUND` | Unknown customer (should not occur with a valid JWT) |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | Same key with a different amount or payment method |
+| 409 | `WALLET_PENDING_REQUEST_EXISTS` | Another top-up is already pending |
 
-### POST `/api/v1/customer/payments/verify`
+---
 
-Re-checks a payment's real state **server-to-server with PayU**. Use it when
-the browser callback was lost (app backgrounded, connection dropped).
+### 6.2 `POST /api/v1/customer/payments/verify`
+
+Server-to-server re-check of a payment's true state with PayU. Use when:
+- The browser callback was lost (app closed, connection dropped).
+- The user returned to the app and the UI needs the authoritative state.
+
+**Request:**
 
 ```json
 { "transactionId": "PFMH2K8A1B2C3D4E5F" }
@@ -301,46 +318,101 @@ the browser callback was lost (app backgrounded, connection dropped).
 The request carries no status — the client cannot assert an outcome. PayU is
 the source of truth.
 
+**Response `200`:**
+
 ```json
 {
-  "payment": { "status": "SUCCESS", "...": "..." },
+  "payment": {
+    "id": "pay-...",
+    "transactionId": "PFMH2K8A1B2C3D4E5F",
+    "status": "SUCCESS",
+    "amountPaise": 100000,
+    "...": "..."
+  },
   "walletCredited": false,
   "requiresAdminApproval": true
 }
 ```
 
-### POST `/api/v1/customer/payments/retry`
+| Field | Meaning |
+|-------|---------|
+| `payment.status` | Current status after verification |
+| `walletCredited` | `true` if the wallet balance was changed as part of this call |
+| `requiresAdminApproval` | `true` for a first credit awaiting admin review |
 
-Retries a `FAILED`, `CANCELLED` or `EXPIRED` online top-up. **Requires an
-`Idempotency-Key` header.**
+**Errors:**
+- `404 PAYMENT_NOT_FOUND` — unknown or belongs to another customer (same code for both to prevent probing).
+
+---
+
+### 6.3 `POST /api/v1/customer/payments/retry`
+
+Retries a `FAILED`, `CANCELLED`, or `EXPIRED` online top-up.
+
+**Headers:**
+- `Authorization: Bearer <token>`
+- `Idempotency-Key: <fresh UUID per retry intent>`
+- `Content-Type: application/json`
+
+**Request body:**
 
 ```json
 { "transactionId": "PFMH2K8A1B2C3D4E5F" }
 ```
 
-No amount is accepted: it is re-read from the still-open credit request, so a
-retry cannot change what is owed. A new `transactionId` and hash are generated.
+The amount is **not** accepted — the server reads it from the still-open
+`WalletCreditRequest`, so a retry can never change what the customer owes. A
+fresh `transactionId` and hash are generated.
 
-| Status | `error` | Cause |
-|--------|---------|-------|
-| 409 | `PAYMENT_NOT_RETRYABLE` | The payment is PENDING, PROCESSING or SUCCESS |
-| 409 | `CREDIT_REQUEST_NOT_PENDING` | The top-up was closed; start a new one |
+**Response `201`:** same shape as `/create` for ONLINE.
 
-### GET `/api/v1/customer/payments`
+**Errors:**
 
-Your own payments only. Query: `status`, `purpose`, `paymentMethod`,
-`startDate`, `endDate`, `page`, `limit` (max 100).
+| HTTP | `error` | Cause |
+|------|---------|-------|
+| 400 | — | Missing `Idempotency-Key` |
+| 404 | `PAYMENT_NOT_FOUND` | Unknown or not yours |
+| 409 | `PAYMENT_NOT_RETRYABLE` | Payment is `PENDING`, `PROCESSING`, `SUCCESS`, `REFUND_PENDING`, or `REFUNDED` |
+| 409 | `CREDIT_REQUEST_NOT_PENDING` | The underlying credit request was closed; create a brand new top-up |
 
-### GET `/api/v1/customer/payments/:id`
+---
 
-One payment, plus the wallet credit it funds:
+### 6.4 `GET /api/v1/customer/payments`
+
+The customer's own payment history.
+
+**Query:**
+
+| Param | Type | Default |
+|-------|------|---------|
+| `status` | one of the `PaymentStatus` values below | all |
+| `purpose` | `ORDER` \| `WALLET_TOPUP` | all |
+| `paymentMethod` | `ONLINE` \| `CASH` | all |
+| `startDate` | `YYYY-MM-DD` | — |
+| `endDate` | `YYYY-MM-DD` inclusive | — |
+| `page` | int ≥ 1 | 1 |
+| `limit` | int 1–100 | 20 |
+
+**Response `200`:** paginated list of payments in the shape above (without the
+`providerResponse` field).
+
+---
+
+### 6.5 `GET /api/v1/customer/payments/:id`
+
+One payment, enriched with its wallet-credit state.
+
+**Response `200`:**
 
 ```json
 {
+  "id": "pay-...",
+  "transactionId": "PFMH2K8A1B2C3D4E5F",
   "status": "SUCCESS",
   "amountPaise": 100000,
+  "...": "...",
   "walletCredit": {
-    "id": "...",
+    "id": "wcr-...",
     "status": "PENDING",
     "amountPaise": 100000,
     "autoApproved": false,
@@ -350,101 +422,163 @@ One payment, plus the wallet credit it funds:
 }
 ```
 
-`404` for another customer's payment — the same response as "does not exist",
-so the endpoint cannot be used to probe for other customers' ids.
+**Errors:**
+- `404 PAYMENT_NOT_FOUND` — unknown id or another customer's payment (same code).
 
 ---
 
-## PayU return URLs (not called by your app)
+## 7. Public PayU routes (not called by your app)
 
-PayU redirects the customer's browser to these after checkout. They are public
-(no JWT — a browser redirect has no Authorization header) and are verified by
-hash alone.
+These are called by PayU directly — the frontend must not call them.
 
-```text
-POST /api/v1/payments/payu/success
-POST /api/v1/payments/payu/failure
-POST /api/v1/payments/webhooks/payu    (server-to-server, all event types)
+```
+POST /api/v1/payments/payu/success    — browser callback (public, hash-verified)
+POST /api/v1/payments/payu/failure    — browser callback (public, hash-verified)
+POST /api/v1/payments/webhooks/payu   — server-to-server webhook (public, hash-verified)
+                                        handles successful, failed, and refund events
 ```
 
-After verifying, the callback redirects the browser to
+After verifying, the browser callback issues a `302` to
 `PAYMENT_RESULT_REDIRECT_URL` with:
 
-| Param | Values |
-|-------|--------|
+| Query param | Values |
+|-------------|--------|
 | `txnid` | The merchant transaction id |
 | `result` | `wallet_credited` \| `awaiting_approval` \| `recorded` \| `error` |
-| `status` | The payment status |
+| `status` | The resulting payment status |
 
-No amount, no hash and nothing secret appears in that URL, because URLs end up
-in browser history, referrer headers and server logs.
+The redirect carries **no** `amount`, `hash`, or anything derived from
+`PAYU_SALT`. URLs end up in browser history and referrers; secrets never do.
 
-**Treat the redirect as a hint, not as truth.** It tells your UI what to show
-first; confirm with `GET /customer/payments/:id` or `POST
-/customer/payments/verify`. The PayU webhook settles the payment independently
-of whatever the browser does, so a customer who closes the tab still gets
-credited.
+**The route name carries no authority.** Hitting `/payu/success` with an
+unsigned payload does nothing. A signed FAILURE payload posted to the success
+URL is recorded as a failure.
 
-> Reaching `/payu/success` does not make a payment successful. The route name
-> carries no authority — only the verified `status` field does. A signed
-> failure posted to the success URL is recorded as a failure.
+**Treat the redirect as a hint, not as truth.** The webhook settles the
+payment independently of what the browser does. Even if the user closes the
+tab after paying, the webhook will complete the flow. The authoritative state
+is always `GET /customer/payments/:id` or `POST /customer/payments/verify`.
 
 ---
 
-## Payment statuses
+## 8. Payment status reference
 
-| Status | Meaning |
-|--------|---------|
-| `PENDING` | Created; awaiting the customer at checkout |
-| `PROCESSING` | PayU reports the payment in flight |
-| `SUCCESS` | Verified as collected |
-| `FAILED` | Verified as failed; the credit request is cancelled |
-| `CANCELLED` | Abandoned |
-| `EXPIRED` | Not completed before `expiresAt`; the credit request is released |
-| `REFUND_PENDING` | A refund was requested from PayU |
-| `REFUNDED` | PayU confirmed the refund |
+| Status | Meaning | Can retry? |
+|--------|---------|------------|
+| `PENDING` | Created, awaiting the customer at checkout | no (still live) |
+| `PROCESSING` | PayU reports the payment in flight | no |
+| `SUCCESS` | Verified; wallet credit flow has run | no |
+| `FAILED` | Verified as failed; credit request moved to CANCELLED | yes |
+| `CANCELLED` | Abandoned | yes |
+| `EXPIRED` | `expiresAt` passed without completion; credit request CANCELLED | yes |
+| `REFUND_PENDING` | PayU refund has been requested | no |
+| `REFUNDED` | PayU refund confirmed via webhook | no |
 
-An abandoned checkout expires automatically, which frees the one-pending-top-up
-slot so you can start a new one.
+An abandoned payment expires automatically within one scheduler tick (10
+minutes after `expiresAt`) so the one-pending-per-wallet slot is freed and the
+customer can start a new top-up.
 
-## Refunds
+---
 
-If an admin **rejects** your wallet credit after the money was collected, the
-Payment module requests a refund from PayU. It is marked `REFUNDED` only once
-PayU confirms it — never when it is merely requested.
+## 9. Idempotency
 
-```text
-Payment SUCCESS
-   ↓
-Wallet credit rejected
-   ↓
-REFUND_PENDING
-   ↓
-Payment module → PayU refund
-   ↓
-PayU confirmation (webhook)
-   ↓
-REFUNDED
+- `POST /create` and `POST /retry` require an `Idempotency-Key` header.
+- Reuse the same key when retrying the same user intent after a network error.
+- Same key + same parameters → the original result, with `"replayed": true`.
+- Same key + different parameters → `409 IDEMPOTENCY_KEY_REUSED`.
+- A key is bound to one payment method — reusing an ONLINE key for a CASH
+  top-up is a conflict, not a replay.
+
+---
+
+## 10. What the frontend never controls
+
+The server rejects or ignores any attempt to supply these from the client:
+
+- The payable amount sent to PayU (only `/create` accepts an amount, and it is
+  validated against the wallet's configured bounds).
+- The transaction id (`txnid`) — server-generated, unpredictable.
+- The payment status.
+- The wallet balance.
+- `autoCreditEnabled`.
+- `walletCreditRequestId` on a payment.
+- Whether a credit is approved.
+- The `surl` / `furl` callback URLs.
+- The result redirect target.
+- The hash on an incoming callback (the server recomputes it).
+
+---
+
+## 11. Step-by-step cURL
+
+```bash
+export BASE_URL="https://api-puretyfarm.onrender.com"
+export TOKEN="<customer access token>"
+export IDEM="$(uuidgen)"
 ```
 
-## Idempotency
+### Create an ONLINE top-up
+```bash
+curl -i -X POST "$BASE_URL/api/v1/customer/payments/create" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $IDEM" \
+  -H "Content-Type: application/json" \
+  -d '{ "amount": 100000, "paymentMethod": "ONLINE" }'
+```
 
-`POST /create` and `POST /retry` require an `Idempotency-Key` header. Generate
-a fresh UUID per user intent and reuse it when retrying the same request after
-a network error.
+### Create a CASH top-up
+```bash
+curl -i -X POST "$BASE_URL/api/v1/customer/payments/create" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{ "amount": 100000, "paymentMethod": "CASH" }'
+```
 
-- Same key, same parameters → the original result, with `"replayed": true`
-- Same key, different parameters → `409 IDEMPOTENCY_KEY_REUSED`
+### Re-verify a payment server-to-server
+```bash
+curl -i -X POST "$BASE_URL/api/v1/customer/payments/verify" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "transactionId": "PFMH2K8A1B2C3D4E5F" }'
+```
 
-A key is bound to one payment method: reusing an online key for a cash top-up
-is a conflict, not a replay.
+### Retry a failed/cancelled/expired online payment
+```bash
+curl -i -X POST "$BASE_URL/api/v1/customer/payments/retry" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{ "transactionId": "PFMH2K8A1B2C3D4E5F" }'
+```
 
-## What the frontend never controls
+### List payments
+```bash
+curl -i -X GET "$BASE_URL/api/v1/customer/payments?status=SUCCESS" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
-- The payable amount sent to PayU
-- The transaction id (server-generated, unpredictable)
-- The payment status
-- The wallet balance
-- Whether a credit is approved
-- The `surl` / `furl` callback URLs
-- The result redirect target
+### Get one payment
+```bash
+curl -i -X GET "$BASE_URL/api/v1/customer/payments/<PAYMENT_ID>" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## 12. Frontend integration checklist
+
+1. Generate a fresh `Idempotency-Key` per user intent and reuse it on retry.
+2. On an ONLINE create response, build a hidden form from `checkout.fields`
+   and submit it to `checkout.endpoint`. Do not alter any field.
+3. On return to the result page, treat the URL params as a hint, then confirm
+   with `POST /payments/verify` for an authoritative state.
+4. Show two distinct messages on first credit: "Payment Successful" (status
+   SUCCESS, walletCredit PENDING) and "Wallet Credited" (walletCredit
+   COMPLETED).
+5. If a payment is `FAILED`/`CANCELLED`/`EXPIRED`, offer "Try again" which
+   calls `POST /retry` with a new `Idempotency-Key`.
+6. For `CASH`, show "Awaiting pickup" / "Collected" / "Confirmed" according to
+   the cash-collection status (visible through `GET /customer/wallet/credit-requests`).
+7. On a refund, poll `GET /customer/payments/:id` and show `REFUND_PENDING` →
+   `REFUNDED` based on the authoritative payment status.

@@ -1,32 +1,66 @@
 # Customer Wallet API
 
-## Overview
+Complete customer-facing reference for the PuretyFarm Wallet module. The
+frontend should implement wallet UI strictly from this document.
 
-The Wallet module provides a prepaid wallet for customers. Customers can submit credit requests to add money to their wallet through online payment (PayU) or physical cash collection, or via direct wallet credit requests. The wallet balance can be used for order payments.
-
-## Authentication
-
-All endpoints require a valid **Customer JWT** (`Authorization: Bearer <token>`). Customer identity is always derived from `JWT.sub` — the request body never supplies a userId.
-
-## Key Concepts
-
-| Concept | Description |
-|---------|-------------|
-| **Wallet** | Prepaid balance per customer, created lazily on first interaction |
-| **autoCreditEnabled** | Database boolean flag on each customer's wallet controlling auto-crediting |
-| **Credit Request** | A request to add money to the wallet (backed by PayU, cash, or direct) |
-| **Transaction** | An immutable ledger entry recording a balance change |
-| **Idempotency Key** | Required header to prevent duplicate credit requests |
-
-## Money Convention
-
-All monetary values are **integer paise** (₹1 = 100 paise). No floating-point currency values are accepted or returned.
+> **Related docs:**
+> - `docs/customer/payments.md` — how money enters the wallet (PayU / Cash)
+> - `docs/admin/wallet.md` — admin approval, rejection and auto-refund flow
 
 ---
 
-## Customer-Specific Wallet Auto-Credit (`autoCreditEnabled`)
+## 1. Overview
 
-Every customer's wallet carries its own `autoCreditEnabled` database flag. There is no global setting; Customer A's wallet state never affects Customer B's.
+Each customer has one `Wallet` holding a prepaid INR balance in **integer
+paise** (₹1 = 100 paise). The wallet is credited through the Payment module
+(PayU online or physical cash) and may be debited by future order payments.
+
+### Key concepts
+
+| Concept | Meaning |
+|---------|---------|
+| **Wallet** | One per customer, created lazily on first interaction |
+| **WalletCreditRequest** | A pending or completed request to add money to the wallet |
+| **WalletTransaction** | An immutable ledger row recording a balance change |
+| **autoCreditEnabled** | A per-wallet boolean. Governs whether a verified ONLINE top-up auto-credits or waits for admin approval. Flipped `true` atomically on first completed credit. |
+| **Idempotency-Key** | Required header on `POST /credit-request` to prevent duplicate submissions |
+
+### Money convention
+
+**All amounts in integer paise.** Never floats, never strings.
+
+| Rupees | Paise |
+|--------|-------|
+| ₹1 | `100` |
+| ₹500 | `50000` |
+| ₹1,000 | `100000` |
+| ₹10,000 | `1000000` |
+
+The frontend formats paise → rupees only at display time. All API I/O is paise.
+
+---
+
+## 2. Authentication
+
+All endpoints require a **Customer JWT**:
+
+```http
+Authorization: Bearer <ACCESS_TOKEN>
+```
+
+- Customer identity always comes from `JWT.sub`.
+- The request body never accepts `userId`, `walletId`, `balancePaise`,
+  `autoCreditEnabled`, `status`, `refundStatus` or `adminId`. These are
+  stripped by the global `whitelist: true` validation pipe.
+- A customer with no wallet row gets one created automatically on their first
+  call to any wallet endpoint.
+
+---
+
+## 3. Customer-specific auto-credit (`autoCreditEnabled`)
+
+Each wallet carries its own `autoCreditEnabled` flag. There is **no global
+setting**; one customer's state never affects another.
 
 ```text
                  CUSTOMER
@@ -45,166 +79,191 @@ Every customer's wallet carries its own `autoCreditEnabled` database flag. There
 ```
 
 | State | Default | Set by |
-|---|---|---|
-| `autoCreditEnabled = false` | New wallets | `Wallet.autoCreditEnabled @default(false)` |
-| `autoCreditEnabled = true` | Returning customers who completed at least one credit | Set atomically inside the transaction that completes the first credit |
+|-------|---------|--------|
+| `false` | Every new wallet | Schema default (`@default(false)`) |
+| `true` | Returning customers who have completed at least one credit | Flipped atomically inside the DB transaction that completes the **first** wallet credit |
 
-> **Security Guard**: The flag is **never** accepted from a request body. The customer cannot alter their own flag (e.g. `{ "autoCreditEnabled": true }` is stripped by global validation).
+**Rules:**
+
+1. **First credit always requires admin approval or cash confirmation**, even
+   if the flag somehow became true some other way. The decision reads
+   `autoCreditEnabled` fresh from the DB on every request.
+2. **Subsequent VERIFIED ONLINE credits** auto-credit when `autoCreditEnabled = true`.
+3. **Cash top-ups never auto-credit.** Even for an enabled wallet, cash still
+   waits for the admin's physical confirmation.
+4. **Zero balance does not reset the flag.** A customer who spent down to ₹0
+   remains a returning customer.
+5. **The customer cannot set this flag.** Submitting `{ "autoCreditEnabled": true }` is a no-op.
 
 ---
 
-## Credit Approval & Auto-Credit Rules
+## 4. Credit flow summary
 
-### 1. First Credit — Always Admin-Approved
-
-The first credit request for any customer **always requires admin approval**, regardless of configuration. This ensures every new customer is verified before money enters the system.
+### First online credit (admin-approved)
 
 ```text
-Customer
+Customer → POST /customer/payments/create (ONLINE)
    ↓
-PayU SUCCESS (or Cash Request)
-   ↓
-Payment SUCCESS
-   ↓
-WalletCreditRequest PENDING          ← wallet balance unchanged
-   ↓
-Admin APPROVE
-   ↓
-Wallet CREDIT                        ← in the SAME DB transaction
-   ↓
-autoCreditEnabled → true             ← flipped here, exactly once
-```
-
-1. Customer submits first top-up → status: `PENDING`
-2. Wallet balance remains unchanged (₹0)
-3. Admin approves → wallet credited, status: `COMPLETED`
-4. In the **same database transaction**: `autoCreditEnabled` flips to `true` on the customer's wallet
-
-### 2. Subsequent Online Credits — Automatic Approval
-
-Once `autoCreditEnabled = true` for that customer:
-
-```text
-Customer
+PayU Hosted Checkout
    ↓
 PayU SUCCESS
    ↓
-Load that customer's Wallet (autoCreditEnabled = true)
+Payment SUCCESS                        ← money collected
    ↓
-AUTO CREDIT                          ← no admin involved
+WalletCreditRequest PENDING             ← wallet balance unchanged
    ↓
-WalletTransaction CREDIT recorded
+Admin reviews → POST /admin/wallet/credit-requests/:id/approve
+   ↓
+WalletCreditRequest COMPLETED           ← in the SAME DB transaction:
+Wallet balance +amount                     - ledger row written
+WalletTransaction CREDIT                  - balance updated
+autoCreditEnabled → true                   - flag flipped
 ```
 
-- Subsequent verified PayU payments credit the wallet immediately upon cryptographic success verification.
-- **Zero Balance Spending**: Spending the entire balance down to zero (`balance = 0`) does **not** reset `autoCreditEnabled`. The customer remains recognized as a returning user.
-
-### 3. Cash Top-ups — Never Auto-Credit
+### Subsequent online credit (auto)
 
 ```text
-Customer
-   ↓
-Cash Request                         ← no gateway involved
-   ↓
-CashCollection PENDING
-   ↓
-Partner collects
-   ↓
-Admin CONFIRM
-   ↓
-Wallet CREDIT                        ← physical confirmation gates this
-   ↓
-autoCreditEnabled → true (if first credit)
-```
-
-Even for a customer with `autoCreditEnabled = true`, a cash top-up **always** waits for the admin's physical cash confirmation. The `autoCreditEnabled` flag only governs verified online gateway payments.
-
-### 4. Rejection of First Online Credit — Automatic PayU Refund
-
-```text
-Customer
+Customer → POST /customer/payments/create (ONLINE)
    ↓
 PayU SUCCESS
    ↓
 Payment SUCCESS
    ↓
-WalletCreditRequest PENDING
+Load this wallet's autoCreditEnabled = true
    ↓
-Admin REJECT                         ← POST /admin/wallet/credit-requests/:id/reject
-   ↓
-NO wallet credit, NO ledger row
-   ↓
-PaymentsService initiates refund     ← atomic claim: status -> REFUND_PENDING
-   ↓
-PayuService calls PayU refund API
-   ↓
-PayU refund webhook arrives
-   ↓
-Payment: REFUNDED, refundStatus = REFUNDED
+AUTO CREDIT                             ← no admin involved
+Wallet balance +amount
+WalletTransaction CREDIT
 ```
 
-- When an admin rejects a `PENDING` credit request funded by an online payment, no wallet credit occurs.
-- The linked payment moves to `REFUND_PENDING` and triggers an automated PayU refund request.
-- The refund is marked `REFUNDED` only when PayU's signed refund webhook is received and verified.
+### Cash top-up (always admin-confirmed)
+
+```text
+Customer → POST /customer/payments/create (CASH)
+   ↓
+CashCollection PENDING                   ← no PayU, no Payment row
+   ↓
+Delivery partner collects physical cash
+   ↓
+Admin → POST /admin/payments/cash-collections/:id/confirm
+   ↓
+WalletCreditRequest COMPLETED
+Wallet balance +amount
+WalletTransaction CREDIT
+autoCreditEnabled → true (if first)
+```
+
+### First online credit — rejected (auto-refund)
+
+```text
+PayU SUCCESS → Payment SUCCESS → WalletCreditRequest PENDING
+   ↓
+Admin → POST /admin/wallet/credit-requests/:id/reject (with note)
+   ↓
+WalletCreditRequest REJECTED, refundStatus=REFUND_PENDING
+   ↓
+(same request) PaymentsService.initiateRefundIfApplicable
+   ↓
+Payment SUCCESS → REFUND_PENDING, PayU refund API called
+   ↓
+PayU refund webhook arrives (verified)
+   ↓
+Payment REFUNDED, WalletCreditRequest refundStatus=REFUNDED
+Wallet balance never changed; autoCreditEnabled stays false
+```
 
 ---
 
-## Balance & Lifecycle Rules
+## 5. Balance & lifecycle rules
 
-- **Negative Balance Protection**: Balance can never go negative (enforced by DB check constraint).
-- **One Pending Limit**: Only **one PENDING** credit request per wallet is allowed at a time.
-- **Ledger Invariant**: Every balance change produces exactly one immutable `WalletTransaction` row with `balanceAfterPaise`.
+- **Negative balance impossible** — enforced by a DB `CHECK (balancePaise >= 0)`.
+- **One PENDING credit request per wallet** — enforced by a partial unique
+  index. A second concurrent request returns `409 WALLET_PENDING_REQUEST_EXISTS`.
+- **Immutable ledger** — `WalletTransaction` rows are read-only. Database
+  triggers reject any UPDATE or DELETE.
+- **Running balance snapshot** — every ledger row stores `balanceAfterPaise`
+  computed inside the same atomic UPDATE as the balance change.
 
 ---
 
-## Customer Endpoints
+## 6. Credit-request status reference
 
-### 1. Get Wallet
+| Status | Meaning | Terminal? |
+|--------|---------|-----------|
+| `PENDING` | Awaiting admin approval, cash confirmation, or verified ONLINE auto-credit | no |
+| `COMPLETED` | Wallet was credited | yes |
+| `REJECTED` | Admin rejected; refund workflow started for online top-ups | yes |
+| `CANCELLED` | Funding never arrived (PayU payment failed/cancelled/expired, or cash collection cancelled). No refund. | yes |
 
-```
-GET /api/v1/customer/wallet
-```
+Refund status (only relevant for `REJECTED`):
 
-**Authentication:** Customer JWT required
+| `refundStatus` | Meaning |
+|----------------|---------|
+| `NOT_REQUIRED` | Default; no money was ever collected |
+| `REFUND_PENDING` | PayU refund has been requested |
+| `REFUNDED` | PayU refund webhook confirmed |
+| `REFUND_FAILED` | Provider refused the refund request |
 
-**Response (200):**
+---
+
+## 7. Endpoints
+
+All routes are also served without the `/api/v1` prefix (`/customer/wallet/...`).
+
+### 7.1 `GET /api/v1/customer/wallet`
+
+Fetch the authenticated customer's wallet.
+
+**Request:** no body, no query.
+
+**Response `200`:**
 
 ```json
 {
-  "balancePaise": 50000,
+  "balancePaise": 150000,
   "currency": "INR",
   "autoCreditEnabled": true,
-  "createdAt": "2026-10-05T18:00:00.000Z",
-  "updatedAt": "2026-10-05T18:30:00.000Z"
+  "createdAt": "2026-10-01T08:00:00.000Z",
+  "updatedAt": "2026-10-06T11:30:00.000Z"
 }
 ```
+
+Field notes:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `balancePaise` | integer | Current spendable balance in paise |
+| `currency` | string | Always `"INR"` today |
+| `autoCreditEnabled` | boolean | Whether subsequent verified ONLINE credits auto-credit without admin approval |
+| `createdAt` / `updatedAt` | ISO 8601 | Timestamps |
 
 ---
 
-### 2. Create Credit Request
+### 7.2 `POST /api/v1/customer/wallet/credit-request`
 
-```
-POST /api/v1/customer/wallet/credit-request
-```
+Direct wallet credit request. This is the **unverified** path — it exists for
+legacy flows and is subject to the same first-credit rule as the Payment
+module. For actual money collection via PayU or cash, use
+`POST /customer/payments/create` instead.
 
-**Authentication:** Customer JWT required
+**Headers:**
 
-**Required Header:**
-```
-Idempotency-Key: <unique-string>
-```
+| Header | Required | Notes |
+|--------|----------|-------|
+| `Authorization: Bearer <token>` | yes | Customer JWT |
+| `Idempotency-Key: <string>` | yes | Fresh UUID per user intent; reuse on retry |
 
-**Request Body:**
+**Request body:**
 
 ```json
-{
-  "amount": 50000
-}
+{ "amount": 50000 }
 ```
 
-`amount` is in integer paise (50000 = ₹500.00). Must be within the configured min/max range.
+| Field | Type | Rules |
+|-------|------|-------|
+| `amount` | integer (paise) | Must fall within wallet min/max (default 100 – 1,000,000) |
 
-**Response — Pending (First Time or Manual Approval) (201):**
+**Response `201` — queued for approval (first credit, or `autoCreditEnabled=false`):**
 
 ```json
 {
@@ -213,11 +272,11 @@ Idempotency-Key: <unique-string>
   "status": "PENDING",
   "autoApproved": false,
   "message": "Credit request submitted for admin approval.",
-  "createdAt": "2026-10-05T18:00:00.000Z"
+  "createdAt": "2026-10-06T11:00:00.000Z"
 }
 ```
 
-**Response — Auto-Approved (Subsequent Online) (201):**
+**Response `201` — auto-credited (`autoCreditEnabled=true`):**
 
 ```json
 {
@@ -226,40 +285,46 @@ Idempotency-Key: <unique-string>
   "status": "COMPLETED",
   "autoApproved": true,
   "message": "Wallet credited successfully.",
-  "createdAt": "2026-10-05T18:00:00.000Z"
+  "createdAt": "2026-10-06T11:00:00.000Z"
 }
 ```
 
-**Idempotency:**
-- Same `Idempotency-Key` with the same amount → returns the original result with `replayed: true`
-- Same `Idempotency-Key` with a different amount → `409 IDEMPOTENCY_KEY_REUSED`
+**Idempotent replay** (same key, same amount):
+
+```json
+{
+  "id": "wcr-1092a3f0-4491",
+  "replayed": true,
+  "...": "..."
+}
+```
 
 **Errors:**
-- `400 INVALID_CREDIT_AMOUNT` — Amount out of range or non-integer
-- `409 WALLET_PENDING_REQUEST_EXISTS` — A request is already pending
-- `409 IDEMPOTENCY_KEY_REUSED` — Key reused with different parameters
+
+| HTTP | `error` | Cause |
+|------|---------|-------|
+| 400 | — | Missing `Idempotency-Key` |
+| 400 | `INVALID_CREDIT_AMOUNT` | Amount out of range or not an integer |
+| 409 | `WALLET_PENDING_REQUEST_EXISTS` | A credit request is already pending |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | Same key reused with different amount |
 
 ---
 
-### 3. List Transactions
+### 7.3 `GET /api/v1/customer/wallet/transactions`
 
-```
-GET /api/v1/customer/wallet/transactions
-```
+The customer's immutable ledger, scoped to their own wallet.
 
-**Authentication:** Customer JWT required
+**Query:**
 
-**Query Parameters:**
+| Param | Type | Default |
+|-------|------|---------|
+| `type` | `CREDIT` \| `DEBIT` | all |
+| `startDate` | `YYYY-MM-DD` | — |
+| `endDate` | `YYYY-MM-DD` (inclusive) | — |
+| `page` | int ≥ 1 | 1 |
+| `limit` | int 1–100 | 20 |
 
-| Param | Type | Required | Description |
-|-------|------|----------|-------------|
-| `type` | `CREDIT` \| `DEBIT` | No | Filter by transaction type |
-| `startDate` | `YYYY-MM-DD` | No | Transactions on or after date |
-| `endDate` | `YYYY-MM-DD` | No | Transactions on or before date |
-| `page` | integer | No | Page number (default 1) |
-| `limit` | integer | No | Items per page (default 20, max 100) |
-
-**Response (200):**
+**Response `200`:**
 
 ```json
 {
@@ -268,71 +333,113 @@ GET /api/v1/customer/wallet/transactions
       "id": "txn-5512b9a0",
       "type": "CREDIT",
       "amountPaise": 50000,
-      "balanceAfterPaise": 50000,
+      "balanceAfterPaise": 150000,
       "referenceType": "CREDIT_REQUEST",
       "referenceId": "wcr-1092a3f0-4491",
-      "description": "Wallet credit (auto-approved)",
-      "createdAt": "2026-10-05T18:30:00.000Z"
+      "description": "Wallet credit (auto-credited after verified payment)",
+      "createdAt": "2026-10-06T11:05:00.000Z"
     }
   ],
   "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
 }
 ```
 
+| `referenceType` | Meaning |
+|-----------------|---------|
+| `CREDIT_REQUEST` | A wallet top-up (ONLINE or CASH) |
+| `ORDER` | An order payment debit |
+
 ---
 
-### 4. List Credit Requests
+### 7.4 `GET /api/v1/customer/wallet/credit-requests`
 
-```
-GET /api/v1/customer/wallet/credit-requests
-```
+The customer's own credit requests.
 
-**Authentication:** Customer JWT required
+**Query:**
 
-**Query Parameters:**
+| Param | Type | Default |
+|-------|------|---------|
+| `status` | `PENDING` \| `COMPLETED` \| `REJECTED` \| `CANCELLED` | all |
+| `page` | int ≥ 1 | 1 |
+| `limit` | int 1–100 | 20 |
 
-| Param | Type | Required | Description |
-|-------|------|----------|-------------|
-| `status` | `PENDING` \| `COMPLETED` \| `REJECTED` | No | Filter by status |
-| `page` | integer | No | Page number (default 1) |
-| `limit` | integer | No | Items per page (default 20, max 100) |
-
-**Response (200):**
+**Response `200`:**
 
 ```json
 {
   "data": [
     {
-      "id": "wcr-1092a3f0-4491",
+      "id": "wcr-aaaa",
+      "amountPaise": 100000,
+      "status": "COMPLETED",
+      "autoApproved": false,
+      "completedAt": "2026-10-05T18:35:00.000Z",
+      "createdAt": "2026-10-05T18:30:00.000Z"
+    },
+    {
+      "id": "wcr-bbbb",
       "amountPaise": 50000,
       "status": "REJECTED",
       "autoApproved": false,
-      "adminNote": "Online payment could not be reconciled",
-      "refundStatus": "REFUNDED",
-      "reviewedAt": "2026-10-05T18:35:00.000Z",
-      "createdAt": "2026-10-05T18:00:00.000Z"
+      "adminNote": "Amount could not be reconciled",
+      "refundStatus": "REFUND_PENDING",
+      "reviewedAt": "2026-10-05T19:00:00.000Z",
+      "createdAt": "2026-10-05T18:50:00.000Z"
     }
   ],
-  "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
+  "pagination": { "page": 1, "limit": 20, "total": 2, "totalPages": 1 }
 }
 ```
 
+Fields returned depend on status:
+- `PENDING`: `id`, `amountPaise`, `status`, `autoApproved`, `createdAt`
+- `COMPLETED`: adds `completedAt`
+- `REJECTED`: adds `adminNote`, `refundStatus`, `reviewedAt`
+
 ---
 
-## Error Codes
+## 8. Error code reference
 
-| Code | HTTP Status | Description |
-|---|---|---|
-| `INVALID_CREDIT_AMOUNT` | 400 | Amount out of configured bounds or not an integer number of paise |
-| `WALLET_PENDING_REQUEST_EXISTS` | 409 | A credit request is already pending for this wallet |
-| `IDEMPOTENCY_KEY_REUSED` | 409 | Idempotency key reused with different parameters |
-| `INSUFFICIENT_WALLET_BALANCE` | 400 | Not enough balance for debit |
+| Code | HTTP | Scenario |
+|------|------|----------|
+| `INVALID_CREDIT_AMOUNT` | 400 | Amount outside wallet bounds or non-integer |
+| `WALLET_PENDING_REQUEST_EXISTS` | 409 | One PENDING already exists for this wallet |
+| `IDEMPOTENCY_KEY_REUSED` | 409 | Key reused with different parameters |
+| `INSUFFICIENT_WALLET_BALANCE` | 400 | Debit would make balance negative |
+| `CREDIT_REQUEST_NOT_FOUND` | 404 | Unknown credit request id |
 
-## Security Rules
+Standard infrastructure errors:
 
-- Customer can only access their own wallet, transactions, and credit requests.
-- `userId` is always derived from `JWT.sub` — never accepted from request body.
-- Customer cannot manipulate balance, status, adminId, `autoCreditEnabled`, or `refundStatus`.
-- Customer cannot access Admin endpoints (`403 Forbidden`).
-- Missing or invalid token returns `401 Unauthorized`.
-- Extra/forbidden fields in request body are silently stripped by whitelist validation.
+| HTTP | Scenario |
+|------|----------|
+| 401 | Missing / expired / revoked token |
+| 403 | Token has wrong role (admin on customer route, etc.) |
+
+---
+
+## 9. Security rules
+
+- A customer can only read their own wallet, transactions, and credit requests.
+- `userId`, `walletId`, `balancePaise`, `status`, `autoCreditEnabled`,
+  `refundStatus`, `adminId` are never accepted from the request body.
+- An admin token calling customer routes gets 403; a customer token on admin
+  routes gets 403.
+- A missing or invalid token returns 401 before any handler runs.
+
+---
+
+## 10. Frontend integration checklist
+
+1. Always send `Idempotency-Key` on `POST /credit-request` and retry the same
+   key on network errors — the server deduplicates.
+2. Treat `autoCreditEnabled: false` as the default new-user state. Show
+   "pending admin approval" messaging after any first credit request.
+3. Treat `autoCreditEnabled: true` as a signal that a successful PayU payment
+   will land in the wallet immediately, so the UI can show "Wallet credited"
+   on the result page.
+4. Never read `balancePaise` from your own cache after a payment attempt —
+   always refetch `GET /customer/wallet` on return from PayU to see the real
+   state.
+5. For the "payment success + wallet pending" case (first credit), the UI must
+   show two distinct messages: "Payment Successful" (the money reached PayU)
+   and "Wallet Credit Awaiting Approval" (the admin has not approved yet).
