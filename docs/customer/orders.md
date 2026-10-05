@@ -263,6 +263,99 @@ GET /api/v1/customer/orders/:id/invoice
 
 ---
 
+
+---
+
+### 6. Pay for Order
+
+```
+POST /api/v1/customer/orders/:orderId/pay
+```
+
+**Authentication:** Customer JWT required
+
+**Headers (required for ONLINE only):**
+```
+Idempotency-Key: <unique-uuid>
+```
+
+**Request Body:**
+
+```json
+{
+  "paymentMethod": "WALLET"
+}
+```
+or
+```json
+{
+  "paymentMethod": "ONLINE"
+}
+```
+
+**Payment Methods:**
+
+1. **`WALLET`**:
+   - Synchronously debits the customer's wallet balance by `Order.totalPaise`.
+   - Atomically updates `Order.paymentStatus = PAID` within the same transaction.
+   - Creates an immutable `WalletTransaction` ledger row (`type: DEBIT`, `referenceType: ORDER`).
+   - Does not require an `Idempotency-Key` header (the unique ledger constraint prevents duplicate debit).
+
+   **Response — Wallet (`200 OK`):**
+   ```json
+   {
+     "success": true,
+     "orderId": "uuid",
+     "paymentMethod": "WALLET",
+     "paymentStatus": "PAID",
+     "orderStatus": "CONFIRMED"
+   }
+   ```
+
+2. **`ONLINE`**:
+   - Requires `Idempotency-Key` header.
+   - Creates a `Payment` row (`purpose: ORDER`, `amountPaise: Order.totalPaise`).
+   - Returns PayU Hosted Checkout form action and fields with server-generated SHA-512 hash.
+   - Upon verified PayU success callback/webhook, `Order.paymentStatus` flips to `PAID`.
+   - **Late-Arrival Auto-Refund**: If an order was already settled (e.g., paid by wallet while PayU checkout was open), the late PayU payment is safely routed to `REFUND_PENDING` and refunded via gateway webhook.
+
+   **Response — Online (`200 OK`):**
+   ```json
+   {
+     "payment": {
+       "id": "uuid",
+       "transactionId": "PFM8J1X091...",
+       "amountPaise": 18000,
+       "currency": "INR",
+       "status": "PENDING"
+     },
+     "orderId": "uuid",
+     "checkout": {
+       "endpoint": "https://secure.payu.in/_payment",
+       "method": "POST",
+       "fields": {
+         "key": "...",
+         "txnid": "PFM8J1X091...",
+         "amount": "180.00",
+         "productinfo": "Order PF10001",
+         "firstname": "Rahul",
+         "email": "customer@example.com",
+         "phone": "9876543210",
+         "surl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/success",
+         "furl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/failure",
+         "hash": "..."
+       }
+     },
+     "message": "Payment created. Submit the checkout fields to the payment gateway to complete it."
+   }
+   ```
+
+**Errors:**
+- `400 BAD_REQUEST` — Missing `Idempotency-Key` for online payment, or invalid paymentMethod
+- `400 INSUFFICIENT_WALLET_BALANCE` — Customer wallet does not have enough balance for order total
+- `404 ORDER_NOT_FOUND` — Order does not exist or belongs to another customer
+- `409 ORDER_ALREADY_PROCESSED` — Order is already `PAID`
+
 ## Security / IDOR Rules
 
 - Customer can only access their own orders, invoices, and reorders

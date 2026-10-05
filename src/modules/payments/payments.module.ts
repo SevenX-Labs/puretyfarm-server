@@ -12,6 +12,8 @@ import { PAYMENT_PROVIDER } from './providers/payment-provider.interface';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { OrdersModule } from '../orders/orders.module';
+import { OrderPaymentsController } from './order-payments.controller';
 
 /**
  * One shared Payment module: customer APIs, admin APIs, the public PayU
@@ -25,12 +27,13 @@ import { WalletModule } from '../wallet/wallet.module';
  * adding a provider class and changing this one binding.
  */
 @Module({
-  imports: [PrismaModule, AuthModule, forwardRef(() => WalletModule)],
+  imports: [PrismaModule, AuthModule, forwardRef(() => WalletModule), OrdersModule],
   controllers: [
     PaymentsController,
     AdminPaymentsController,
     PayuCallbackController,
     PayuWebhookController,
+    OrderPaymentsController,
   ],
   providers: [
     PaymentsService,

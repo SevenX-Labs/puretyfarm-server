@@ -12,9 +12,11 @@ import { Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
+import { PaymentStatus as OrderPaymentStatus } from '../orders/orders.constants';
 import {
   WalletCreditRequestStatus,
   WalletRefundStatus,
+  WalletTransactionReferenceType,
 } from '../wallet/wallet.constants';
 import { PAYMENT_PROVIDER } from './providers/payment-provider.interface';
 // `import type` is required for a type used in a decorated constructor
@@ -697,9 +699,59 @@ export class PaymentsService {
         };
       }
 
-      if (!payment.walletCreditRequestId) {
-        // Order payments are not wired up yet; the payment is recorded and
-        // nothing wallet-related happens.
+      // Shared settlement branches on PURPOSE. The payment-side state
+      // transition is identical for both; what differs is which downstream
+      // ledger the money moves through.
+      if (payment.purpose === PaymentPurpose.WALLET_TOPUP) {
+        if (!payment.walletCreditRequestId) {
+          return {
+            outcome: 'APPLIED' as const,
+            paymentId,
+            transactionId: payment.transactionId,
+            status: PaymentTransactionStatus.SUCCESS,
+            walletCredited: false,
+            requiresAdminApproval: false,
+            creditRequestStatus: null,
+          };
+        }
+
+        const settlement = await this.walletService.settleAfterVerifiedPayment(
+          tx,
+          payment.walletCreditRequestId,
+        );
+
+        this.logger.log(
+          `Payment success applied source=${source} paymentId=${paymentId} ` +
+            `purpose=WALLET_TOPUP transactionId=${payment.transactionId} ` +
+            `userId=${payment.userId} amountPaise=${payment.amountPaise} ` +
+            `walletCredited=${settlement.credited} ` +
+            `requiresAdminApproval=${settlement.requiresAdminApproval}`,
+        );
+
+        return {
+          outcome: 'APPLIED' as const,
+          paymentId,
+          transactionId: payment.transactionId,
+          status: PaymentTransactionStatus.SUCCESS,
+          walletCredited: settlement.credited,
+          requiresAdminApproval: settlement.requiresAdminApproval,
+          creditRequestStatus: settlement.status,
+        };
+      }
+
+      // ─── ORDER settlement ──────────────────────────────────────────────
+      // Verified SUCCESS for an order payment. The Payment row is already
+      // flipped to SUCCESS and amount == Payment.amountPaise was verified
+      // above. Now re-check against Order.totalPaise and try the atomic
+      // conditional Order update. If 0 rows match the order was already PAID
+      // (likely by a parallel wallet payment) — route this payment to
+      // REFUND_PENDING; the existing refund machinery drives it to REFUNDED
+      // on the provider's confirmed webhook. The order and wallet are not
+      // touched on that path.
+      if (!payment.orderId) {
+        this.logger.error(
+          `ORDER payment missing orderId paymentId=${paymentId}`,
+        );
         return {
           outcome: 'APPLIED' as const,
           paymentId,
@@ -711,18 +763,67 @@ export class PaymentsService {
         };
       }
 
-      // Wallet decides everything from here: first-credit rule, auto-credit
-      // flag, ledger write and balance update.
-      const settlement = await this.walletService.settleAfterVerifiedPayment(
-        tx,
-        payment.walletCreditRequestId,
-      );
+      const order = await tx.order.findUnique({
+        where: { id: payment.orderId },
+        select: { id: true, totalPaise: true, paymentStatus: true },
+      });
+
+      if (!order) {
+        this.logger.error(
+          `ORDER payment references unknown order paymentId=${paymentId} ` +
+            `orderId=${payment.orderId}`,
+        );
+        return {
+          outcome: 'APPLIED' as const,
+          paymentId,
+          transactionId: payment.transactionId,
+          status: PaymentTransactionStatus.SUCCESS,
+          walletCredited: false,
+          requiresAdminApproval: false,
+          creditRequestStatus: null,
+        };
+      }
+
+      if (payment.amountPaise !== order.totalPaise) {
+        this.logger.error(
+          `ORDER payment amount drift paymentId=${paymentId} ` +
+            `orderId=${order.id} paymentPaise=${payment.amountPaise} ` +
+            `orderPaise=${order.totalPaise}`,
+        );
+        return this.sendPaymentToRefundPending(
+          tx,
+          payment.id,
+          'order-amount-mismatch',
+          payment.transactionId,
+        );
+      }
+
+      const orderUpdate = await tx.order.updateMany({
+        where: {
+          id: payment.orderId,
+          paymentStatus: OrderPaymentStatus.PENDING,
+        },
+        data: { paymentStatus: OrderPaymentStatus.PAID },
+      });
+
+      if (orderUpdate.count === 0) {
+        this.logger.log(
+          `ORDER already PAID; routing late PayU success to refund ` +
+            `source=${source} paymentId=${paymentId} orderId=${order.id} ` +
+            `transactionId=${payment.transactionId}`,
+        );
+        return this.sendPaymentToRefundPending(
+          tx,
+          payment.id,
+          'order-already-paid',
+          payment.transactionId,
+        );
+      }
 
       this.logger.log(
-        `Payment success applied source=${source} paymentId=${paymentId} ` +
-          `transactionId=${payment.transactionId} userId=${payment.userId} ` +
-          `amountPaise=${payment.amountPaise} walletCredited=${settlement.credited} ` +
-          `requiresAdminApproval=${settlement.requiresAdminApproval}`,
+        `ORDER payment success applied source=${source} paymentId=${paymentId} ` +
+          `orderId=${order.id} transactionId=${payment.transactionId} ` +
+          `userId=${payment.userId} amountPaise=${payment.amountPaise}`,
       );
 
       return {
@@ -730,11 +831,106 @@ export class PaymentsService {
         paymentId,
         transactionId: payment.transactionId,
         status: PaymentTransactionStatus.SUCCESS,
-        walletCredited: settlement.credited,
-        requiresAdminApproval: settlement.requiresAdminApproval,
-        creditRequestStatus: settlement.status,
+        walletCredited: false,
+        requiresAdminApproval: false,
+        creditRequestStatus: null,
       };
     });
+  }
+
+  /**
+   * SUCCESS -> REFUND_PENDING in-transaction. Used for the late-arrival
+   * case where PayU's verified SUCCESS lands AFTER the wallet already settled
+   * the order. The actual PayU refund call is fired after commit so a slow
+   * provider does not hold DB locks. If the process dies between commit and
+   * provider call, the Payment row stays REFUND_PENDING and the admin can
+   * retry via POST /admin/payments/order/:id/refund (see initiateOrderRefund).
+   */
+  private async sendPaymentToRefundPending(
+    tx: Prisma.TransactionClient,
+    paymentId: string,
+    reason: string,
+    transactionId: string,
+  ): Promise<AppliedOutcome> {
+    const claim = await tx.payment.updateMany({
+      where: { id: paymentId, status: PaymentTransactionStatus.SUCCESS },
+      data: { status: PaymentTransactionStatus.REFUND_PENDING },
+    });
+
+    if (claim.count > 0) {
+      setImmediate(() => {
+        this.callProviderRefundForPayment(paymentId).catch((error) => {
+          this.logger.error(
+            `Late refund call failed paymentId=${paymentId} ` +
+              `reason=${reason} transactionId=${transactionId} ` +
+              `error=${error instanceof Error ? error.name : 'UnknownError'}`,
+          );
+        });
+      });
+    }
+
+    return {
+      outcome: 'APPLIED' as const,
+      paymentId,
+      transactionId,
+      status: PaymentTransactionStatus.REFUND_PENDING,
+      walletCredited: false,
+      requiresAdminApproval: false,
+      creditRequestStatus: null,
+    };
+  }
+
+  /**
+   * Common PayU refund call shared by:
+   *   - the credit-request rejection path (initiateRefundForRejectedCreditRequest)
+   *   - the late-arrival ORDER success -> REFUND_PENDING path
+   *   - the admin initiateOrderRefund retry
+   *
+   * Expects the Payment row to already be in REFUND_PENDING when called.
+   * Does not change state further; the provider's webhook flips it to REFUNDED.
+   */
+  private async callProviderRefundForPayment(paymentId: string): Promise<void> {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+    });
+    if (!payment) return;
+    if (payment.status !== PaymentTransactionStatus.REFUND_PENDING) return;
+    if (!payment.providerPaymentId) {
+      this.logger.error(
+        `Refund skipped: providerPaymentId missing paymentId=${paymentId}`,
+      );
+      return;
+    }
+
+    const result = await this.provider.refundPayment({
+      transactionId: payment.transactionId,
+      providerPaymentId: payment.providerPaymentId,
+      amountPaise: payment.amountPaise,
+      reason: 'late-arrival-or-admin-initiated',
+    });
+
+    if (result.providerRefundId) {
+      await this.prisma.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: PaymentTransactionStatus.REFUND_PENDING,
+        },
+        data: { providerRefundId: result.providerRefundId },
+      });
+    }
+
+    if (!result.accepted) {
+      this.logger.error(
+        `Provider rejected refund paymentId=${payment.id} ` +
+          `transactionId=${payment.transactionId}`,
+      );
+    } else {
+      this.logger.log(
+        `Refund requested paymentId=${payment.id} ` +
+          `transactionId=${payment.transactionId} ` +
+          `providerRefundId=${result.providerRefundId ?? 'none'}`,
+      );
+    }
   }
 
   /**
@@ -915,6 +1111,300 @@ export class PaymentsService {
       walletCredited: false,
       requiresAdminApproval: false,
       creditRequestStatus: null,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ORDER PAYMENTS
+  //
+  //  Two entry points, one settlement:
+  //    - payOrderFromWallet(userId, orderId)
+  //         ONE transaction: conditional Order PENDING→PAID + wallet DEBIT.
+  //         If either step fails, both roll back. Does NOT touch any live
+  //         PayU Order payment — the shared SUCCESS settlement handles those
+  //         via the late-arrival REFUND_PENDING path.
+  //    - createOrderPayment(userId, orderId, idempotencyKey)
+  //         Creates a Payment row (purpose=ORDER, orderId) and returns PayU
+  //         Hosted Checkout fields. The partial unique index
+  //         `payments_one_live_payment_per_order` prevents two live PayU
+  //         payments for the same order.
+  //
+  //  Shared SUCCESS settlement is in applySuccess above.
+  //  Expiry / FAILED / CANCELLED stay on their existing per-purpose paths
+  //  (applyFailure for ORDER-purpose simply leaves the Order PENDING).
+  // ══════════════════════════════════════════════════════════════════
+
+  async payOrderFromWallet(userId: string, orderId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      // Load order under the same tx. Owner-scoped 404 — same shape as
+      // 'order not found' so a probe cannot distinguish the two.
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: {
+          id: true,
+          userId: true,
+          totalPaise: true,
+          paymentStatus: true,
+          status: true,
+        },
+      });
+
+      if (!order || order.userId !== userId) {
+        throw new NotFoundException({
+          error: 'ORDER_NOT_FOUND',
+          message: 'Order not found',
+        });
+      }
+
+      if (order.paymentStatus !== OrderPaymentStatus.PENDING) {
+        throw new ConflictException({
+          error: 'ORDER_ALREADY_PROCESSED',
+          message: `Order is already ${order.paymentStatus.toLowerCase()}`,
+        });
+      }
+
+      // Debit the wallet THROUGH the same-tx variant. The ledger unique
+      // (type, referenceType, referenceId) index means a repeated call for
+      // the same orderId is a hard DB-level duplicate.
+      await this.walletService.debitWalletWithin(
+        tx,
+        userId,
+        order.totalPaise,
+        WalletTransactionReferenceType.ORDER,
+        order.id,
+        `Order payment (${order.id})`,
+      );
+
+      // Atomic conditional Order update. If a parallel PayU success raced us
+      // and already marked the order PAID, we'd match 0 rows here — but the
+      // debit above would have succeeded, so we'd be double-paying. Throwing
+      // rolls back the whole transaction including the ledger row.
+      //
+      // In practice the DB-level unique on (type, referenceType, referenceId)
+      // would prevent a second DEBIT regardless; this is the belt-and-braces
+      // in-code assertion.
+      const updated = await tx.order.updateMany({
+        where: {
+          id: order.id,
+          paymentStatus: OrderPaymentStatus.PENDING,
+        },
+        data: { paymentStatus: OrderPaymentStatus.PAID },
+      });
+
+      if (updated.count === 0) {
+        throw new ConflictException({
+          error: 'ORDER_ALREADY_PROCESSED',
+          message: 'Order was settled by another request',
+        });
+      }
+
+      this.logger.log(
+        `Order paid via wallet orderId=${order.id} userId=${userId} ` +
+          `amountPaise=${order.totalPaise}`,
+      );
+
+      return {
+        success: true,
+        orderId: order.id,
+        paymentMethod: 'WALLET',
+        paymentStatus: OrderPaymentStatus.PAID,
+        orderStatus: order.status,
+      };
+    });
+  }
+
+  async createOrderPayment(
+    userId: string,
+    orderId: string,
+    idempotencyKey: string,
+  ) {
+    const customer = await this.getCustomerForCheckout(userId);
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        userId: true,
+        totalPaise: true,
+        paymentStatus: true,
+        orderNumber: true,
+      },
+    });
+
+    if (!order || order.userId !== userId) {
+      throw new NotFoundException({
+        error: 'ORDER_NOT_FOUND',
+        message: 'Order not found',
+      });
+    }
+
+    if (order.paymentStatus !== OrderPaymentStatus.PENDING) {
+      throw new ConflictException({
+        error: 'ORDER_ALREADY_PROCESSED',
+        message: `Order is already ${order.paymentStatus.toLowerCase()}`,
+      });
+    }
+
+    const requestHash = `order:${order.id}:${order.totalPaise}`;
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      // Idempotency replay across the Payments-level idempotency key.
+      const existing = await tx.payment.findUnique({
+        where: { userId_idempotencyKey: { userId, idempotencyKey } },
+      });
+
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          throw new ConflictException({
+            error: 'IDEMPOTENCY_KEY_REUSED',
+            message:
+              'Idempotency key has already been used with different parameters',
+          });
+        }
+        return { payment: existing, replayed: true };
+      }
+
+      // The partial unique index payments_one_live_payment_per_order kicks in
+      // here if a concurrent request has already produced a live Payment for
+      // this order. Catch and return it so the two concurrent callers both
+      // see the same checkout.
+      try {
+        const payment = await tx.payment.create({
+          data: {
+            userId,
+            orderId: order.id,
+            provider: PaymentProviderType.PAYU,
+            purpose: PaymentPurpose.ORDER,
+            paymentMethod: PaymentMethod.ONLINE,
+            transactionId: this.generateTransactionId(),
+            amountPaise: order.totalPaise,
+            currency: PAYMENT_CURRENCY,
+            status: PaymentTransactionStatus.PENDING,
+            idempotencyKey,
+            requestHash,
+            expiresAt: new Date(Date.now() + this.expiryMinutes * 60_000),
+          },
+        });
+        return { payment, replayed: false };
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          // Another concurrent request won the live-payment slot. Return it.
+          const live = await tx.payment.findFirst({
+            where: {
+              orderId: order.id,
+              status: {
+                in: [
+                  PaymentTransactionStatus.PENDING,
+                  PaymentTransactionStatus.PROCESSING,
+                  PaymentTransactionStatus.SUCCESS,
+                  PaymentTransactionStatus.REFUND_PENDING,
+                  PaymentTransactionStatus.REFUNDED,
+                ],
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (live) {
+            return { payment: live, replayed: true };
+          }
+        }
+        throw error;
+      }
+    });
+
+    const checkout = await this.provider.createPayment({
+      transactionId: created.payment.transactionId,
+      amountPaise: created.payment.amountPaise,
+      productInfo: `Order ${order.orderNumber}`,
+      customerFirstName: customer.firstName,
+      customerEmail: customer.email,
+      customerPhone: customer.mobile,
+    });
+
+    this.logger.log(
+      `Order PayU payment created paymentId=${created.payment.id} ` +
+        `orderId=${order.id} transactionId=${created.payment.transactionId} ` +
+        `userId=${userId} amountPaise=${created.payment.amountPaise} ` +
+        `replayed=${created.replayed}`,
+    );
+
+    return {
+      payment: this.formatCustomerPayment(created.payment),
+      orderId: order.id,
+      replayed: created.replayed || undefined,
+      checkout,
+      message:
+        'Payment created. Submit the checkout fields to the payment gateway to complete it.',
+    };
+  }
+
+  /**
+   * Admin retry for an ORDER-purpose PayU refund. Not currently exposed as an
+   * endpoint — kept for the future admin refund panel.
+   */
+  async initiateOrderRefund(orderId: string) {
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        orderId,
+        purpose: PaymentPurpose.ORDER,
+        status: PaymentTransactionStatus.SUCCESS,
+      },
+    });
+
+    if (!payment) {
+      throw new ConflictException({
+        error: 'NO_REFUNDABLE_PAYMENT',
+        message:
+          'No settled online payment exists for this order. Wallet-paid orders are not refunded through the gateway.',
+      });
+    }
+
+    if (!payment.providerPaymentId) {
+      throw new ConflictException({
+        error: 'PROVIDER_PAYMENT_ID_MISSING',
+        message: 'Provider payment reference is missing; cannot refund',
+      });
+    }
+
+    const claimed = await this.prisma.payment.updateMany({
+      where: { id: payment.id, status: PaymentTransactionStatus.SUCCESS },
+      data: { status: PaymentTransactionStatus.REFUND_PENDING },
+    });
+
+    if (claimed.count === 0) {
+      throw new ConflictException({
+        error: 'REFUND_ALREADY_IN_PROGRESS',
+        message: 'A refund for this payment is already in progress',
+      });
+    }
+
+    try {
+      await this.callProviderRefundForPayment(payment.id);
+    } catch (error) {
+      // Release the claim so the admin can retry.
+      await this.prisma.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: PaymentTransactionStatus.REFUND_PENDING,
+        },
+        data: { status: PaymentTransactionStatus.SUCCESS },
+      });
+      throw error;
+    }
+
+    return {
+      success: true,
+      message:
+        'Refund requested. It is marked REFUNDED only after the provider confirms it.',
+      payment: {
+        id: payment.id,
+        transactionId: payment.transactionId,
+        status: PaymentTransactionStatus.REFUND_PENDING,
+        amountPaise: payment.amountPaise,
+      },
     };
   }
 

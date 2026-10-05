@@ -750,37 +750,80 @@ export class WalletService {
   ) {
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new BadRequestException({
+        error: "INVALID_CREDIT_AMOUNT",
+        message: "Debit amount must be a positive integer",
+      });
+    }
+
+    return this.prisma.$transaction((tx) =>
+      this.debitWalletWithin(
+        tx,
+        userId,
+        amountPaise,
+        referenceType,
+        referenceId,
+        description,
+      ),
+    );
+  }
+
+  /**
+   * Transaction-scoped debit variant.
+   *
+   * Same contract as `debitWallet` but takes an existing transaction client
+   * instead of opening its own, so a caller that must atomically couple the
+   * debit with other writes (e.g. the Order payment path flipping
+   * `Order.paymentStatus = PAID` in the same tx) can do so without a nested
+   * transaction. Public callers that only need the debit continue to use
+   * `debitWallet` and get its own transaction for free.
+   *
+   * Same safety as before:
+   *  - amount must be a positive integer paise value
+   *  - `applyBalanceChange` enforces the CHECK (balancePaise >= 0)
+   *  - the unique `(type, referenceType, referenceId)` ledger index rejects a
+   *    duplicate debit for the same reference at the DB level, so a repeated
+   *    call for the same orderId cannot double-debit
+   */
+  async debitWalletWithin(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    amountPaise: number,
+    referenceType: WalletTransactionReferenceType,
+    referenceId: string,
+    description?: string,
+  ) {
+    if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
+      throw new BadRequestException({
         error: 'INVALID_CREDIT_AMOUNT',
         message: 'Debit amount must be a positive integer',
       });
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.findUnique({ where: { userId } });
-      if (!wallet) {
-        throw new BadRequestException({
-          error: 'INSUFFICIENT_WALLET_BALANCE',
-          message: 'Wallet not found',
-        });
-      }
+    const wallet = await tx.wallet.findUnique({ where: { userId } });
+    if (!wallet) {
+      throw new BadRequestException({
+        error: 'INSUFFICIENT_WALLET_BALANCE',
+        message: 'Wallet not found',
+      });
+    }
 
-      const result = await this.applyBalanceChange(
-        tx,
-        wallet.id,
-        WalletTransactionType.DEBIT,
-        amountPaise,
-        referenceType,
-        referenceId,
-        undefined,
-        description,
-      );
+    const result = await this.applyBalanceChange(
+      tx,
+      wallet.id,
+      WalletTransactionType.DEBIT,
+      amountPaise,
+      referenceType,
+      referenceId,
+      undefined,
+      description,
+    );
 
-      return {
-        success: true,
-        balanceAfterPaise: result.balanceAfterPaise,
-        transactionId: result.transactionId,
-      };
-    });
+    return {
+      success: true,
+      walletId: wallet.id,
+      balanceAfterPaise: result.balanceAfterPaise,
+      transactionId: result.transactionId,
+    };
   }
 
   // ══════════════════════════════════════════════════════════════════
