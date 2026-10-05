@@ -56,11 +56,11 @@ npx prisma db seed
 ```
 
 **Seeded Credentials**:
-- **Email**: `admin@puretyfarm.com`
+- **Email**: `admin@puretyfarm.in`
 - **Initial Password**: `puretyfarm@2026`
 
 **Idempotency & Safety Rules**:
-1. The seed checks if an Admin with `email: "admin@puretyfarm.com"` already exists.
+1. The seed checks if an Admin with `email: "admin@puretyfarm.in"` already exists.
 2. If **not found**, it hashes `puretyfarm@2026` with Argon2 and creates the record.
 3. If **already exists**, it skips creation and **never overwrites** the existing password hash, ensuring updated passwords are not reset on subsequent seed executions.
 
@@ -102,7 +102,7 @@ Authenticates an Administrator using email and password, creates an active sessi
 - **Request Body**:
   ```json
   {
-    "email": "admin@puretyfarm.com",
+    "email": "admin@puretyfarm.in",
     "password": "puretyfarm@2026"
   }
   ```
@@ -118,7 +118,7 @@ Authenticates an Administrator using email and password, creates an active sessi
     "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     "admin": {
       "id": "7cf7afdf-6d89-4fbf-a9f2-11089335e980",
-      "email": "admin@puretyfarm.com",
+      "email": "admin@puretyfarm.in",
       "role": "ADMIN"
     }
   }
@@ -236,7 +236,7 @@ Returns safe profile metadata for the authenticated Administrator.
   ```json
   {
     "id": "7cf7afdf-6d89-4fbf-a9f2-11089335e980",
-    "email": "admin@puretyfarm.com",
+    "email": "admin@puretyfarm.in",
     "role": "ADMIN"
   }
   ```
@@ -288,7 +288,7 @@ npx prisma db seed
 curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "admin@puretyfarm.com",
+    "email": "admin@puretyfarm.in",
     "password": "puretyfarm@2026"
   }'
 ```
@@ -307,7 +307,7 @@ export ADMIN_TOKEN="<COPIED_ACCESS_TOKEN>"
 curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/auth/admin/get-me \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
-**Expected Response**: `200 OK` returning `{ "id": "...", "email": "admin@puretyfarm.com", "role": "ADMIN" }`.
+**Expected Response**: `200 OK` returning `{ "id": "...", "email": "admin@puretyfarm.in", "role": "ADMIN" }`.
 
 ---
 
@@ -344,7 +344,7 @@ Try logging in with the old initial password:
 curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "admin@puretyfarm.com",
+    "email": "admin@puretyfarm.in",
     "password": "puretyfarm@2026"
   }'
 ```
@@ -358,7 +358,7 @@ curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
 curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "admin@puretyfarm.com",
+    "email": "admin@puretyfarm.in",
     "password": "newSecurePassword2026!"
   }'
 ```

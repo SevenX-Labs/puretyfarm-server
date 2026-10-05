@@ -4,7 +4,7 @@ import * as argon2 from 'argon2';
 const prisma = new PrismaClient();
 
 async function main() {
-  const email = 'admin@puretyfarm.com';
+  const email = 'admin@puretyfarm.in';
   const initialPassword = 'puretyfarm@2026';
 
   const existing = await prisma.admin.findUnique({

@@ -247,7 +247,7 @@ Login with admin credentials to receive an access token:
 curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "admin@puretyfarm.com",
+    "email": "admin@puretyfarm.in",
     "password": "puretyfarm@2026"
   }'
 ```
@@ -259,7 +259,7 @@ curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   "refreshToken": "eyJhbGciOi...",
   "admin": {
     "id": "a9f8b7c6-...",
-    "email": "admin@puretyfarm.com",
+    "email": "admin@puretyfarm.in",
     "role": "ADMIN"
   }
 }

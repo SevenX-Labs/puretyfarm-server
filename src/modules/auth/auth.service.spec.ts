@@ -610,7 +610,7 @@ describe('AuthService', () => {
 
       mockPrismaService.admin.findUnique.mockResolvedValue({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         passwordHash,
         isActive: true,
       });
@@ -621,7 +621,7 @@ describe('AuthService', () => {
       });
 
       const result = await service.adminLogin({
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         password: plainPassword,
       });
 
@@ -630,7 +630,7 @@ describe('AuthService', () => {
       expect(result.refreshToken).toBeDefined();
       expect(result.admin).toEqual({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         role: 'ADMIN',
       });
       // Ensure passwordHash is NEVER exposed in the response
@@ -673,14 +673,14 @@ describe('AuthService', () => {
 
       mockPrismaService.admin.findUnique.mockResolvedValue({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         passwordHash: correctHash,
         isActive: true,
       });
 
       await expect(
         service.adminLogin({
-          email: 'admin@puretyfarm.com',
+          email: 'admin@puretyfarm.in',
           password: 'wrong-password',
         }),
       ).rejects.toThrow(UnauthorizedException);
@@ -691,14 +691,14 @@ describe('AuthService', () => {
 
       mockPrismaService.admin.findUnique.mockResolvedValue({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         passwordHash,
         isActive: false, // inactive!
       });
 
       await expect(
         service.adminLogin({
-          email: 'admin@puretyfarm.com',
+          email: 'admin@puretyfarm.in',
           password: 'puretyfarm@2026',
         }),
       ).rejects.toThrow(UnauthorizedException);
@@ -712,7 +712,7 @@ describe('AuthService', () => {
 
       mockPrismaService.admin.findUnique.mockResolvedValue({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         passwordHash: currentHash,
         isActive: true,
       });
@@ -748,7 +748,7 @@ describe('AuthService', () => {
 
       mockPrismaService.admin.findUnique.mockResolvedValue({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         passwordHash: currentHash,
         isActive: true,
       });
@@ -791,7 +791,7 @@ describe('AuthService', () => {
     it('should return safe admin details (id, email, role: ADMIN) and never passwordHash', async () => {
       mockPrismaService.admin.findUnique.mockResolvedValue({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         passwordHash: '$argon2id$hashedsecret',
         isActive: true,
         createdAt: new Date(),
@@ -802,7 +802,7 @@ describe('AuthService', () => {
 
       expect(result).toEqual({
         id: 'admin-uuid-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         role: 'ADMIN',
       });
       expect((result as any).passwordHash).toBeUndefined();
@@ -833,18 +833,18 @@ describe('AuthService', () => {
       mockPrismaService.admin.findUnique.mockResolvedValue(null);
       mockPrismaService.admin.create.mockResolvedValue({
         id: 'new-admin-id',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
       });
 
       const result = await service.seedInitialAdmin();
 
       expect(result.created).toBe(true);
       expect(result.id).toBe('new-admin-id');
-      expect(result.email).toBe('admin@puretyfarm.com');
+      expect(result.email).toBe('admin@puretyfarm.in');
 
       expect(mockPrismaService.admin.create).toHaveBeenCalledWith({
         data: {
-          email: 'admin@puretyfarm.com',
+          email: 'admin@puretyfarm.in',
           passwordHash: expect.stringMatching(/^\$argon2/),
           isActive: true,
         },
@@ -854,7 +854,7 @@ describe('AuthService', () => {
     it('repeated seed does not create duplicate and returns existing admin without modifying password', async () => {
       mockPrismaService.admin.findUnique.mockResolvedValue({
         id: 'existing-admin-id',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         passwordHash: 'existing-untouched-hash',
       });
 

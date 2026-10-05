@@ -60,7 +60,7 @@ describe('AuthController', () => {
       refreshToken: 'admin-ref-token',
       admin: {
         id: 'admin-1',
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         role: 'ADMIN',
       },
     }),
@@ -70,7 +70,7 @@ describe('AuthController', () => {
     }),
     adminGetMe: jest.fn().mockResolvedValue({
       id: 'admin-1',
-      email: 'admin@puretyfarm.com',
+      email: 'admin@puretyfarm.in',
       role: 'ADMIN',
     }),
   };
@@ -197,7 +197,7 @@ describe('AuthController', () => {
 
   it('should call adminLogin', async () => {
     const dto: AdminLoginDto = {
-      email: 'admin@puretyfarm.com',
+      email: 'admin@puretyfarm.in',
       password: 'puretyfarm@2026',
     };
     const res = await controller.adminLogin(dto);
@@ -233,7 +233,7 @@ describe('AuthController', () => {
   describe('AdminLoginDto validation', () => {
     it('accepts valid credentials', async () => {
       const dto = plainToInstance(AdminLoginDto, {
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         password: 'securePassword123',
       });
       const errors = await validate(dto);
@@ -251,7 +251,7 @@ describe('AuthController', () => {
 
     it('rejects an empty password', async () => {
       const dto = plainToInstance(AdminLoginDto, {
-        email: 'admin@puretyfarm.com',
+        email: 'admin@puretyfarm.in',
         password: '',
       });
       const errors = await validate(dto);
