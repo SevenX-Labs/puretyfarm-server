@@ -24,8 +24,8 @@ This document provides comprehensive documentation for the **Admin Customer Mana
 
 ### Base URLs & Dual Routing
 All admin customer management endpoints support dual routing prefixes:
-- **Prefix A (Versioned)**: `http://localhost:3000/api/v1/admin/customers`
-- **Prefix B (Direct)**: `http://localhost:3000/admin/customers`
+- **Prefix A (Versioned)**: `https://api-puretyfarm.onrender.com/api/v1/admin/customers`
+- **Prefix B (Direct)**: `https://api-puretyfarm.onrender.com/admin/customers`
 
 ### Admin Authorization & RBAC
 - **Strict Role Enforcement**: All endpoints require:
@@ -244,7 +244,7 @@ Retrieves complete information for a specific customer by their `User` ID, inclu
 Login with admin credentials to receive an access token:
 
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/auth/admin/login \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@puretyfarm.com",
@@ -277,7 +277,7 @@ export ADMIN_TOKEN="<COPIED_ACCESS_TOKEN>"
 Fetch customers using default parameters (`page=1`, `limit=20`):
 
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -289,25 +289,25 @@ curl -i -X GET "http://localhost:3000/api/v1/admin/customers" \
 
 #### By Mobile:
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers?search=9876543210" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers?search=9876543210" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 #### By Email:
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers?search=example.com" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers?search=example.com" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 #### By First Name or Last Name:
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers?search=Sahil" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers?search=Sahil" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 #### By Full Name:
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers?search=Sahil%20Hode" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers?search=Sahil%20Hode" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -318,7 +318,7 @@ curl -i -X GET "http://localhost:3000/api/v1/admin/customers?search=Sahil%20Hode
 Request page 2 with 10 records per page:
 
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers?page=2&limit=10" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers?page=2&limit=10" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -334,7 +334,7 @@ curl -i -X GET "http://localhost:3000/api/v1/admin/customers?page=2&limit=10" \
 Using a customer `User.id` from the list response:
 
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers/<CUSTOMER_USER_ID>" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers/<CUSTOMER_USER_ID>" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -347,7 +347,7 @@ curl -i -X GET "http://localhost:3000/api/v1/admin/customers/<CUSTOMER_USER_ID>"
 Attempting to access the admin endpoint with a customer access token:
 
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers" \
   -H "Authorization: Bearer <CUSTOMER_ACCESS_TOKEN>"
 ```
 
@@ -367,7 +367,7 @@ curl -i -X GET "http://localhost:3000/api/v1/admin/customers" \
 Attempting to fetch details for an Admin user ID or non-existent ID:
 
 ```bash
-curl -i -X GET "http://localhost:3000/api/v1/admin/customers/00000000-0000-0000-0000-000000000000" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/api/v1/admin/customers/00000000-0000-0000-0000-000000000000" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
@@ -387,7 +387,7 @@ curl -i -X GET "http://localhost:3000/api/v1/admin/customers/00000000-0000-0000-
 Test the direct `/admin/customers` path without `/api/v1`:
 
 ```bash
-curl -i -X GET "http://localhost:3000/admin/customers" \
+curl -i -X GET "https://api-puretyfarm.onrender.com/admin/customers" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 

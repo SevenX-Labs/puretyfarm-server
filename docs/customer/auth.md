@@ -8,7 +8,7 @@ This document provides complete documentation for the Customer Authentication sy
 
 - **Auth Mode**: Passwordless Mobile + OTP authentication exclusively.
 - **Shared Module Architecture**: Implemented via a unified `AuthModule`, `AuthController`, and `AuthService` with role-specific DTOs (`src/modules/auth/dto/customer/`).
-- **Base URL**: `http://localhost:3000` (Routes are accessible via both `/api/v1/auth/customer/*` and `/auth/customer/*`).
+- **Base URL**: `https://api-puretyfarm.onrender.com` (Routes are accessible via both `/api/v1/auth/customer/*` and `/auth/customer/*`).
 - **Data Stores**:
   - **PostgreSQL (Supabase)**: Permanent user profiles (`User`) and authentication sessions (`Session`).
   - **Valkey (Layerbase)**: Ephemeral OTP hashes, cooldown locks, attempt counters, and distributed rate limiting counters.
@@ -326,7 +326,7 @@ Follow this sequence to test the entire lifecycle in Postman:
 
 ### Environment Setup in Postman
 Set the following environment variables:
-- `baseUrl`: `http://localhost:3000`
+- `baseUrl`: `https://api-puretyfarm.onrender.com`
 - `accessToken`: *(Leave blank initially, populated by verify-otp)*
 - `refreshToken`: *(Leave blank initially, populated by verify-otp)*
 

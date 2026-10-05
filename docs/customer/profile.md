@@ -8,8 +8,8 @@ This document provides complete documentation and testing procedures for the Cus
 
 - **Module**: Dedicated `ProfileModule` designed to support customer profile management today and extendable to future roles (admin, delivery partner) without duplicate modules.
 - **Base Routes**:
-  - `http://localhost:3000/api/v1/customer/profile`
-  - `http://localhost:3000/customer/profile`
+  - `https://api-puretyfarm.onrender.com/api/v1/customer/profile`
+  - `https://api-puretyfarm.onrender.com/customer/profile`
 - **Database (PostgreSQL via Prisma)**:
   - 1-to-1 relation with the central `User` model.
   - Table: `customer_profiles`
@@ -236,7 +236,7 @@ Removes the customer's avatar and deletes the stored object.
    npm run start:dev
    ```
 2. Set Postman Environment variables:
-   - `baseUrl`: `http://localhost:3000`
+   - `baseUrl`: `https://api-puretyfarm.onrender.com`
    - `accessToken`: *(Obtained from step 1)*
 
 ---
@@ -246,14 +246,14 @@ Removes the customer's avatar and deletes the stored object.
 **cURL**:
 ```bash
 # 1. Send OTP
-curl -X POST http://localhost:3000/api/v1/auth/customer/login \
+curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/login \
   -H "Content-Type: application/json" \
   -d '{"mobile": "+919876543210"}'
 
 # Check terminal console for the printed dev OTP (e.g. 123456)
 
 # 2. Verify OTP and get accessToken
-curl -X POST http://localhost:3000/api/v1/auth/customer/verify-otp \
+curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/verify-otp \
   -H "Content-Type: application/json" \
   -d '{"mobile": "+919876543210", "otp": "123456"}'
 ```
@@ -266,7 +266,7 @@ Save the returned `accessToken` for subsequent requests.
 
 **cURL**:
 ```bash
-curl -i -X GET http://localhost:3000/api/v1/customer/profile/me \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/profile/me \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 **Expected Response**: `HTTP 404 Not Found`
@@ -277,7 +277,7 @@ curl -i -X GET http://localhost:3000/api/v1/customer/profile/me \
 
 **cURL**:
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/create-profile \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/create-profile \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -302,7 +302,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/profile/create-profile \
 
 **cURL (Invalid Gender)**:
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/create-profile \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/create-profile \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"firstName": "A", "lastName": "B", "gender": "ALIEN", "dateOfBirth": "2000-01-01"}'
@@ -311,7 +311,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/profile/create-profile \
 
 **cURL (Future Date of Birth)**:
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/create-profile \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/create-profile \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"firstName": "A", "lastName": "B", "gender": "MALE", "dateOfBirth": "2099-01-01"}'
@@ -324,7 +324,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/profile/create-profile \
 
 **cURL**:
 ```bash
-curl -i -X PATCH http://localhost:3000/api/v1/customer/profile/update-profile \
+curl -i -X PATCH https://api-puretyfarm.onrender.com/api/v1/customer/profile/update-profile \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -350,7 +350,7 @@ In Postman:
 
 **cURL**:
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/update-avatar \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -F "avatar=@/path/to/valid-avatar.jpg"
 ```
@@ -376,7 +376,7 @@ The browser displays the image correctly.
 
 Upload a different image (e.g. `avatar2.png`):
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/update-avatar \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -F "avatar=@/path/to/avatar2.png"
 ```
@@ -394,7 +394,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
 # Create a 4 MB dummy file
 dd if=/dev/urandom of=/tmp/large.jpg bs=1M count=4
 
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/update-avatar \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -F "avatar=@/tmp/large.jpg"
 ```
@@ -404,7 +404,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
 ```bash
 echo "malicious text file" > /tmp/fake.jpg
 
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/update-avatar \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -F "avatar=@/tmp/fake.jpg"
 ```
@@ -412,7 +412,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
 
 **Test 10C: Unsupported File Type (PDF)**:
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/update-avatar \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -F "avatar=@/path/to/document.pdf"
 ```
@@ -424,7 +424,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/profile/update-avatar \
 
 **cURL**:
 ```bash
-curl -i -X DELETE http://localhost:3000/api/v1/customer/profile/remove-avatar \
+curl -i -X DELETE https://api-puretyfarm.onrender.com/api/v1/customer/profile/remove-avatar \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 **Expected Response**:
@@ -437,7 +437,7 @@ curl -i -X DELETE http://localhost:3000/api/v1/customer/profile/remove-avatar \
 
 **cURL**:
 ```bash
-curl -i -X GET http://localhost:3000/api/v1/customer/profile/me \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/profile/me \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 **Expected Response**:

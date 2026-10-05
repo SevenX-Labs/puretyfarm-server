@@ -1,98 +1,101 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# PuretyFarm Server Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend API server for PuretyFarm built with [NestJS](https://nestjs.com/), TypeScript, Prisma ORM, and PostgreSQL.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+## 🌐 Base URL
+All API requests must be sent to the base URL:
+```
+https://api-puretyfarm.onrender.com
 ```
 
-## Compile and run the project
+Both versioned (`/api/v1/...`) and direct routes are supported across modules.
 
+---
+
+## 📚 API Documentation
+
+Detailed endpoint specifications, DTOs, response schemas, and cURL examples are available in the [docs](./docs) directory:
+
+### 👤 Customer APIs
+- **[Customer Authentication](./docs/customer/auth.md)** (`https://api-puretyfarm.onrender.com/api/v1/auth/customer`)
+  - Phone OTP Login & Verification (`/login`, `/verify-otp`)
+  - Email OTP Send & Verification (`/send-email-otp`, `/verify-email-otp`)
+  - Token Refresh (`/refresh-token`) & Logout (`/logout`)
+- **[Customer Profile](./docs/customer/profile.md)** (`https://api-puretyfarm.onrender.com/api/v1/customer/profile`)
+  - Profile Retrieval (`/me`), Creation (`/create-profile`), Updates (`/update-profile`)
+  - Avatar Upload & Deletion (`/update-avatar`, `/remove-avatar`)
+- **[Location & Serviceability](./docs/customer/location.md)** (`https://api-puretyfarm.onrender.com/api/v1/customer/locations`)
+  - Location Detection & Reverse Geocoding (`/locations/detect`)
+  - Hierarchical Serviceability Discovery (`/states`, `/states/:id/cities`, `/cities/:id/areas`)
+  - Address Book CRUD (`/addresses`)
+- **[Subscription Plans & Quotes](./docs/customer/plans.md)** (`https://api-puretyfarm.onrender.com/api/v1/customer/plans`)
+  - Active Plans Discovery (`/`)
+  - Real-time Price Quotation for Buy Once, Trial, and Monthly Plans (`/buy-once/quote`, `/trial/quote`, `/monthly/quote`)
+  - Plan Confirmation & Subscription Creation (`/confirm`)
+
+### 🛡️ Admin APIs
+- **[Admin Authentication](./docs/admin/auth.md)** (`https://api-puretyfarm.onrender.com/api/v1/auth/admin`)
+  - Admin Login (`/login`)
+  - Current Admin Info (`/get-me`)
+  - Admin Password Change (`/change-password`)
+- **[Customer Management](./docs/admin/customers.md)** (`https://api-puretyfarm.onrender.com/api/v1/admin/customers`)
+  - Paginated Customer Listing with Search & Filters (`/`)
+  - Single Customer Detail View with Profiles, Subscriptions & Addresses (`/:id`)
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- Node.js (v18+)
+- PostgreSQL Database
+- Valkey / Redis Server
+
+### Installation
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm install
 ```
 
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+### Environment Variables
+Configure your `.env` file:
+```env
+PORT=3000
+DATABASE_URL="postgresql://..."
+VALKEY_URL="rediss://..."
+JWT_ACCESS_SECRET="..."
+JWT_REFRESH_SECRET="..."
+JWT_ADMIN_ACCESS_SECRET="..."
+JWT_ADMIN_REFRESH_SECRET="..."
+GEOAPIFY_API_KEY="..."
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
+### Database Setup & Migrations
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npx prisma migrate dev
+npm run seed
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+### Compile & Run
+```bash
+# Development mode
+npm run start
 
-## Resources
+# Watch mode
+npm run start:dev
 
-Check out a few resources that may come in handy when working with NestJS:
+# Production build & run
+npm run build
+npm run start:prod
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+### Run Tests
+```bash
+# Unit tests
+npm run test
 
-## Support
+# End-to-end tests
+npm run test:e2e
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+# Test coverage
+npm run test:cov
+```

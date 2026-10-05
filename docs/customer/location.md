@@ -17,8 +17,8 @@ This document provides complete, all-in-one documentation for both the **Locatio
 
 ### Base URLs & Dual Routing
 All endpoints support both versions seamlessly:
-- Prefix A: `http://localhost:3000/api/v1/customer/...`
-- Prefix B: `http://localhost:3000/customer/...`
+- Prefix A: `https://api-puretyfarm.onrender.com/api/v1/customer/...`
+- Prefix B: `https://api-puretyfarm.onrender.com/customer/...`
 
 ### Security Standards
 - **Authentication**: All endpoints require a valid customer JWT in the header:
@@ -352,7 +352,7 @@ Permanently removes a saved address owned by the authenticated customer.
 ### Prerequisites
 1. **Server Running**: `npm run start:dev`
 2. **Postman Environment Setup**:
-   - `baseUrl`: `http://localhost:3000`
+   - `baseUrl`: `https://api-puretyfarm.onrender.com`
    - `accessToken`: *(Populated after OTP login)*
    - `stateId`: *(Captured from Step 3)*
    - `cityId`: *(Captured from Step 4)*
@@ -396,14 +396,14 @@ seed().finally(() => p.$disconnect());
 
 ```bash
 # 1. Send Login OTP
-curl -X POST http://localhost:3000/api/v1/auth/customer/login \
+curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/login \
   -H "Content-Type: application/json" \
   -d '{"mobile": "+919876543210"}'
 
 # (Inspect server logs to read the 6-digit dev OTP, e.g. 123456)
 
 # 2. Verify OTP
-curl -X POST http://localhost:3000/api/v1/auth/customer/verify-otp \
+curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/verify-otp \
   -H "Content-Type: application/json" \
   -d '{"mobile": "+919876543210", "otp": "123456"}'
 ```
@@ -417,7 +417,7 @@ export TOKEN="<YOUR_ACCESS_TOKEN>"
 ### STEP 3: Test GPS Location Detection
 
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/locations/detect \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/locations/detect \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -433,19 +433,19 @@ curl -i -X POST http://localhost:3000/api/v1/customer/locations/detect \
 
 ```bash
 # A. Get States
-curl -i -X GET http://localhost:3000/api/v1/customer/locations/states \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/states \
   -H "Authorization: Bearer $TOKEN"
 
 # (Copy a stateId from response, e.g. export STATE_ID="...")
 
 # B. Get Cities for State
-curl -i -X GET http://localhost:3000/api/v1/customer/locations/states/$STATE_ID/cities \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/states/$STATE_ID/cities \
   -H "Authorization: Bearer $TOKEN"
 
 # (Copy a cityId from response, e.g. export CITY_ID="...")
 
 # C. Get Areas for City
-curl -i -X GET http://localhost:3000/api/v1/customer/locations/cities/$CITY_ID/areas \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/cities/$CITY_ID/areas \
   -H "Authorization: Bearer $TOKEN"
 
 # (Copy an areaId from response, e.g. export AREA_ID="...")
@@ -456,7 +456,7 @@ curl -i -X GET http://localhost:3000/api/v1/customer/locations/cities/$CITY_ID/a
 ### STEP 5: Create Saved Address
 
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/addresses \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -481,7 +481,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/addresses \
 
 Try creating an address with an invalid/mismatched State and City:
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/customer/addresses \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -500,7 +500,7 @@ curl -i -X POST http://localhost:3000/api/v1/customer/addresses \
 ### STEP 7: List Customer Saved Addresses
 
 ```bash
-curl -i -X GET http://localhost:3000/api/v1/customer/addresses \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `200 OK` array containing your created address.
@@ -510,7 +510,7 @@ curl -i -X GET http://localhost:3000/api/v1/customer/addresses \
 ### STEP 8: Fetch Single Address by ID
 
 ```bash
-curl -i -X GET http://localhost:3000/api/v1/customer/addresses/$ADDRESS_ID \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `200 OK` with the address entity.
@@ -520,7 +520,7 @@ curl -i -X GET http://localhost:3000/api/v1/customer/addresses/$ADDRESS_ID \
 ### STEP 9: Update Address (PATCH)
 
 ```bash
-curl -i -X PATCH http://localhost:3000/api/v1/customer/addresses/$ADDRESS_ID \
+curl -i -X PATCH https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -535,7 +535,7 @@ curl -i -X PATCH http://localhost:3000/api/v1/customer/addresses/$ADDRESS_ID \
 ### STEP 10: Delete Address
 
 ```bash
-curl -i -X DELETE http://localhost:3000/api/v1/customer/addresses/$ADDRESS_ID \
+curl -i -X DELETE https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `204 No Content` (Empty body).
@@ -546,7 +546,7 @@ curl -i -X DELETE http://localhost:3000/api/v1/customer/addresses/$ADDRESS_ID \
 
 Try fetching the deleted address:
 ```bash
-curl -i -X GET http://localhost:3000/api/v1/customer/addresses/$ADDRESS_ID \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `404 Not Found` (`Address not found`).

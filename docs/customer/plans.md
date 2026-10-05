@@ -45,8 +45,8 @@ This document provides complete, all-in-one documentation for the **Customer Pla
 
 ### Base URLs & Dual Routing
 All customer plan endpoints support dual routing seamlessly:
-- **Prefix A**: `http://localhost:3000/api/v1/customer/plans/...`
-- **Prefix B**: `http://localhost:3000/customer/plans/...`
+- **Prefix A**: `https://api-puretyfarm.onrender.com/api/v1/customer/plans/...`
+- **Prefix B**: `https://api-puretyfarm.onrender.com/customer/plans/...`
 
 ### Security Standards
 - **Authentication**: All endpoints require a valid customer JWT in the header:
@@ -534,7 +534,7 @@ Follow this complete sequential flow to test all features in terminal or Postman
 Export your authenticated customer Bearer token:
 ```bash
 export TOKEN="YOUR_CUSTOMER_JWT_ACCESS_TOKEN"
-export BASE_URL="http://localhost:3000/api/v1/customer/plans"
+export BASE_URL="https://api-puretyfarm.onrender.com/api/v1/customer/plans"
 ```
 
 ---

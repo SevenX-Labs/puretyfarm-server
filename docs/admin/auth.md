@@ -14,8 +14,8 @@ This document provides complete, all-in-one documentation for the **Admin Authen
 
 ### Base URLs & Dual Routing
 All admin authentication routes support dual routing prefixes:
-- **Prefix A**: `http://localhost:3000/api/v1/auth/admin/...`
-- **Prefix B**: `http://localhost:3000/auth/admin/...`
+- **Prefix A**: `https://api-puretyfarm.onrender.com/api/v1/auth/admin/...`
+- **Prefix B**: `https://api-puretyfarm.onrender.com/auth/admin/...`
 
 ### Security Standards
 - **Password Hashing**: Uses Argon2id via `argon2` for all password hashing and verification. Plaintext passwords are never stored in the database.
@@ -285,7 +285,7 @@ npx prisma db seed
 ### STEP 2: Login as Admin
 
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/auth/admin/login \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@puretyfarm.com",
@@ -304,7 +304,7 @@ export ADMIN_TOKEN="<COPIED_ACCESS_TOKEN>"
 ### STEP 3: Verify Profile with Get Me
 
 ```bash
-curl -i -X GET http://localhost:3000/api/v1/auth/admin/get-me \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/auth/admin/get-me \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 **Expected Response**: `200 OK` returning `{ "id": "...", "email": "admin@puretyfarm.com", "role": "ADMIN" }`.
@@ -315,7 +315,7 @@ curl -i -X GET http://localhost:3000/api/v1/auth/admin/get-me \
 
 Attempting to access `/api/v1/auth/admin/get-me` with a customer token:
 ```bash
-curl -i -X GET http://localhost:3000/api/v1/auth/admin/get-me \
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/auth/admin/get-me \
   -H "Authorization: Bearer <CUSTOMER_TOKEN>"
 ```
 **Expected Response**: `403 Forbidden` (`Access denied for this role`).
@@ -325,7 +325,7 @@ curl -i -X GET http://localhost:3000/api/v1/auth/admin/get-me \
 ### STEP 5: Change Password
 
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/auth/admin/change-password \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/change-password \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -341,7 +341,7 @@ curl -i -X POST http://localhost:3000/api/v1/auth/admin/change-password \
 
 Try logging in with the old initial password:
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/auth/admin/login \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@puretyfarm.com",
@@ -355,7 +355,7 @@ curl -i -X POST http://localhost:3000/api/v1/auth/admin/login \
 ### STEP 7: Login with New Password
 
 ```bash
-curl -i -X POST http://localhost:3000/api/v1/auth/admin/login \
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/auth/admin/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@puretyfarm.com",
