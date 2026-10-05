@@ -278,6 +278,7 @@ describe('PaymentsService', () => {
     creditConfirmedCashRequest: jest.Mock;
     cancelCreditRequest: jest.Mock;
     markRefundOutcome: jest.Mock;
+    debitWalletWithin: jest.Mock;
   };
   let provider: {
     createPayment: jest.Mock;

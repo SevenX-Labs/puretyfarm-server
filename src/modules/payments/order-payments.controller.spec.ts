@@ -48,7 +48,7 @@ describe('OrderPaymentsController', () => {
         'user-123',
         'order-1',
       );
-      expect(result.paymentStatus).toBe('PAID');
+      expect((result as any).paymentStatus).toBe('PAID');
     });
   });
 
