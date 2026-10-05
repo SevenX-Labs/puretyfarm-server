@@ -102,6 +102,9 @@ export interface AdminPlanConfigResponse {
   /** MONTHLY: derived from the toggles — exactly what customers are offered. */
   frequencies?: DeliveryFrequency[];
   quantityModes?: QuantityMode[];
+  deliveryFeePaise: number;
+  deliveryStartTime: string | null;
+  deliveryEndTime: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -254,6 +257,9 @@ export function toAdminPlanResponse(config: PlanConfig): AdminPlanConfigResponse
     sellingPricePerLitre: config.sellingPricePerLitre,
     quantityMin: config.quantityMin,
     quantityMax: config.quantityMax,
+    deliveryFeePaise: config.deliveryFeePaise,
+    deliveryStartTime: config.deliveryStartTime,
+    deliveryEndTime: config.deliveryEndTime,
   };
   const timestamps = { createdAt: config.createdAt, updatedAt: config.updatedAt };
 

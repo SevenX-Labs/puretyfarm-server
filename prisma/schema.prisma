@@ -38,6 +38,7 @@ model User {
   planSelections  PlanSelection[]
   planDeliveries  PlanDelivery[]
   changeRequests  ManageDeliveryChangeRequest[]
+  orders          Order[]
 
   @@map("users")
 }
@@ -254,6 +255,12 @@ model PlanConfig {
   fixedQuantityEnabled       Boolean @default(true)
   /// MONTHLY: whether the ALTERNATING quantity mode is offered.
   alternatingQuantityEnabled Boolean @default(true)
+  /// Delivery fee in INTEGER PAISE, charged per order/delivery for this plan type.
+  deliveryFeePaise       Int      @default(0)
+  /// Delivery window start time (HH:MM, 24h). Null means not configured.
+  deliveryStartTime      String?
+  /// Delivery window end time (HH:MM, 24h). Null means not configured.
+  deliveryEndTime        String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
@@ -335,6 +342,7 @@ model PlanSelection {
   quote          PlanQuote           @relation(fields: [quoteId], references: [id])
   deliveries     PlanDelivery[]
   changeRequests ManageDeliveryChangeRequest[]
+  orders         Order[]
 
   @@index([userId])
   @@index([planType])
@@ -365,6 +373,7 @@ model PlanDelivery {
 
   selection      PlanSelection  @relation(fields: [selectionId], references: [id], onDelete: Cascade)
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order          Order?
 
   @@unique([selectionId, deliveryDate])
   @@index([userId])
@@ -417,4 +426,119 @@ model ManageDeliveryChangeRequest {
   @@index([planSelectionId])
   @@index([status])
   @@map("manage_delivery_change_requests")
+}
+
+// --------------------------------------------------------------------------
+// Orders, Order Items & Invoices.
+// --------------------------------------------------------------------------
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  FAILED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Order {
+  id                   String        @id @default(uuid())
+  /// Human-readable, unique order number (e.g. PF10001).
+  orderNumber          String        @unique
+  userId               String
+  planSelectionId      String?
+  planDeliveryId       String?       @unique
+  planType             PlanType
+  status               OrderStatus   @default(PENDING)
+  paymentStatus        PaymentStatus @default(PENDING)
+
+  // ── Financial snapshot (INTEGER PAISE) ──
+  subtotalPaise        Int
+  discountPaise        Int           @default(0)
+  taxPaise             Int           @default(0)
+  deliveryFeePaise     Int           @default(0)
+  totalPaise           Int
+
+  // ── Delivery snapshot ──
+  deliveryDate         DateTime?     @db.Date
+  deliveryStartTime    String?
+  deliveryEndTime      String?
+
+  // ── Address snapshot (JSON) ──
+  addressSnapshot      Json
+
+  // ── Price snapshot from PlanConfig at creation time (INTEGER PAISE) ──
+  actualPricePerLitrePaise  Int?
+  sellingPricePerLitrePaise Int?
+
+  /// If this order was created from a reorder, reference the original.
+  reorderedFromOrderId String?
+
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planSelection PlanSelection? @relation(fields: [planSelectionId], references: [id])
+  planDelivery  PlanDelivery?  @relation(fields: [planDeliveryId], references: [id])
+  reorderedFrom Order?         @relation("Reorder", fields: [reorderedFromOrderId], references: [id])
+  reorders      Order[]        @relation("Reorder")
+  items         OrderItem[]
+  invoice       Invoice?
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([planSelectionId])
+  @@index([status])
+  @@index([orderNumber])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id                    String   @id @default(uuid())
+  orderId               String
+  /// Will reference the Product model once implemented. Nullable for now.
+  productId             String?
+  /// Immutable name snapshot at order time.
+  productNameSnapshot   String
+  quantity              Int
+  /// Unit price in INTEGER PAISE.
+  unitPricePaise        Int
+  discountPaise         Int      @default(0)
+  taxPaise              Int      @default(0)
+  /// Line total in INTEGER PAISE: (unitPrice * quantity) - discount + tax.
+  totalPaise            Int
+  createdAt             DateTime @default(now())
+
+  order                 Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model Invoice {
+  id                String   @id @default(uuid())
+  /// Unique human-readable invoice number (e.g. INV-10001).
+  invoiceNumber     String   @unique
+  orderId           String   @unique
+  /// Full financial snapshot at invoice creation time (JSON).
+  financialSnapshot Json
+  /// Address snapshot duplicated for invoice immutability.
+  addressSnapshot   Json
+  issuedAt          DateTime @default(now())
+
+  order             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([invoiceNumber])
+  @@map("invoices")
 }

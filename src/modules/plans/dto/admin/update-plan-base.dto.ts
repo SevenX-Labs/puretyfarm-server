@@ -1,4 +1,12 @@
-import { IsBoolean, IsInt, IsOptional, Max, Min } from "class-validator";
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from "class-validator";
 import {
   PRICE_PER_LITRE_MAX_PAISE,
   QUANTITY_MAX,
@@ -45,4 +53,26 @@ export abstract class UpdatePlanBaseDto {
   @IsOptional()
   @IsBoolean({ message: "isActive must be a boolean" })
   isActive?: boolean;
+
+  @IsOptional()
+  @IsInt({ message: "deliveryFeePaise must be a whole number of paise" })
+  @Min(0, { message: "deliveryFeePaise must not be negative" })
+  @Max(PRICE_PER_LITRE_MAX_PAISE, {
+    message: `deliveryFeePaise must be at most ${PRICE_PER_LITRE_MAX_PAISE} paise`,
+  })
+  deliveryFeePaise?: number;
+
+  @IsOptional()
+  @IsString({ message: "deliveryStartTime must be a string" })
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
+    message: "deliveryStartTime must be HH:MM (24h)",
+  })
+  deliveryStartTime?: string;
+
+  @IsOptional()
+  @IsString({ message: "deliveryEndTime must be a string" })
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
+    message: "deliveryEndTime must be HH:MM (24h)",
+  })
+  deliveryEndTime?: string;
 }
