@@ -37,6 +37,7 @@ model User {
   planQuotes      PlanQuote[]
   planSelections  PlanSelection[]
   planDeliveries  PlanDelivery[]
+  changeRequests  ManageDeliveryChangeRequest[]
 
   @@map("users")
 }
@@ -169,13 +170,14 @@ model Session {
 }
 
 model Admin {
-  id           String    @id @default(uuid())
-  email        String    @unique
-  passwordHash String
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  sessions     Session[]
+  id             String    @id @default(uuid())
+  email          String    @unique
+  passwordHash   String
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  sessions       Session[]
+  changeReviews  ManageDeliveryChangeRequest[]
 
   @@index([email])
   @@index([isActive])
@@ -329,9 +331,10 @@ model PlanSelection {
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
 
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  quote       PlanQuote           @relation(fields: [quoteId], references: [id])
-  deliveries  PlanDelivery[]
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quote          PlanQuote           @relation(fields: [quoteId], references: [id])
+  deliveries     PlanDelivery[]
+  changeRequests ManageDeliveryChangeRequest[]
 
   @@index([userId])
   @@index([planType])
@@ -368,4 +371,50 @@ model PlanDelivery {
   @@index([selectionId])
   @@index([deliveryDate])
   @@map("plan_deliveries")
+}
+
+// --------------------------------------------------------------------------
+// Manage Delivery Change Requests (admin-approval workflow).
+// --------------------------------------------------------------------------
+
+enum ChangeRequestType {
+  CHANGE_QUANTITY
+  CHANGE_FREQUENCY
+  CHANGE_PLAN
+}
+
+enum ChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Records a customer-initiated delivery change that requires admin approval.
+/// Preserves a snapshot of both the current and requested configuration so the
+/// approval history is unambiguous even after the underlying plan mutates.
+model ManageDeliveryChangeRequest {
+  id                       String              @id @default(uuid())
+  userId                   String
+  planSelectionId          String
+  requestType              ChangeRequestType
+  status                   ChangeRequestStatus @default(PENDING)
+  /// JSON snapshot of the configuration at the time of the request.
+  currentConfiguration     Json
+  /// JSON snapshot of what the customer requested.
+  requestedConfiguration   Json
+  adminId                  String?
+  adminNote                String?
+  reviewedAt               DateTime?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planSelection PlanSelection @relation(fields: [planSelectionId], references: [id], onDelete: Cascade)
+  admin         Admin?        @relation(fields: [adminId], references: [id])
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([planSelectionId])
+  @@index([status])
+  @@map("manage_delivery_change_requests")
 }

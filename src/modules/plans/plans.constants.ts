@@ -65,3 +65,17 @@ export const TRIAL_DURATION_DAYS = 7;
  */
 export const PRICE_PER_LITRE_MAX_PAISE = 1_000_000;
 export const BUY_ONCE_MAX_USAGES_LIMIT = 100;
+
+/** Types of delivery change that require admin approval. */
+export enum ChangeRequestType {
+  CHANGE_QUANTITY = "CHANGE_QUANTITY",
+  CHANGE_FREQUENCY = "CHANGE_FREQUENCY",
+  CHANGE_PLAN = "CHANGE_PLAN",
+}
+
+/** Lifecycle of an admin-approval request. */
+export enum ChangeRequestStatus {
+  PENDING = "PENDING",
+  APPROVED = "APPROVED",
+  REJECTED = "REJECTED",
+}
