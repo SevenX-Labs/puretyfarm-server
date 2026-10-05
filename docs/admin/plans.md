@@ -150,6 +150,9 @@ Partially updates configuration fields for a specific plan type.
 | `quantityMin` | Integer | Minimum allowed quantity in litres (>= 1) |
 | `quantityMax` | Integer | Maximum allowed quantity in litres (<= 50) |
 | `isActive` | Boolean | Whether the plan is currently visible to customers |
+| `deliveryFeePaise` | Integer (paise) | Delivery fee charged per order (e.g. `2000` = ₹20.00). Default `0`. |
+| `deliveryStartTime` | String (HH:MM) | Delivery window start time in 24h format (e.g. `"06:00"`) |
+| `deliveryEndTime` | String (HH:MM) | Delivery window end time in 24h format (e.g. `"08:00"`) |
 
 #### Plan-Specific Request Body Fields:
 - **`BUY_ONCE`**:
@@ -182,6 +185,17 @@ Partially updates configuration fields for a specific plan type.
   "maxUsages": 5
 }
 ```
+
+#### Request Example (Update Delivery Fee & Time for Any Plan):
+```json
+{
+  "deliveryFeePaise": 2000,
+  "deliveryStartTime": "08:00",
+  "deliveryEndTime": "10:00"
+}
+```
+
+> **Note**: `deliveryFeePaise`, `deliveryStartTime`, and `deliveryEndTime` are snapshotted onto each Order at creation time. Changing these values does not affect existing orders — only future orders use the updated configuration.
 
 ---
 
@@ -392,19 +406,31 @@ curl -i -X PATCH "$BASE_URL/api/v1/admin/plans/BUY_ONCE" \
   }'
 ```
 
-### 5. List Pending Delivery Change Requests
+### 5. Update Delivery Fee & Time Window
+```bash
+curl -i -X PATCH "$BASE_URL/api/v1/admin/plans/MONTHLY" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "deliveryFeePaise": 2000,
+    "deliveryStartTime": "08:00",
+    "deliveryEndTime": "10:00"
+  }'
+```
+
+### 6. List Pending Delivery Change Requests
 ```bash
 curl -i -X GET "$BASE_URL/api/v1/admin/manage-delivery/requests?status=PENDING&page=1&limit=20" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### 6. Get Specific Request Details
+### 7. Get Specific Request Details
 ```bash
 curl -i -X GET "$BASE_URL/api/v1/admin/manage-delivery/requests/<REQUEST_ID>" \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### 7. Approve Change Request
+### 8. Approve Change Request
 ```bash
 curl -i -X POST "$BASE_URL/api/v1/admin/manage-delivery/requests/<REQUEST_ID>/approve" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -412,7 +438,7 @@ curl -i -X POST "$BASE_URL/api/v1/admin/manage-delivery/requests/<REQUEST_ID>/ap
   -d '{}'
 ```
 
-### 8. Reject Change Request
+### 9. Reject Change Request
 ```bash
 curl -i -X POST "$BASE_URL/api/v1/admin/manage-delivery/requests/<REQUEST_ID>/reject" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
