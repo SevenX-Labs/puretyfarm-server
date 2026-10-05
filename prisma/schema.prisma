@@ -39,6 +39,7 @@ model User {
   planDeliveries  PlanDelivery[]
   changeRequests  ManageDeliveryChangeRequest[]
   orders          Order[]
+  wallet          Wallet?
 
   @@map("users")
 }
@@ -178,7 +179,8 @@ model Admin {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   sessions       Session[]
-  changeReviews  ManageDeliveryChangeRequest[]
+  changeReviews       ManageDeliveryChangeRequest[]
+  walletCreditReviews WalletCreditRequest[]
 
   @@index([email])
   @@index([isActive])
@@ -541,4 +543,91 @@ model Invoice {
   @@index([orderId])
   @@index([invoiceNumber])
   @@map("invoices")
+}
+
+// --------------------------------------------------------------------------
+// Wallet, Credit Requests & Ledger Transactions.
+// --------------------------------------------------------------------------
+
+enum WalletCreditRequestStatus {
+  PENDING
+  COMPLETED
+  REJECTED
+}
+
+enum WalletRefundStatus {
+  NOT_REQUIRED
+  REFUND_PENDING
+  REFUNDED
+  REFUND_FAILED
+}
+
+enum WalletTransactionType {
+  CREDIT
+  DEBIT
+}
+
+enum WalletTransactionReferenceType {
+  CREDIT_REQUEST
+  ORDER
+}
+
+model Wallet {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  balancePaise Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creditRequests    WalletCreditRequest[]
+  transactions      WalletTransaction[]
+
+  @@map("wallets")
+}
+
+model WalletCreditRequest {
+  id                  String                     @id @default(uuid())
+  walletId            String
+  amountPaise         Int
+  status              WalletCreditRequestStatus  @default(PENDING)
+  refundStatus        WalletRefundStatus         @default(NOT_REQUIRED)
+  autoApproved        Boolean                    @default(false)
+  idempotencyKey      String
+  requestHash         String
+  reviewedByAdminId   String?
+  adminNote           String?
+  reviewedAt          DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+
+  wallet              Wallet                     @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  reviewedByAdmin     Admin?                     @relation(fields: [reviewedByAdminId], references: [id])
+  transaction         WalletTransaction?
+
+  @@unique([walletId, idempotencyKey])
+  @@index([walletId, createdAt])
+  @@index([status, createdAt])
+  @@map("wallet_credit_requests")
+}
+
+model WalletTransaction {
+  id                String                           @id @default(uuid())
+  walletId          String
+  type              WalletTransactionType
+  amountPaise       Int
+  balanceAfterPaise Int
+  referenceType     WalletTransactionReferenceType
+  referenceId       String
+  creditRequestId   String?                          @unique
+  description       String?
+  createdAt         DateTime                         @default(now())
+
+  wallet            Wallet                           @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  creditRequest     WalletCreditRequest?             @relation(fields: [creditRequestId], references: [id])
+
+  @@unique([type, referenceType, referenceId])
+  @@index([walletId, createdAt])
+  @@map("wallet_transactions")
 }
