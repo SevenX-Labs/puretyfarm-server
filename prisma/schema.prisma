@@ -244,6 +244,14 @@ model PlanConfig {
   maxUsages             Int      @default(7)
   /// SEVEN_DAY_TRIAL: number of delivery days. Ignored for other plan types.
   trialDurationDays     Int      @default(7)
+  /// MONTHLY: whether the DAILY delivery frequency is offered. Ignored for other plan types.
+  dailyEnabled               Boolean @default(true)
+  /// MONTHLY: whether the ALTERNATE_DAYS delivery frequency is offered.
+  alternateDaysEnabled       Boolean @default(true)
+  /// MONTHLY: whether the FIXED quantity mode is offered.
+  fixedQuantityEnabled       Boolean @default(true)
+  /// MONTHLY: whether the ALTERNATING quantity mode is offered.
+  alternatingQuantityEnabled Boolean @default(true)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 

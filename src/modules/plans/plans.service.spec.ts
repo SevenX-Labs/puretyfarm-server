@@ -26,7 +26,13 @@ describe("PlansService", () => {
 
   // ── Prisma mock ──
   const mockPrisma: any = {
-    planConfig: { findFirst: jest.fn() },
+    planConfig: {
+      findFirst: jest.fn(),
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      create: jest.fn(),
+    },
     planSelection: { count: jest.fn(), create: jest.fn() },
     planDelivery: { createMany: jest.fn() },
     planQuote: {
@@ -79,6 +85,10 @@ describe("PlansService", () => {
     quantityMax: 5,
     maxUsages: 0,
     trialDurationDays: 0,
+    dailyEnabled: true,
+    alternateDaysEnabled: true,
+    fixedQuantityEnabled: true,
+    alternatingQuantityEnabled: true,
   };
 
   /**
@@ -1042,6 +1052,472 @@ describe("PlansService", () => {
       await service.createBuyOnceQuote(USER, { quantityLitres: 2 });
       // planSelection.create should NOT have been called by quote creation.
       expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Admin: plan configuration ─────────────────────────────────────
+
+  describe("Admin plan configuration", () => {
+    const timestamps = {
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+    };
+    const rows: Record<string, any> = {};
+
+    beforeEach(() => {
+      rows[PlanType.BUY_ONCE] = { ...buyOnceConfig, ...timestamps };
+      rows[PlanType.SEVEN_DAY_TRIAL] = { ...trialConfig, ...timestamps };
+      rows[PlanType.MONTHLY] = { ...monthlyConfig, ...timestamps };
+      mockPrisma.$transaction.mockImplementation(async (fn: any) =>
+        fn(mockPrisma),
+      );
+      mockPrisma.planConfig.findMany.mockImplementation(async () =>
+        Object.values(rows),
+      );
+      mockPrisma.planConfig.findUnique.mockImplementation(
+        async ({ where }: any) => rows[where.planType] ?? null,
+      );
+      mockPrisma.planConfig.update.mockImplementation(
+        async ({ where, data }: any) => ({ ...rows[where.planType], ...data }),
+      );
+      mockPrisma.planConfig.create.mockImplementation(async ({ data }: any) => ({
+        id: "cfg-new",
+        quantityMin: 1,
+        quantityMax: 5,
+        maxUsages: 7,
+        trialDurationDays: 7,
+        isActive: true,
+        dailyEnabled: true,
+        alternateDaysEnabled: true,
+        fixedQuantityEnabled: true,
+        alternatingQuantityEnabled: true,
+        ...timestamps,
+        ...data,
+      }));
+    });
+
+    describe("getAdminPlans", () => {
+      it("returns all three plans in fixed order with plan-specific fields", async () => {
+        const res = await service.getAdminPlans();
+        expect(res.unconfigured).toEqual([]);
+        expect(res.plans.map((p) => p.type)).toEqual([
+          PlanType.BUY_ONCE,
+          PlanType.SEVEN_DAY_TRIAL,
+          PlanType.MONTHLY,
+        ]);
+        const [bo, tr, mo] = res.plans;
+        expect(bo).toEqual({
+          type: PlanType.BUY_ONCE,
+          isActive: true,
+          actualPricePerLitre: 12000,
+          sellingPricePerLitre: 10000,
+          quantityMin: 1,
+          quantityMax: 5,
+          maxUsages: 7,
+          ...timestamps,
+        });
+        expect(tr).toMatchObject({ trialDurationDays: 7, maxUsages: 1 });
+        expect(mo).toMatchObject({
+          dailyEnabled: true,
+          alternateDaysEnabled: true,
+          fixedQuantityEnabled: true,
+          alternatingQuantityEnabled: true,
+          frequencies: [DeliveryFrequency.DAILY, DeliveryFrequency.ALTERNATE_DAYS],
+          quantityModes: [QuantityMode.FIXED, QuantityMode.ALTERNATING],
+        });
+        // Fields irrelevant to Monthly are not leaked into its response.
+        expect(mo).not.toHaveProperty("maxUsages");
+        expect(mo).not.toHaveProperty("trialDurationDays");
+        // Internal id is not part of the admin contract.
+        expect(bo).not.toHaveProperty("id");
+      });
+
+      it("reports missing rows as unconfigured without creating them", async () => {
+        delete rows[PlanType.MONTHLY];
+        const res = await service.getAdminPlans();
+        expect(res.plans).toHaveLength(2);
+        expect(res.unconfigured).toEqual([PlanType.MONTHLY]);
+        expect(mockPrisma.planConfig.create).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("getAdminPlan", () => {
+      it("returns one plan", async () => {
+        const res = await service.getAdminPlan(PlanType.SEVEN_DAY_TRIAL);
+        expect(res.type).toBe(PlanType.SEVEN_DAY_TRIAL);
+        expect(res.trialDurationDays).toBe(7);
+      });
+
+      it("404s when not configured and does not create a row", async () => {
+        delete rows[PlanType.BUY_ONCE];
+        await expect(service.getAdminPlan(PlanType.BUY_ONCE)).rejects.toThrow(
+          NotFoundException,
+        );
+        expect(mockPrisma.planConfig.create).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("updateAdminPlan", () => {
+      it("updates Buy Once and writes only the supplied fields", async () => {
+        const res = await service.updateAdminPlan(PlanType.BUY_ONCE, {
+          sellingPricePerLitre: 8500,
+          maxUsages: 3,
+        });
+        expect(mockPrisma.planConfig.update).toHaveBeenCalledWith({
+          where: { planType: PlanType.BUY_ONCE },
+          data: { sellingPricePerLitre: 8500, maxUsages: 3 },
+        });
+        expect(res.sellingPricePerLitre).toBe(8500);
+        expect(res.maxUsages).toBe(3);
+      });
+
+      it("updates Trial configuration", async () => {
+        const res = await service.updateAdminPlan(PlanType.SEVEN_DAY_TRIAL, {
+          actualPricePerLitre: 11500,
+          sellingPricePerLitre: 9200,
+        });
+        expect(res.actualPricePerLitre).toBe(11500);
+        expect(res.sellingPricePerLitre).toBe(9200);
+        expect(res.trialDurationDays).toBe(7);
+        expect(res.maxUsages).toBe(1);
+      });
+
+      it("updates Monthly toggles and derives the customer option lists", async () => {
+        const res = await service.updateAdminPlan(PlanType.MONTHLY, {
+          alternateDaysEnabled: false,
+          alternatingQuantityEnabled: false,
+        });
+        expect(res.frequencies).toEqual([DeliveryFrequency.DAILY]);
+        expect(res.quantityModes).toEqual([QuantityMode.FIXED]);
+      });
+
+      it.each([false, true])("sets isActive=%s", async (isActive) => {
+        const res = await service.updateAdminPlan(PlanType.MONTHLY, {
+          isActive,
+        });
+        expect(res.isActive).toBe(isActive);
+      });
+
+      it("serialises edits with a per-plan advisory lock inside a transaction", async () => {
+        await service.updateAdminPlan(PlanType.BUY_ONCE, { isActive: false });
+        expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+        const args = mockPrisma.$executeRaw.mock.calls[0];
+        expect(args[0].join("?")).toContain("pg_advisory_xact_lock");
+        expect(args).toContain(`plan_config:${PlanType.BUY_ONCE}`);
+      });
+
+      describe("field validation (400)", () => {
+        it.each([
+          ["string price", PlanType.BUY_ONCE, { sellingPricePerLitre: "8500" }],
+          ["float price", PlanType.BUY_ONCE, { sellingPricePerLitre: 85.5 }],
+          ["negative actual price", PlanType.BUY_ONCE, { actualPricePerLitre: -1 }],
+          ["negative selling price", PlanType.MONTHLY, { sellingPricePerLitre: -100 }],
+          ["price above ceiling", PlanType.MONTHLY, { actualPricePerLitre: 1_000_001 }],
+          ["quantityMax above 5", PlanType.BUY_ONCE, { quantityMax: 6 }],
+          ["quantityMin below 1", PlanType.SEVEN_DAY_TRIAL, { quantityMin: 0 }],
+          ["non-integer quantity", PlanType.MONTHLY, { quantityMax: 4.5 }],
+          ["maxUsages 0", PlanType.BUY_ONCE, { maxUsages: 0 }],
+          ["negative maxUsages", PlanType.BUY_ONCE, { maxUsages: -3 }],
+          ["float maxUsages", PlanType.BUY_ONCE, { maxUsages: 1.5 }],
+          ["trialDurationDays (fixed rule)", PlanType.SEVEN_DAY_TRIAL, { trialDurationDays: 5 }],
+          ["string isActive", PlanType.BUY_ONCE, { isActive: "false" }],
+          ["numeric toggle", PlanType.MONTHLY, { dailyEnabled: 1 }],
+          ["adminId in body", PlanType.BUY_ONCE, { adminId: "a-1", isActive: true }],
+          ["Trial maxUsages (fixed rule)", PlanType.SEVEN_DAY_TRIAL, { maxUsages: 3 }],
+          ["Buy Once field on Monthly", PlanType.MONTHLY, { maxUsages: 3 }],
+          ["Monthly field on Buy Once", PlanType.BUY_ONCE, { dailyEnabled: true }],
+          ["planType in body", PlanType.BUY_ONCE, { planType: PlanType.MONTHLY }],
+          ["empty body", PlanType.BUY_ONCE, {}],
+          ["array body", PlanType.BUY_ONCE, [{ isActive: true }]],
+          ["null body", PlanType.BUY_ONCE, null],
+        ])("rejects %s", async (_label, planType, body) => {
+          await expect(
+            service.updateAdminPlan(planType as PlanType, body),
+          ).rejects.toThrow(BadRequestException);
+          expect(mockPrisma.planConfig.update).not.toHaveBeenCalled();
+          expect(mockPrisma.planConfig.create).not.toHaveBeenCalled();
+        });
+      });
+
+      describe("cross-field validation against the merged stored config (400)", () => {
+        it("rejects quantityMin above the stored quantityMax", async () => {
+          rows[PlanType.BUY_ONCE].quantityMax = 3;
+          await expect(
+            service.updateAdminPlan(PlanType.BUY_ONCE, { quantityMin: 4 }),
+          ).rejects.toThrow(/quantityMin \(4\) cannot exceed quantityMax \(3\)/);
+        });
+
+        it("rejects min > max in the same request", async () => {
+          await expect(
+            service.updateAdminPlan(PlanType.MONTHLY, {
+              quantityMin: 5,
+              quantityMax: 2,
+            }),
+          ).rejects.toThrow(BadRequestException);
+        });
+
+        it("rejects a selling price above the stored actual price", async () => {
+          await expect(
+            service.updateAdminPlan(PlanType.BUY_ONCE, {
+              sellingPricePerLitre: 12001,
+            }),
+          ).rejects.toThrow(/cannot exceed actualPricePerLitre/);
+        });
+
+        it("rejects disabling every Monthly frequency", async () => {
+          rows[PlanType.MONTHLY].alternateDaysEnabled = false;
+          await expect(
+            service.updateAdminPlan(PlanType.MONTHLY, { dailyEnabled: false }),
+          ).rejects.toThrow(/frequency/);
+        });
+
+        it("rejects disabling every Monthly quantity mode", async () => {
+          await expect(
+            service.updateAdminPlan(PlanType.MONTHLY, {
+              fixedQuantityEnabled: false,
+              alternatingQuantityEnabled: false,
+            }),
+          ).rejects.toThrow(/quantity mode/);
+        });
+
+        it("accepts selling == actual (zero discount) and min == max", async () => {
+          await expect(
+            service.updateAdminPlan(PlanType.BUY_ONCE, {
+              sellingPricePerLitre: 12000,
+              quantityMin: 5,
+              quantityMax: 5,
+            }),
+          ).resolves.toMatchObject({ sellingPricePerLitre: 12000 });
+        });
+      });
+
+      describe("unconfigured plan", () => {
+        beforeEach(() => delete rows[PlanType.MONTHLY]);
+
+        it("404s when the body does not supply both prices", async () => {
+          await expect(
+            service.updateAdminPlan(PlanType.MONTHLY, { isActive: true }),
+          ).rejects.toThrow(NotFoundException);
+          expect(mockPrisma.planConfig.create).not.toHaveBeenCalled();
+        });
+
+        it("initialises the row when both prices are supplied", async () => {
+          const res = await service.updateAdminPlan(PlanType.MONTHLY, {
+            actualPricePerLitre: 10000,
+            sellingPricePerLitre: 9000,
+            alternateDaysEnabled: false,
+          });
+          expect(mockPrisma.planConfig.create).toHaveBeenCalledWith({
+            data: {
+              planType: PlanType.MONTHLY,
+              actualPricePerLitre: 10000,
+              sellingPricePerLitre: 9000,
+              alternateDaysEnabled: false,
+            },
+          });
+          expect(res.frequencies).toEqual([DeliveryFrequency.DAILY]);
+        });
+
+        it("still applies cross-field rules on initialisation", async () => {
+          await expect(
+            service.updateAdminPlan(PlanType.MONTHLY, {
+              actualPricePerLitre: 9000,
+              sellingPricePerLitre: 10000,
+            }),
+          ).rejects.toThrow(BadRequestException);
+          expect(mockPrisma.planConfig.create).not.toHaveBeenCalled();
+        });
+      });
+    });
+  });
+
+  // ── Customer flows honour admin configuration ─────────────────────
+
+  describe("customer flows honour admin configuration", () => {
+    function withConfig(planType: PlanType, overrides: Record<string, any>) {
+      const base: Record<string, any> = {
+        [PlanType.BUY_ONCE]: buyOnceConfig,
+        [PlanType.SEVEN_DAY_TRIAL]: trialConfig,
+        [PlanType.MONTHLY]: monthlyConfig,
+      };
+      mockPrisma.planConfig.findFirst.mockImplementation(({ where }: any) => {
+        const cfg = { ...base[where.planType] };
+        if (where.planType === planType) Object.assign(cfg, overrides);
+        // Mirrors the real query's `isActive: true` filter.
+        return where.isActive && !cfg.isActive ? null : cfg;
+      });
+    }
+
+    it("Buy Once quote uses the admin-updated price", async () => {
+      withConfig(PlanType.BUY_ONCE, { sellingPricePerLitre: 8500 });
+      const q = await service.createBuyOnceQuote(USER, { quantityLitres: 2 });
+      expect(q.sellingPricePerLitre).toBe(8500);
+      expect(q.totalSellingAmount).toBe(17000);
+      expect(q.discountAmount).toBe(24000 - 17000);
+    });
+
+    it("Buy Once honours an admin-lowered quantityMax", async () => {
+      withConfig(PlanType.BUY_ONCE, { quantityMax: 3 });
+      await expect(
+        service.createBuyOnceQuote(USER, { quantityLitres: 4 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("Buy Once eligibility honours an admin-lowered maxUsages", async () => {
+      withConfig(PlanType.BUY_ONCE, { maxUsages: 2 });
+      mockPrisma.planSelection.count
+        .mockResolvedValueOnce(0) // trial used?
+        .mockResolvedValueOnce(2); // buy-once uses
+      const e = await service.getBuyOnceEligibility(USER);
+      expect(e).toMatchObject({
+        eligible: false,
+        maxUses: 2,
+        blockedReason: "MAX_USES_REACHED",
+      });
+    });
+
+    it("Trial quote honours the 7-day trial duration", async () => {
+      const q = await service.createTrialQuote(USER, { quantityLitres: 2 });
+      expect(q.deliveryOccurrences).toBe(7);
+      expect(q.totalLitres).toBe(14);
+    });
+
+    it.each([
+      [PlanType.BUY_ONCE, (s: PlansService) => s.createBuyOnceQuote(USER, { quantityLitres: 1 }), ForbiddenException],
+      [PlanType.SEVEN_DAY_TRIAL, (s: PlansService) => s.createTrialQuote(USER, { quantityLitres: 1 }), ForbiddenException],
+      [
+        PlanType.MONTHLY,
+        (s: PlansService) =>
+          s.createMonthlyQuote(USER, {
+            frequency: DeliveryFrequency.DAILY,
+            quantityMode: QuantityMode.FIXED,
+            quantity: 1,
+          }),
+        BadRequestException,
+      ],
+    ])("disabled %s cannot produce a new quote", async (planType, call, err) => {
+      withConfig(planType as PlanType, { isActive: false });
+      await expect(call(service)).rejects.toThrow(err as any);
+      expect(mockPrisma.planQuote.create).not.toHaveBeenCalled();
+    });
+
+    it("overview reports a disabled Monthly plan as unavailable", async () => {
+      withConfig(PlanType.MONTHLY, { isActive: false });
+      const res = await service.getPlansOverview(USER);
+      expect(res.plans.find((p) => p.type === PlanType.MONTHLY)).toEqual({
+        type: PlanType.MONTHLY,
+        available: false,
+        blockedReason: "PLAN_NOT_CONFIGURED",
+      });
+    });
+
+    it("monthly info lists only admin-enabled options", async () => {
+      withConfig(PlanType.MONTHLY, {
+        dailyEnabled: false,
+        fixedQuantityEnabled: false,
+      });
+      const res = await service.getMonthlyInfo();
+      expect(res.frequencies).toEqual([DeliveryFrequency.ALTERNATE_DAYS]);
+      expect(res.quantityModes).toEqual([QuantityMode.ALTERNATING]);
+    });
+
+    it("rejects a Monthly quote using a disabled frequency", async () => {
+      withConfig(PlanType.MONTHLY, { alternateDaysEnabled: false });
+      await expect(
+        service.createMonthlyQuote(USER, {
+          frequency: DeliveryFrequency.ALTERNATE_DAYS,
+          quantityMode: QuantityMode.FIXED,
+          quantity: 2,
+        }),
+      ).rejects.toThrow(/Frequency ALTERNATE_DAYS is not currently available/);
+      // The still-enabled frequency keeps working.
+      await expect(
+        service.createMonthlyQuote(USER, {
+          frequency: DeliveryFrequency.DAILY,
+          quantityMode: QuantityMode.FIXED,
+          quantity: 2,
+        }),
+      ).resolves.toMatchObject({ frequency: DeliveryFrequency.DAILY });
+    });
+
+    it("rejects a Monthly quote using a disabled quantity mode", async () => {
+      withConfig(PlanType.MONTHLY, { alternatingQuantityEnabled: false });
+      await expect(
+        service.createMonthlyQuote(USER, {
+          frequency: DeliveryFrequency.DAILY,
+          quantityMode: QuantityMode.ALTERNATING,
+          quantityA: 1,
+          quantityB: 2,
+        }),
+      ).rejects.toThrow(/Quantity mode ALTERNATING is not currently available/);
+    });
+
+    describe("confirmation after the admin disables something", () => {
+      const pendingQuote = {
+        id: "quote-1",
+        userId: USER,
+        planType: PlanType.BUY_ONCE,
+        status: PlanQuoteStatus.PENDING,
+        quantity: 2,
+        frequency: null,
+        quantityMode: null,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 1,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      };
+
+      beforeEach(() => {
+        mockPrisma.$transaction.mockImplementation(async (fn: any) =>
+          fn(mockPrisma),
+        );
+        mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
+        mockPrisma.planSelection.create.mockResolvedValue({
+          id: "sel-1",
+          status: PlanSelectionStatus.CONFIRMED,
+        });
+      });
+
+      it.each([PlanType.BUY_ONCE, PlanType.SEVEN_DAY_TRIAL, PlanType.MONTHLY])(
+        "a pending %s quote cannot be confirmed once the plan is disabled",
+        async (planType) => {
+          withConfig(planType, { isActive: false });
+          mockPrisma.planQuote.findUnique.mockResolvedValue({
+            ...pendingQuote,
+            planType,
+          });
+          await expect(
+            service.confirmPlan(USER, { quoteId: "quote-1" }),
+          ).rejects.toThrow(ForbiddenException);
+          expect(mockPrisma.planQuote.updateMany).not.toHaveBeenCalled();
+          expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
+        },
+      );
+
+      it("a pending Monthly quote cannot be confirmed once its frequency is disabled", async () => {
+        withConfig(PlanType.MONTHLY, { alternateDaysEnabled: false });
+        mockPrisma.planQuote.findUnique.mockResolvedValue({
+          ...pendingQuote,
+          planType: PlanType.MONTHLY,
+          frequency: DeliveryFrequency.ALTERNATE_DAYS,
+          quantityMode: QuantityMode.FIXED,
+          billingPeriodStart: new Date(2026, 0, 1),
+          billingPeriodEnd: new Date(2026, 0, 31),
+        });
+        await expect(
+          service.confirmPlan(USER, { quoteId: "quote-1" }),
+        ).rejects.toThrow(ForbiddenException);
+        expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
+      });
+
+      it("an active plan still confirms normally", async () => {
+        mockPrisma.planQuote.findUnique.mockResolvedValue(pendingQuote);
+        await expect(
+          service.confirmPlan(USER, { quoteId: "quote-1" }),
+        ).resolves.toMatchObject({ selectionId: "sel-1" });
+      });
     });
   });
 });

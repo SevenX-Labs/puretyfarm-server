@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Logger,
 } from "@nestjs/common";
+import type { PlanConfig } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   PlanType,
@@ -14,11 +15,14 @@ import {
   PlanSelectionStatus,
   DeliveryStatus,
   QUOTE_EXPIRY_MINUTES,
+  TRIAL_MAX_USES,
+  TRIAL_DURATION_DAYS,
 } from "./plans.constants";
 import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
 import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
 import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
 import { ConfirmPlanDto } from "./dto/customer/confirm-plan.dto";
+import { parseUpdateAdminPlanDto } from "./dto/admin/update-admin-plan.dto";
 
 // ─── Response interfaces ────────────────────────────────────────────
 
@@ -76,6 +80,36 @@ export interface MonthlyInfoResponse {
   quantityMax: number;
   actualPricePerLitre: number;
   sellingPricePerLitre: number;
+}
+
+// Admin view of one PlanConfig row. Prices are INTEGER PAISE. Only fields that
+// apply to the plan type are included.
+export interface AdminPlanConfigResponse {
+  type: PlanType;
+  isActive: boolean;
+  actualPricePerLitre: number;
+  sellingPricePerLitre: number;
+  quantityMin: number;
+  quantityMax: number;
+  /** BUY_ONCE: configurable. SEVEN_DAY_TRIAL: fixed business rule (read-only). */
+  maxUsages?: number;
+  /** SEVEN_DAY_TRIAL: fixed business rule (read-only 7 days). */
+  trialDurationDays?: number;
+  dailyEnabled?: boolean;
+  alternateDaysEnabled?: boolean;
+  fixedQuantityEnabled?: boolean;
+  alternatingQuantityEnabled?: boolean;
+  /** MONTHLY: derived from the toggles — exactly what customers are offered. */
+  frequencies?: DeliveryFrequency[];
+  quantityModes?: QuantityMode[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface AdminPlansResponse {
+  plans: AdminPlanConfigResponse[];
+  /** Plan types with no PlanConfig row yet (initialise one via PATCH). */
+  unconfigured: PlanType[];
 }
 
 export interface ConfirmationResponse {
@@ -183,6 +217,70 @@ export function quantityForOccurrence(
   return occurrence % 2 === 1 ? (quantityA ?? 0) : (quantityB ?? 0);
 }
 
+/** Monthly delivery frequencies the admin has enabled, in enum order. */
+export function enabledFrequencies(config: PlanConfig): DeliveryFrequency[] {
+  return [
+    ...(config.dailyEnabled ? [DeliveryFrequency.DAILY] : []),
+    ...(config.alternateDaysEnabled ? [DeliveryFrequency.ALTERNATE_DAYS] : []),
+  ];
+}
+
+/** Monthly quantity modes the admin has enabled, in enum order. */
+export function enabledQuantityModes(config: PlanConfig): QuantityMode[] {
+  return [
+    ...(config.fixedQuantityEnabled ? [QuantityMode.FIXED] : []),
+    ...(config.alternatingQuantityEnabled ? [QuantityMode.ALTERNATING] : []),
+  ];
+}
+
+/** Column defaults from the PlanConfig model, used to validate a new row. */
+const PLAN_CONFIG_DEFAULTS = {
+  quantityMin: 1,
+  quantityMax: 5,
+  trialDurationDays: TRIAL_DURATION_DAYS,
+  dailyEnabled: true,
+  alternateDaysEnabled: true,
+  fixedQuantityEnabled: true,
+  alternatingQuantityEnabled: true,
+};
+
+/** Maps a PlanConfig row to the admin response, exposing only relevant fields. */
+export function toAdminPlanResponse(config: PlanConfig): AdminPlanConfigResponse {
+  const type = config.planType as PlanType;
+  const base = {
+    type,
+    isActive: config.isActive,
+    actualPricePerLitre: config.actualPricePerLitre,
+    sellingPricePerLitre: config.sellingPricePerLitre,
+    quantityMin: config.quantityMin,
+    quantityMax: config.quantityMax,
+  };
+  const timestamps = { createdAt: config.createdAt, updatedAt: config.updatedAt };
+
+  switch (type) {
+    case PlanType.BUY_ONCE:
+      return { ...base, maxUsages: config.maxUsages, ...timestamps };
+    case PlanType.SEVEN_DAY_TRIAL:
+      return {
+        ...base,
+        trialDurationDays: TRIAL_DURATION_DAYS,
+        maxUsages: TRIAL_MAX_USES,
+        ...timestamps,
+      };
+    case PlanType.MONTHLY:
+      return {
+        ...base,
+        dailyEnabled: config.dailyEnabled,
+        alternateDaysEnabled: config.alternateDaysEnabled,
+        fixedQuantityEnabled: config.fixedQuantityEnabled,
+        alternatingQuantityEnabled: config.alternatingQuantityEnabled,
+        frequencies: enabledFrequencies(config),
+        quantityModes: enabledQuantityModes(config),
+        ...timestamps,
+      };
+  }
+}
+
 // ─── Service ────────────────────────────────────────────────────────
 
 @Injectable()
@@ -194,9 +292,10 @@ export class PlansService {
   // ── Plans Overview ──────────────────────────────────────────────
 
   async getPlansOverview(userId: string): Promise<PlansOverviewResponse> {
-    const [buyOnceElig, trialElig] = await Promise.all([
+    const [buyOnceElig, trialElig, monthlyConfig] = await Promise.all([
       this.getBuyOnceEligibility(userId),
       this.getTrialEligibility(userId),
+      this.getActiveConfig(PlanType.MONTHLY),
     ]);
 
     return {
@@ -220,7 +319,8 @@ export class PlansService {
         },
         {
           type: PlanType.MONTHLY,
-          available: true,
+          available: monthlyConfig !== null,
+          ...(monthlyConfig ? {} : { blockedReason: "PLAN_NOT_CONFIGURED" }),
         },
       ],
     };
@@ -439,8 +539,8 @@ export class PlansService {
 
     return {
       available: true,
-      frequencies: Object.values(DeliveryFrequency),
-      quantityModes: Object.values(QuantityMode),
+      frequencies: enabledFrequencies(config),
+      quantityModes: enabledQuantityModes(config),
       quantityMin: config.quantityMin,
       quantityMax: config.quantityMax,
       actualPricePerLitre: config.actualPricePerLitre,
@@ -453,6 +553,7 @@ export class PlansService {
     dto: MonthlyQuoteDto,
   ): Promise<QuoteResponse> {
     const config = await this.requireActiveConfig(PlanType.MONTHLY);
+    this.assertMonthlyOptionsEnabled(config, dto.frequency, dto.quantityMode);
 
     // Validate quantities based on mode
     if (dto.quantityMode === QuantityMode.FIXED) {
@@ -593,6 +694,23 @@ export class PlansService {
         throw new BadRequestException("Quote has expired");
       }
 
+      // A plan disabled by the admin after this quote was issued accepts no new
+      // selections. Existing selections are untouched.
+      const activeConfig = await this.getActiveConfig(quote.planType as PlanType);
+      if (!activeConfig) {
+        throw new ForbiddenException(
+          `Plan ${quote.planType} is not currently available`,
+        );
+      }
+      if (quote.planType === PlanType.MONTHLY) {
+        this.assertMonthlyOptionsEnabled(
+          activeConfig,
+          quote.frequency as DeliveryFrequency,
+          quote.quantityMode as QuantityMode,
+          ForbiddenException,
+        );
+      }
+
       // Re-check eligibility inside the transaction.
       if (quote.planType === PlanType.BUY_ONCE) {
         const trialUsed = await this.hasUsedPlanTx(tx, userId, PlanType.SEVEN_DAY_TRIAL);
@@ -688,6 +806,128 @@ export class PlansService {
     });
   }
 
+  // ── Admin: Plan Configuration ───────────────────────────────────
+  //
+  // Admins edit the SAME PlanConfig rows the customer methods above read, so a
+  // change applies to the next customer eligibility check / quote. Admin
+  // identity is enforced by the controller guard and never reaches this layer.
+
+  async getAdminPlans(): Promise<AdminPlansResponse> {
+    const configs = await this.prisma.planConfig.findMany();
+    const byType = new Map(configs.map((c) => [c.planType as PlanType, c]));
+    const order = Object.values(PlanType);
+    return {
+      plans: order
+        .filter((t) => byType.has(t))
+        .map((t) => toAdminPlanResponse(byType.get(t)!)),
+      unconfigured: order.filter((t) => !byType.has(t)),
+    };
+  }
+
+  async getAdminPlan(planType: PlanType): Promise<AdminPlanConfigResponse> {
+    const config = await this.prisma.planConfig.findUnique({
+      where: { planType },
+    });
+    if (!config) {
+      throw new NotFoundException(`Plan ${planType} is not configured`);
+    }
+    return toAdminPlanResponse(config);
+  }
+
+  /**
+   * Partially updates a plan's configuration. `body` is validated against the
+   * plan-specific DTO, then the MERGED result (stored + incoming) is checked
+   * for cross-field consistency before anything is written.
+   *
+   * If the plan has no row yet, it is initialised — but only when both prices
+   * are supplied, since prices have no safe default. Plan types are a fixed
+   * enum, so this can never create an arbitrary plan.
+   */
+  async updateAdminPlan(
+    planType: PlanType,
+    body: unknown,
+  ): Promise<AdminPlanConfigResponse> {
+    const dto = await parseUpdateAdminPlanDto(planType, body);
+
+    return this.prisma.$transaction(async (tx) => {
+      // Serialise concurrent edits of the same plan so two partial updates
+      // (e.g. min=4 and max=2) cannot each pass validation against a stale row.
+      const lockKey = `plan_config:${planType}`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+      const existing = await tx.planConfig.findUnique({ where: { planType } });
+
+      if (existing) {
+        this.validateAdminPlanConfiguration(planType, { ...existing, ...dto });
+        const updated = await tx.planConfig.update({
+          where: { planType },
+          data: dto,
+        });
+        return toAdminPlanResponse(updated);
+      }
+
+      const { actualPricePerLitre, sellingPricePerLitre } = dto;
+      if (actualPricePerLitre === undefined || sellingPricePerLitre === undefined) {
+        throw new NotFoundException(
+          `Plan ${planType} is not configured. Provide actualPricePerLitre and sellingPricePerLitre to initialise it.`,
+        );
+      }
+      this.validateAdminPlanConfiguration(planType, {
+        ...PLAN_CONFIG_DEFAULTS,
+        ...dto,
+        actualPricePerLitre,
+        sellingPricePerLitre,
+      });
+      const created = await tx.planConfig.create({
+        data: { ...dto, planType, actualPricePerLitre, sellingPricePerLitre },
+      });
+      return toAdminPlanResponse(created);
+    });
+  }
+
+  /**
+   * Cross-field rules that single-field DTO validation cannot express. Runs on
+   * the merged config, so a PATCH of only `quantityMin` is still checked
+   * against the stored `quantityMax`.
+   */
+  validateAdminPlanConfiguration(
+    planType: PlanType,
+    config: {
+      actualPricePerLitre: number;
+      sellingPricePerLitre: number;
+      quantityMin: number;
+      quantityMax: number;
+      dailyEnabled: boolean;
+      alternateDaysEnabled: boolean;
+      fixedQuantityEnabled: boolean;
+      alternatingQuantityEnabled: boolean;
+    },
+  ): void {
+    if (config.quantityMin > config.quantityMax) {
+      throw new BadRequestException(
+        `quantityMin (${config.quantityMin}) cannot exceed quantityMax (${config.quantityMax})`,
+      );
+    }
+    // A selling price above the actual price would yield a negative discount.
+    if (config.sellingPricePerLitre > config.actualPricePerLitre) {
+      throw new BadRequestException(
+        `sellingPricePerLitre (${config.sellingPricePerLitre}) cannot exceed actualPricePerLitre (${config.actualPricePerLitre})`,
+      );
+    }
+    if (planType === PlanType.MONTHLY) {
+      if (!config.dailyEnabled && !config.alternateDaysEnabled) {
+        throw new BadRequestException(
+          "At least one Monthly frequency (dailyEnabled, alternateDaysEnabled) must be enabled",
+        );
+      }
+      if (!config.fixedQuantityEnabled && !config.alternatingQuantityEnabled) {
+        throw new BadRequestException(
+          "At least one Monthly quantity mode (fixedQuantityEnabled, alternatingQuantityEnabled) must be enabled",
+        );
+      }
+    }
+  }
+
   // ── Private helpers ─────────────────────────────────────────────
 
   /**
@@ -768,6 +1008,26 @@ export class PlansService {
       );
     }
     return config;
+  }
+
+  /**
+   * Rejects a Monthly frequency / quantity mode the admin has disabled. The
+   * DTO only proves the value is a known enum; this enforces the live config.
+   */
+  private assertMonthlyOptionsEnabled(
+    config: PlanConfig,
+    frequency: DeliveryFrequency,
+    quantityMode: QuantityMode,
+    Exception: new (message: string) => Error = BadRequestException,
+  ): void {
+    if (!enabledFrequencies(config).includes(frequency)) {
+      throw new Exception(`Frequency ${frequency} is not currently available`);
+    }
+    if (!enabledQuantityModes(config).includes(quantityMode)) {
+      throw new Exception(
+        `Quantity mode ${quantityMode} is not currently available`,
+      );
+    }
   }
 
   private async hasUsedPlan(userId: string, planType: PlanType): Promise<boolean> {

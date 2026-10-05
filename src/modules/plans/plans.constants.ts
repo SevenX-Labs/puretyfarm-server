@@ -52,3 +52,16 @@ export const QUOTE_EXPIRY_MINUTES = 30;
 /** Absolute structural quantity boundaries (enforced in DTOs). */
 export const QUANTITY_MIN = 1;
 export const QUANTITY_MAX = 5;
+
+/** The 7-Day Trial may be used at most once per customer (business-invariant). */
+export const TRIAL_MAX_USES = 1;
+
+/** The 7-Day Trial duration is fixed to exactly 7 days (business-invariant). */
+export const TRIAL_DURATION_DAYS = 7;
+
+/**
+ * Admin configuration bounds. The price ceiling (₹10,000/litre, in paise) keeps
+ * every quote total (price × up to 31 deliveries × 5 L) inside a 32-bit Int column.
+ */
+export const PRICE_PER_LITRE_MAX_PAISE = 1_000_000;
+export const BUY_ONCE_MAX_USAGES_LIMIT = 100;
