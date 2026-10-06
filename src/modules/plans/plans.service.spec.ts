@@ -1110,6 +1110,75 @@ describe("PlansService", () => {
     });
   });
 
+  describe("confirmPlanAfterCashPayment", () => {
+    it("confirms a PENDING_PAYMENT selection, sets paidAt, and materialises deliveries", async () => {
+      const mockTx: any = {
+        planSelection: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: "sel-1",
+            userId: USER,
+            status: PlanSelectionStatus.PENDING_PAYMENT,
+            quoteId: "quote-1",
+            quote: {
+              id: "quote-1",
+              planType: PlanType.BUY_ONCE,
+              totalSellingAmount: 500,
+              deliveryOccurrences: 1,
+              quantity: 2,
+              quantityMode: QuantityMode.FIXED,
+              quantityA: null,
+              quantityB: null,
+              frequency: null,
+              billingPeriodStart: new Date("2026-10-07"),
+              billingPeriodEnd: new Date("2026-10-07"),
+              status: PlanQuoteStatus.PENDING,
+            },
+          }),
+          update: jest.fn(),
+        },
+        planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        planDelivery: { createMany: jest.fn() },
+      };
+
+      await service.confirmPlanAfterCashPayment(mockTx, "sel-1");
+
+      expect(mockTx.planSelection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "sel-1" },
+          data: expect.objectContaining({
+            status: PlanSelectionStatus.CONFIRMED,
+            paidAmountPaise: 500,
+          }),
+        }),
+      );
+      expect(mockTx.planQuote.updateMany).toHaveBeenCalled();
+      expect(mockTx.planDelivery.createMany).toHaveBeenCalled();
+    });
+
+    it("throws if selection is not PENDING_PAYMENT", async () => {
+      const mockTx: any = {
+        planSelection: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: "sel-1",
+            status: PlanSelectionStatus.CONFIRMED,
+          }),
+        },
+      };
+      await expect(
+        service.confirmPlanAfterCashPayment(mockTx, "sel-1"),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("throws NotFound if selection does not exist", async () => {
+      const mockTx: any = {
+        planSelection: { findUnique: jest.fn().mockResolvedValue(null) },
+      };
+      await expect(
+        service.confirmPlanAfterCashPayment(mockTx, "sel-1"),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
   // ── Admin: plan configuration ─────────────────────────────────────
 
   describe("Admin plan configuration", () => {
