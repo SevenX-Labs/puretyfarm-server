@@ -17,6 +17,7 @@ import { ManageDeliveryModule } from './modules/manage-delivery/manage-delivery.
 import { CustomersModule } from './modules/customers/customers.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
+import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { SchedulerModule } from './modules/scheduler/scheduler.module';
     CustomersModule,
     OrdersModule,
     SchedulerModule,
+    AdminDashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService],
