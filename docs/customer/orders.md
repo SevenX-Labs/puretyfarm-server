@@ -274,11 +274,6 @@ POST /api/v1/customer/orders/:orderId/pay
 
 **Authentication:** Customer JWT required
 
-**Headers (required for ONLINE only):**
-```
-Idempotency-Key: <unique-uuid>
-```
-
 **Request Body:**
 
 ```json
@@ -286,75 +281,41 @@ Idempotency-Key: <unique-uuid>
   "paymentMethod": "WALLET"
 }
 ```
-or
-```json
-{
-  "paymentMethod": "ONLINE"
-}
-```
+
+**Important: Prepaid plan orders**
+
+Orders generated from prepaid plan deliveries are created with `paymentStatus: "PAID"`. They **cannot** be paid again — attempting to do so returns `409 ORDER_ALREADY_PROCESSED`. This is the expected behaviour for all plan-based deliveries (BUY_ONCE, SEVEN_DAY_TRIAL, MONTHLY).
 
 **Payment Methods:**
 
-1. **`WALLET`**:
-   - Synchronously debits the customer's wallet balance by `Order.totalPaise`.
-   - Atomically updates `Order.paymentStatus = PAID` within the same transaction.
-   - Creates an immutable `WalletTransaction` ledger row (`type: DEBIT`, `referenceType: ORDER`).
-   - Does not require an `Idempotency-Key` header (the unique ledger constraint prevents duplicate debit).
+| Method | Supported | Behaviour |
+|--------|-----------|-----------|
+| `WALLET` | Yes | Debits wallet, marks order PAID |
+| `CASH` | No | Returns `400 DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED` |
 
-   **Response — Wallet (`200 OK`):**
-   ```json
-   {
-     "success": true,
-     "orderId": "uuid",
-     "paymentMethod": "WALLET",
-     "paymentStatus": "PAID",
-     "orderStatus": "CONFIRMED"
-   }
-   ```
+CASH is **not supported** as a direct payment method for orders through this endpoint. Plan deliveries are prepaid at plan confirmation time.
 
-2. **`ONLINE`**:
-   - Requires `Idempotency-Key` header.
-   - Creates a `Payment` row (`purpose: ORDER`, `amountPaise: Order.totalPaise`).
-   - Returns PayU Hosted Checkout form action and fields with server-generated SHA-512 hash.
-   - Upon verified PayU success callback/webhook, `Order.paymentStatus` flips to `PAID`.
-   - **Late-Arrival Auto-Refund**: If an order was already settled (e.g., paid by wallet while PayU checkout was open), the late PayU payment is safely routed to `REFUND_PENDING` and refunded via gateway webhook.
+**`WALLET` payment:**
+- Synchronously debits the customer's wallet balance by `Order.totalPaise`.
+- Atomically updates `Order.paymentStatus = PAID` within the same transaction.
+- Creates an immutable `WalletTransaction` ledger row (`type: DEBIT`, `referenceType: ORDER`).
 
-   **Response — Online (`200 OK`):**
-   ```json
-   {
-     "payment": {
-       "id": "uuid",
-       "transactionId": "PFM8J1X091...",
-       "amountPaise": 18000,
-       "currency": "INR",
-       "status": "PENDING"
-     },
-     "orderId": "uuid",
-     "checkout": {
-       "endpoint": "https://secure.payu.in/_payment",
-       "method": "POST",
-       "fields": {
-         "key": "...",
-         "txnid": "PFM8J1X091...",
-         "amount": "180.00",
-         "productinfo": "Order PF10001",
-         "firstname": "Rahul",
-         "email": "customer@example.com",
-         "phone": "9876543210",
-         "surl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/success",
-         "furl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/failure",
-         "hash": "..."
-       }
-     },
-     "message": "Payment created. Submit the checkout fields to the payment gateway to complete it."
-   }
-   ```
+**Response — Wallet (`200 OK`):**
+```json
+{
+  "success": true,
+  "orderId": "uuid",
+  "paymentMethod": "WALLET",
+  "paymentStatus": "PAID",
+  "orderStatus": "CONFIRMED"
+}
+```
 
 **Errors:**
-- `400 BAD_REQUEST` — Missing `Idempotency-Key` for online payment, or invalid paymentMethod
+- `400 DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED` — CASH is not a supported order payment method
 - `400 INSUFFICIENT_WALLET_BALANCE` — Customer wallet does not have enough balance for order total
 - `404 ORDER_NOT_FOUND` — Order does not exist or belongs to another customer
-- `409 ORDER_ALREADY_PROCESSED` — Order is already `PAID`
+- `409 ORDER_ALREADY_PROCESSED` — Order is already `PAID` (including all prepaid plan orders)
 
 ## Security / IDOR Rules
 

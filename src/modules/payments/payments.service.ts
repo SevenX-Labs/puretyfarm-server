@@ -12,6 +12,7 @@ import { Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
+import { PlansService } from '../plans/plans.service';
 import { PaymentStatus as OrderPaymentStatus } from '../orders/orders.constants';
 import {
   WalletCreditRequestStatus,
@@ -83,6 +84,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly walletService: WalletService,
+    private readonly plansService: PlansService,
     @Inject(PAYMENT_PROVIDER)
     private readonly provider: IPaymentProvider,
   ) {
@@ -1807,11 +1809,13 @@ export class PaymentsService {
     ]);
 
     return {
-      data: collections.map((c) => ({
+      data: collections.map((c: any) => ({
         id: c.id,
         amountPaise: c.amountPaise,
         status: c.status,
+        purpose: c.walletCreditRequestId ? 'WALLET_TOPUP' : 'PLAN_PAYMENT',
         walletCreditRequestId: c.walletCreditRequestId,
+        planSelectionId: c.planSelectionId,
         collectedAt: c.collectedAt,
         confirmedAt: c.confirmedAt,
         createdAt: c.createdAt,
@@ -1827,6 +1831,7 @@ export class PaymentsService {
       include: {
         user: { select: this.customerSelect },
         walletCreditRequest: { include: { transaction: true } },
+        planSelection: { select: { id: true, status: true, planType: true, paidAt: true } },
       },
     });
 
@@ -1837,10 +1842,11 @@ export class PaymentsService {
       });
     }
 
-    return {
+    const result: any = {
       id: collection.id,
       amountPaise: collection.amountPaise,
       status: collection.status,
+      purpose: collection.walletCreditRequestId ? 'WALLET_TOPUP' : 'PLAN_PAYMENT',
       collectedAt: collection.collectedAt,
       confirmedAt: collection.confirmedAt,
       confirmedByAdminId: collection.confirmedByAdminId,
@@ -1848,14 +1854,28 @@ export class PaymentsService {
       createdAt: collection.createdAt,
       updatedAt: collection.updatedAt,
       customer: this.formatCustomer(collection.user),
-      walletCredit: {
+    };
+
+    if (collection.walletCreditRequest) {
+      result.walletCredit = {
         id: collection.walletCreditRequest.id,
         status: collection.walletCreditRequest.status,
         amountPaise: collection.walletCreditRequest.amountPaise,
         completedAt: collection.walletCreditRequest.completedAt,
         transactionId: collection.walletCreditRequest.transaction?.id ?? null,
-      },
-    };
+      };
+    }
+
+    if (collection.planSelection) {
+      result.planSelection = {
+        id: collection.planSelection.id,
+        status: collection.planSelection.status,
+        planType: collection.planSelection.planType,
+        paidAt: collection.planSelection.paidAt,
+      };
+    }
+
+    return result;
   }
 
   /**
@@ -1877,7 +1897,6 @@ export class PaymentsService {
     return this.prisma.$transaction(async (tx) => {
       const now = new Date();
 
-      // Atomic claim: only PENDING or COLLECTED may become CONFIRMED.
       const claimed = await tx.cashCollection.updateMany({
         where: {
           id,
@@ -1912,32 +1931,64 @@ export class PaymentsService {
         where: { id },
       });
 
-      // The wallet performs the credit. Physical confirmation IS the approval,
-      // so this goes through the shared admin-approval ledger path.
-      const credit = await this.walletService.creditConfirmedCashRequest(
-        tx,
-        collection.walletCreditRequestId,
-        adminId,
-      );
+      // Route by purpose: wallet top-up vs plan payment.
+      if (collection.walletCreditRequestId) {
+        const credit = await this.walletService.creditConfirmedCashRequest(
+          tx,
+          collection.walletCreditRequestId,
+          adminId,
+        );
 
-      this.logger.log(
-        `Cash collection confirmed cashCollectionId=${collection.id} ` +
-          `creditRequestId=${collection.walletCreditRequestId} ` +
-          `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
-          `adminId=${adminId}`,
-      );
+        this.logger.log(
+          `Cash collection confirmed (wallet top-up) cashCollectionId=${collection.id} ` +
+            `creditRequestId=${collection.walletCreditRequestId} ` +
+            `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
+            `adminId=${adminId}`,
+        );
 
-      return {
-        success: true,
-        message: 'Cash confirmed and wallet credited.',
-        cashCollection: {
-          id: collection.id,
-          status: CashCollectionStatus.CONFIRMED,
-          amountPaise: collection.amountPaise,
-          confirmedAt: collection.confirmedAt,
-        },
-        walletCredit: credit.request,
-      };
+        return {
+          success: true,
+          message: 'Cash confirmed and wallet credited.',
+          cashCollection: {
+            id: collection.id,
+            status: CashCollectionStatus.CONFIRMED,
+            amountPaise: collection.amountPaise,
+            confirmedAt: collection.confirmedAt,
+          },
+          walletCredit: credit.request,
+        };
+      }
+
+      // Plan payment cash confirmation.
+      if (collection.planSelectionId) {
+        await this.plansService.confirmPlanAfterCashPayment(
+          tx,
+          collection.planSelectionId,
+        );
+
+        this.logger.log(
+          `Cash collection confirmed (plan payment) cashCollectionId=${collection.id} ` +
+            `planSelectionId=${collection.planSelectionId} ` +
+            `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
+            `adminId=${adminId}`,
+        );
+
+        return {
+          success: true,
+          message: 'Cash confirmed and plan activated.',
+          cashCollection: {
+            id: collection.id,
+            status: CashCollectionStatus.CONFIRMED,
+            amountPaise: collection.amountPaise,
+            confirmedAt: collection.confirmedAt,
+          },
+        };
+      }
+
+      throw new BadRequestException({
+        error: 'CASH_COLLECTION_NO_PURPOSE',
+        message: 'Cash collection has no linked purpose (neither wallet nor plan)',
+      });
     });
   }
 
@@ -1985,20 +2036,37 @@ export class PaymentsService {
         where: { id },
       });
 
-      await this.walletService.cancelCreditRequest(
-        tx,
-        collection.walletCreditRequestId,
-        dto.note,
-      );
+      if (collection.walletCreditRequestId) {
+        await this.walletService.cancelCreditRequest(
+          tx,
+          collection.walletCreditRequestId,
+          dto.note,
+        );
+      }
+
+      if (collection.planSelectionId) {
+        await tx.planSelection.updateMany({
+          where: { id: collection.planSelectionId, status: 'PENDING_PAYMENT' },
+          data: { status: 'CANCELLED' },
+        });
+        await tx.planQuote.updateMany({
+          where: {
+            selections: { some: { id: collection.planSelectionId } },
+            status: 'PENDING',
+          },
+          data: { status: 'CANCELLED' },
+        });
+      }
 
       this.logger.log(
-        `Cash collection cancelled cashCollectionId=${collection.id} ` +
-          `creditRequestId=${collection.walletCreditRequestId} adminId=${adminId}`,
+        `Cash collection cancelled cashCollectionId=${collection.id} adminId=${adminId}`,
       );
 
       return {
         success: true,
-        message: 'Cash collection cancelled. No wallet credit was made.',
+        message: collection.planSelectionId
+          ? 'Cash collection cancelled. Plan purchase cancelled.'
+          : 'Cash collection cancelled. No wallet credit was made.',
         cashCollection: {
           id: collection.id,
           status: CashCollectionStatus.CANCELLED,

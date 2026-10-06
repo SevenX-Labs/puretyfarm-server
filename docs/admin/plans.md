@@ -23,7 +23,7 @@ All admin plan and delivery management routes support dual routing prefixes:
 
 ### Core Business Rules
 - **Fixed Plan Types**: Exactly three plan types exist: `BUY_ONCE`, `SEVEN_DAY_TRIAL`, and `MONTHLY`. Plans cannot be arbitrarily created or deleted.
-- **Integration with Wallet & Payment Modules**: Configured plan prices feed into customer quotes and ultimately into `POST /api/v1/customer/payments/create` for wallet top-ups. The wallet enforces a configured min/max top-up (default ₹1.00 – ₹10,000.00); keep plan quote totals within that bound so a customer can actually fund them. See `docs/admin/payments.md` and `docs/admin/wallet.md`. The Plans module itself never credits or debits a wallet.
+- **Integration with Wallet & Payment Modules**: All plans are **prepaid**. The quoted total covers all scheduled deliveries. Customers choose WALLET or CASH at confirmation time (`POST /api/v1/customer/plans/confirm`). WALLET debits the wallet atomically; CASH creates a CashCollection for admin confirmation. There is no direct PayU checkout for plans — PayU is used only for wallet top-ups (Add Money). The wallet enforces a configured min/max top-up (default ₹1.00 – ₹10,000.00); keep plan quote totals within that bound so a customer can actually fund them via wallet. See `docs/admin/payments.md` and `docs/admin/wallet.md`.
 - **Integer Paise Pricing**: All prices are stored and transmitted as **integer paise** (₹1 = 100 paise). Floating point currency or string numbers are rejected.
 - **Cross-Field Validation**:
   - `sellingPricePerLitre` must never exceed `actualPricePerLitre`.
@@ -458,11 +458,8 @@ curl -i -X POST "$BASE_URL/api/v1/admin/manage-delivery/requests/<REQUEST_ID>/re
   that was funded by an online PayU payment — see
   `docs/admin/wallet.md` §5 (automatic refund) and
   `docs/admin/payments.md` §9 (manual retry).
-- **Wallet credit on plan payment**: when a plan is paid for by wallet top-up,
-  the customer's first wallet credit still requires admin approval via
-  `POST /api/v1/admin/wallet/credit-requests/:id/approve`. Subsequent
-  verified online top-ups auto-credit based on that customer's own
-  `Wallet.autoCreditEnabled`.
+- **Plan payment flow**: Plans are paid at confirmation time via WALLET (atomic debit) or CASH (admin confirms physical cash → plan activated). If the customer's wallet balance is insufficient, they must first top up via `POST /api/v1/customer/payments/create` (ONLINE → PayU). The customer's first wallet credit still requires admin approval via `POST /api/v1/admin/wallet/credit-requests/:id/approve`. Subsequent verified online top-ups auto-credit based on `Wallet.autoCreditEnabled`.
+- **Cash plan collections**: When a customer chooses CASH for a plan, a CashCollection is created with purpose `PLAN_PAYMENT`. Confirming it via `POST /api/v1/admin/payments/cash-collections/:id/confirm` activates the plan and creates deliveries. Cancelling it cancels the plan selection.
 - **Scheduler**: an abandoned PayU checkout for a wallet top-up expires via
   the payment-expiry cron (every 10 minutes). See
   `docs/admin/scheduler.md`. The scheduler never changes plan state.

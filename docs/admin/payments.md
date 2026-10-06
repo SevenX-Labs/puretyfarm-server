@@ -17,7 +17,7 @@ Admins have three kinds of control over money:
 | Area | Where | Behaviour |
 |------|-------|-----------|
 | **Online payments** | this document (read-only) + wallet reject | Admins can only read online payment state. The payment becomes `SUCCESS` strictly through verified PayU communication — never through an admin action. |
-| **Cash collections** | this document | Admins confirm or cancel physical cash. Confirmation is the operational gate that credits the wallet. |
+| **Cash collections** | this document | Admins confirm or cancel physical cash. Cash collections serve two purposes: **wallet top-up** (credits the wallet on confirm) and **plan payment** (activates the plan and creates deliveries on confirm). |
 | **Refunds** | wallet reject auto-initiates; this document exposes a manual retry | A rejected online credit request triggers a PayU refund automatically (see `docs/admin/wallet.md` §5). This document's refund endpoint exists for manual retry if the automatic call failed. |
 
 ### Architectural separation (non-negotiable)
@@ -181,7 +181,9 @@ Notes:
       "id": "csh-...",
       "amountPaise": 50000,
       "status": "PENDING",
+      "purpose": "WALLET_TOPUP",
       "walletCreditRequestId": "wcr-...",
+      "planSelectionId": null,
       "collectedAt": null,
       "confirmedAt": null,
       "createdAt": "2026-10-06T19:00:00.000Z",
@@ -236,8 +238,14 @@ Notes:
 
 ## 7. `POST /api/v1/admin/payments/cash-collections/:id/confirm`
 
-Confirms physical cash was received. **This is the only trigger that credits a
-cash wallet top-up.**
+Confirms physical cash was received. Behaviour depends on the cash collection's purpose:
+
+| Purpose | Trigger | Side effects on confirm |
+|---------|---------|------------------------|
+| **Wallet top-up** | `POST /customer/payments/create` with `paymentMethod: "CASH"` | Wallet credited, `WalletTransaction` written, `autoCreditEnabled` flipped if first credit |
+| **Plan payment** | `POST /customer/plans/confirm` with `paymentMethod: "CASH"` | Plan activated (`CONFIRMED`), quote confirmed, deliveries materialised |
+
+The admin does not need to distinguish — the system routes automatically based on which FK is set (`walletCreditRequestId` or `planSelectionId`).
 
 **Request body (all optional):**
 
@@ -249,7 +257,7 @@ cash wallet top-up.**
 |-------|------|-------|
 | `note` | string | Optional; trimmed; max 1000 chars |
 
-**Response `200`:**
+**Response `200` (wallet top-up):**
 
 ```json
 {
@@ -269,7 +277,22 @@ cash wallet top-up.**
 }
 ```
 
-**Side effects (atomic, single DB transaction):**
+**Response `200` (plan payment):**
+
+```json
+{
+  "success": true,
+  "message": "Cash confirmed and plan activated.",
+  "cashCollection": {
+    "id": "csh-...",
+    "status": "CONFIRMED",
+    "amountPaise": 17000,
+    "confirmedAt": "2026-10-06T19:25:00.000Z"
+  }
+}
+```
+
+**Side effects for wallet top-up (atomic, single DB transaction):**
 
 1. `CashCollection.status`: `PENDING | COLLECTED → CONFIRMED` with
    `confirmedByAdminId = JWT.sub`, `confirmedAt = NOW()`, `collectedAt = NOW()`.
@@ -278,6 +301,13 @@ cash wallet top-up.**
 4. Immutable `WalletTransaction` written (`type=CREDIT`, `referenceType=CREDIT_REQUEST`).
 5. If this is the customer's first completed credit,
    `Wallet.autoCreditEnabled` flips to `true`.
+
+**Side effects for plan payment (atomic, single DB transaction):**
+
+1. `CashCollection.status`: `PENDING | COLLECTED → CONFIRMED`.
+2. `PlanSelection.status`: `PENDING_PAYMENT → CONFIRMED`, with `paidAt` and `paidAmountPaise` set.
+3. `PlanQuote.status`: `PENDING → CONFIRMED`.
+4. Delivery rows (`PlanDelivery`) materialised for the plan schedule.
 
 **Errors:**
 
@@ -323,8 +353,8 @@ Cancels a cash collection — cash was never received.
 **Side effects:**
 
 - `CashCollection.status`: `PENDING | COLLECTED → CANCELLED`.
-- Linked `WalletCreditRequest.status`: `PENDING → CANCELLED` (frees the
-  one-pending-per-wallet slot).
+- **Wallet top-up purpose:** Linked `WalletCreditRequest.status`: `PENDING → CANCELLED` (frees the one-pending-per-wallet slot).
+- **Plan payment purpose:** Linked `PlanSelection.status`: `PENDING_PAYMENT → CANCELLED` and `PlanQuote.status`: `PENDING → CANCELLED`.
 - **No wallet credit, no PayU refund call** — cash was never collected and
   there is no PayU payment to reverse. Any physical cash that did arrive is
   reconciled offline.

@@ -348,6 +348,7 @@ The customer's immutable ledger, scoped to their own wallet.
 |-----------------|---------|
 | `CREDIT_REQUEST` | A wallet top-up (ONLINE or CASH) |
 | `ORDER` | An order payment debit |
+| `PLAN_SELECTION` | A plan purchase debit (prepaid plan payment via wallet) |
 
 ---
 

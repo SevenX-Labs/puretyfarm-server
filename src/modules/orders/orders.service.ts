@@ -107,6 +107,10 @@ export class OrdersService {
         throw new BadRequestException("No active plan found for this delivery");
       }
 
+      // Prepaid plan: the plan payment covers all deliveries, so the order
+      // is born PAID. The customer is never charged again for this delivery.
+      const isPrepaid = selection.paidAmountPaise != null && selection.paidAmountPaise > 0;
+
       // 4. Get the PlanConfig for pricing & delivery config.
       const config = await tx.planConfig.findUnique({
         where: { planType: selection.planType },
@@ -140,7 +144,7 @@ export class OrdersService {
           planDeliveryId: delivery.id,
           planType: selection.planType,
           status: OrderStatus.CONFIRMED,
-          paymentStatus: PaymentStatus.PENDING,
+          paymentStatus: isPrepaid ? PaymentStatus.PAID : PaymentStatus.PENDING,
           subtotalPaise,
           discountPaise: itemDiscount > 0 ? itemDiscount : 0,
           taxPaise: 0,

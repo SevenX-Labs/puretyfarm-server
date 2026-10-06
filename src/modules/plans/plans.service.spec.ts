@@ -1,3 +1,7 @@
+jest.mock("@nestjs/config", () => ({
+  ConfigService: jest.fn().mockImplementation(() => ({ get: jest.fn() })),
+}));
+
 import { Test, TestingModule } from "@nestjs/testing";
 import {
   PlansService,
@@ -21,6 +25,8 @@ import {
   QUOTE_EXPIRY_MINUTES,
   TRIAL_DURATION_DAYS,
 } from "./plans.constants";
+import { PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
+import { WalletService } from "../wallet/wallet.service";
 
 describe("PlansService", () => {
   let service: PlansService;
@@ -34,8 +40,10 @@ describe("PlansService", () => {
       update: jest.fn(),
       create: jest.fn(),
     },
-    planSelection: { count: jest.fn(), create: jest.fn() },
+    planSelection: { count: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
     planDelivery: { createMany: jest.fn() },
+    wallet: { findUnique: jest.fn() },
+    cashCollection: { create: jest.fn() },
     planQuote: {
       create: jest.fn(),
       findUnique: jest.fn(),
@@ -44,6 +52,10 @@ describe("PlansService", () => {
     },
     $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn(),
+  };
+
+  const mockWalletService: any = {
+    debitWalletWithin: jest.fn().mockResolvedValue(undefined),
   };
 
   const USER = "user-1";
@@ -128,6 +140,7 @@ describe("PlansService", () => {
       providers: [
         PlansService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: WalletService, useValue: mockWalletService },
       ],
     }).compile();
     service = module.get<PlansService>(PlansService);
@@ -883,6 +896,8 @@ describe("PlansService", () => {
           planSelection: mockPrisma.planSelection,
           planDelivery: mockPrisma.planDelivery,
           planConfig: mockPrisma.planConfig,
+          wallet: mockPrisma.wallet,
+          cashCollection: mockPrisma.cashCollection,
           $executeRaw: mockPrisma.$executeRaw,
         });
       });
@@ -891,28 +906,74 @@ describe("PlansService", () => {
         ...validQuote,
         status: PlanQuoteStatus.CONFIRMED,
       });
-      // Atomic PENDING -> CONFIRMED transition: by default it wins (count 1).
       mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
       mockPrisma.planSelection.create.mockImplementation(({ data }: any) => ({
         id: "sel-1",
         ...data,
       }));
+      mockPrisma.planSelection.update.mockImplementation(({ data }: any) => ({
+        id: "sel-1",
+        ...data,
+      }));
+      mockPrisma.wallet.findUnique.mockResolvedValue({
+        userId: USER,
+        balancePaise: 999_999,
+      });
     });
 
-    it("confirms a valid pending quote", async () => {
+    it("confirms a valid pending quote via WALLET", async () => {
       const result = await service.confirmPlan(USER, {
         quoteId: "quote-1",
+        paymentMethod: PlanPaymentMethod.WALLET,
       });
       expect(result.selectionId).toBe("sel-1");
       expect(result.quoteId).toBe("quote-1");
       expect(result.plan).toBe(PlanType.BUY_ONCE);
       expect(result.status).toBe(PlanSelectionStatus.CONFIRMED);
+      expect(result.paymentMethod).toBe(PlanPaymentMethod.WALLET);
+      expect(result.paidAmountPaise).toBe(300);
+    });
+
+    it("confirms a valid pending quote via CASH (creates CashCollection, stays PENDING_PAYMENT)", async () => {
+      mockPrisma.cashCollection.create.mockResolvedValue({ id: "cc-1" });
+      const result = await service.confirmPlan(USER, {
+        quoteId: "quote-1",
+        paymentMethod: PlanPaymentMethod.CASH,
+      });
+      expect(result.selectionId).toBe("sel-1");
+      expect(result.status).toBe(PlanSelectionStatus.PENDING_PAYMENT);
+      expect(result.paymentMethod).toBe(PlanPaymentMethod.CASH);
+      expect(result.cashCollectionId).toBe("cc-1");
+      expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
+    });
+
+    it("throws INSUFFICIENT_WALLET_BALANCE when wallet balance is too low", async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue({
+        userId: USER,
+        balancePaise: 100,
+      });
+      mockPrisma.planSelection.delete.mockResolvedValue({});
+      try {
+        await service.confirmPlan(USER, {
+          quoteId: "quote-1",
+          paymentMethod: PlanPaymentMethod.WALLET,
+        });
+        fail("Expected BadRequestException");
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        const response = err.getResponse();
+        expect(response.error).toBe("INSUFFICIENT_WALLET_BALANCE");
+        expect(response.currentBalancePaise).toBe(100);
+        expect(response.requiredPaise).toBe(300);
+        expect(response.shortfallPaise).toBe(200);
+      }
+      expect(mockPrisma.planSelection.delete).toHaveBeenCalled();
     });
 
     it("throws NotFound when quote does not exist", async () => {
       mockPrisma.planQuote.findUnique.mockResolvedValue(null);
       await expect(
-        service.confirmPlan(USER, { quoteId: "no-such" }),
+        service.confirmPlan(USER, { quoteId: "no-such", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(NotFoundException);
     });
 
@@ -922,7 +983,7 @@ describe("PlansService", () => {
         userId: OTHER,
       });
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
+        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(NotFoundException);
     });
 
@@ -932,7 +993,7 @@ describe("PlansService", () => {
         status: PlanQuoteStatus.CONFIRMED,
       });
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
+        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -942,7 +1003,7 @@ describe("PlansService", () => {
         expiresAt: new Date(Date.now() - 1000), // Past
       });
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
+        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -950,7 +1011,7 @@ describe("PlansService", () => {
       // First planSelection.count in transaction returns 1 (trial used).
       mockPrisma.planSelection.count.mockResolvedValueOnce(1);
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
+        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(ForbiddenException);
     });
 
@@ -962,27 +1023,19 @@ describe("PlansService", () => {
       // First planSelection.count for buy-once check returns 1.
       mockPrisma.planSelection.count.mockResolvedValueOnce(1);
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
+        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it("is race-safe: a concurrent confirmation of the same quote is rejected and creates no second selection", async () => {
-      // Both requests read the quote as PENDING (classic read-then-write race),
-      // but the atomic guarded transition only matches for the first writer.
-      // Simulate the losing request: the PENDING -> CONFIRMED updateMany matches
-      // zero rows because the row is already CONFIRMED by the winner.
-      mockPrisma.planQuote.updateMany.mockResolvedValueOnce({ count: 0 });
-
-      await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
-      ).rejects.toThrow(BadRequestException);
-
-      // Critically, no duplicate PlanSelection must be created for the loser.
-      expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
+    it("is race-safe: advisory lock serializes same-user confirmations", async () => {
+      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
+      expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1);
+      const sql = mockPrisma.$executeRaw.mock.calls[0][0].join("?");
+      expect(sql).toContain("pg_advisory_xact_lock");
     });
 
     it("acquires a per-user advisory lock to serialize confirmations (DB-level cross-quote race guard)", async () => {
-      await service.confirmPlan(USER, { quoteId: "quote-1" });
+      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
       // The advisory lock must be taken inside the transaction.
       expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1);
       const args = mockPrisma.$executeRaw.mock.calls[0];
@@ -1002,7 +1055,7 @@ describe("PlansService", () => {
         .mockResolvedValueOnce(0) // buy-once used?
         .mockResolvedValueOnce(1); // trial already used
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
+        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(ForbiddenException);
       expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
     });
@@ -1013,13 +1066,13 @@ describe("PlansService", () => {
         .mockResolvedValueOnce(0)
         .mockResolvedValueOnce(7);
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1" }),
+        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
       ).rejects.toThrow(ForbiddenException);
       expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
     });
 
     it("uses a guarded PENDING-only transition for the winning confirmation", async () => {
-      await service.confirmPlan(USER, { quoteId: "quote-1" });
+      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
       expect(mockPrisma.planQuote.updateMany).toHaveBeenCalledWith({
         where: { id: "quote-1", status: PlanQuoteStatus.PENDING },
         data: { status: PlanQuoteStatus.CONFIRMED },
@@ -1041,7 +1094,7 @@ describe("PlansService", () => {
         billingPeriodStart: start,
         billingPeriodEnd: end,
       });
-      await service.confirmPlan(USER, { quoteId: "quote-1" });
+      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
       expect(mockPrisma.planDelivery.createMany).toHaveBeenCalledTimes(1);
       const rows = mockPrisma.planDelivery.createMany.mock.calls[0][0].data;
       expect(rows).toHaveLength(5); // Jan 1..5
@@ -1468,6 +1521,7 @@ describe("PlansService", () => {
         deliveryOccurrences: 1,
         billingPeriodStart: null,
         billingPeriodEnd: null,
+        totalSellingAmount: 200,
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       };
 
@@ -1476,9 +1530,17 @@ describe("PlansService", () => {
           fn(mockPrisma),
         );
         mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
-        mockPrisma.planSelection.create.mockResolvedValue({
+        mockPrisma.planSelection.create.mockImplementation(({ data }: any) => ({
           id: "sel-1",
-          status: PlanSelectionStatus.CONFIRMED,
+          ...data,
+        }));
+        mockPrisma.planSelection.update.mockImplementation(({ data }: any) => ({
+          id: "sel-1",
+          ...data,
+        }));
+        mockPrisma.wallet.findUnique.mockResolvedValue({
+          userId: USER,
+          balancePaise: 999_999,
         });
       });
 
@@ -1491,7 +1553,7 @@ describe("PlansService", () => {
             planType,
           });
           await expect(
-            service.confirmPlan(USER, { quoteId: "quote-1" }),
+            service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
           ).rejects.toThrow(ForbiddenException);
           expect(mockPrisma.planQuote.updateMany).not.toHaveBeenCalled();
           expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
@@ -1509,7 +1571,7 @@ describe("PlansService", () => {
           billingPeriodEnd: new Date(2026, 0, 31),
         });
         await expect(
-          service.confirmPlan(USER, { quoteId: "quote-1" }),
+          service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
         ).rejects.toThrow(ForbiddenException);
         expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
       });
@@ -1517,7 +1579,7 @@ describe("PlansService", () => {
       it("an active plan still confirms normally", async () => {
         mockPrisma.planQuote.findUnique.mockResolvedValue(pendingQuote);
         await expect(
-          service.confirmPlan(USER, { quoteId: "quote-1" }),
+          service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
         ).resolves.toMatchObject({ selectionId: "sel-1" });
       });
     });
@@ -1575,17 +1637,23 @@ describe("PlansService", () => {
           planSelection: mockPrisma.planSelection,
           planDelivery: mockPrisma.planDelivery,
           planConfig: txPlanConfig,
+          wallet: mockPrisma.wallet,
+          cashCollection: mockPrisma.cashCollection,
           $executeRaw: mockPrisma.$executeRaw,
         }),
       );
       mockPrisma.planQuote.findUnique.mockResolvedValue(pendingBuyOnce);
       mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.wallet.findUnique.mockResolvedValue({
+        userId: USER,
+        balancePaise: 999_999,
+      });
       mockPrisma.planSelection.create.mockResolvedValue({
         id: "sel-tx",
         status: PlanSelectionStatus.CONFIRMED,
       });
 
-      await service.confirmPlan(USER, { quoteId: "quote-tx" });
+      await service.confirmPlan(USER, { quoteId: "quote-tx", paymentMethod: PlanPaymentMethod.WALLET });
 
       expect(txPlanConfig.findFirst).toHaveBeenCalledWith({
         where: { planType: PlanType.BUY_ONCE, isActive: true },

@@ -23,6 +23,14 @@ Two ways to top up a wallet:
 | `ONLINE` | PayU Hosted Checkout | SHA-512 hash-verified PayU callback or webhook | Admin approval (first time) or automatic (per-wallet `autoCreditEnabled=true`) |
 | `CASH` | None | Admin confirmation after physical cash reaches the depot | Admin confirmation only — never automatic |
 
+**Plan payments and this module:** Plans are paid directly at plan confirmation
+time via the Plans module (`POST /customer/plans/confirm` with `paymentMethod:
+"WALLET"` or `"CASH"`). When a customer's wallet balance is insufficient, they
+use this Payment module to top up their wallet (Add Money → ONLINE → PayU),
+then return to the Plans module to complete the purchase with WALLET. There is
+**no direct PayU checkout for plan purchases** — PayU is used only for wallet
+top-ups.
+
 ### Authentication
 
 ```http

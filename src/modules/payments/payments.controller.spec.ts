@@ -24,6 +24,7 @@ import { PayuHashService } from './providers/payu/payu.hash.service';
 import { PAYMENT_PROVIDER } from './providers/payment-provider.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
+import { PlansService } from '../plans/plans.service';
 import { WalletCreditRequestStatus } from '../wallet/wallet.constants';
 import {
   CashCollectionStatus,
@@ -366,6 +367,7 @@ describe('Payments HTTP integration', () => {
         { provide: PAYMENT_PROVIDER, useExisting: PayuService },
         { provide: PrismaService, useValue: prisma },
         { provide: WalletService, useValue: wallet },
+        { provide: PlansService, useValue: { confirmPlanAfterCashPayment: jest.fn() } },
         {
           provide: JwtService,
           useValue: {

@@ -21,13 +21,12 @@ describe('OrderPaymentsController', () => {
   beforeEach(() => {
     mockPaymentsService = {
       payOrderFromWallet: jest.fn(),
-      createOrderPayment: jest.fn(),
     };
     controller = new OrderPaymentsController(mockPaymentsService);
   });
 
   describe('payOrder with WALLET', () => {
-    it('calls payOrderFromWallet without requiring an idempotency key', async () => {
+    it('calls payOrderFromWallet for wallet payments', async () => {
       mockPaymentsService.payOrderFromWallet.mockResolvedValueOnce({
         success: true,
         orderId: 'order-1',
@@ -40,7 +39,6 @@ describe('OrderPaymentsController', () => {
         mockUser,
         'order-1',
         { paymentMethod: OrderPaymentChoice.WALLET },
-        undefined as any,
       );
 
       expect(mockPaymentsService.payOrderFromWallet).toHaveBeenCalledTimes(1);
@@ -52,40 +50,30 @@ describe('OrderPaymentsController', () => {
     });
   });
 
-  describe('payOrder with ONLINE', () => {
-    it('throws BadRequestException if idempotency-key header is missing', async () => {
+  describe('payOrder with CASH', () => {
+    it('throws BadRequestException and never calls wallet debit', async () => {
       await expect(
         controller.payOrder(
           mockUser,
           'order-1',
-          { paymentMethod: OrderPaymentChoice.ONLINE },
-          '',
+          { paymentMethod: OrderPaymentChoice.CASH },
         ),
       ).rejects.toThrow(BadRequestException);
-      expect(mockPaymentsService.createOrderPayment).not.toHaveBeenCalled();
+
+      expect(mockPaymentsService.payOrderFromWallet).not.toHaveBeenCalled();
     });
 
-    it('calls createOrderPayment with validated idempotency key', async () => {
-      mockPaymentsService.createOrderPayment.mockResolvedValueOnce({
-        payment: { id: 'p-1', transactionId: 'PF123', amountPaise: 50000 },
-        orderId: 'order-1',
-        checkout: { endpoint: 'https://secure.payu.in/_payment', fields: {} },
-      });
-
-      const result = await controller.payOrder(
-        mockUser,
-        'order-1',
-        { paymentMethod: OrderPaymentChoice.ONLINE },
-        'idem-key-1',
-      );
-
-      expect(mockPaymentsService.createOrderPayment).toHaveBeenCalledTimes(1);
-      expect(mockPaymentsService.createOrderPayment).toHaveBeenCalledWith(
-        'user-123',
-        'order-1',
-        'idem-key-1',
-      );
-      expect(result.orderId).toBe('order-1');
+    it('returns DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED error code', async () => {
+      try {
+        await controller.payOrder(
+          mockUser,
+          'order-1',
+          { paymentMethod: OrderPaymentChoice.CASH },
+        );
+        fail('Expected BadRequestException');
+      } catch (err: any) {
+        expect(err.getResponse().error).toBe('DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED');
+      }
     });
   });
 });

@@ -27,6 +27,7 @@ export enum WalletTransactionType {
 export enum WalletTransactionReferenceType {
   CREDIT_REQUEST = 'CREDIT_REQUEST',
   ORDER = 'ORDER',
+  PLAN_SELECTION = 'PLAN_SELECTION',
 }
 
 export const WALLET_CREDIT_MIN_PAISE_DEFAULT = 100;

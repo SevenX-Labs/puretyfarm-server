@@ -73,9 +73,11 @@ CANCELLED  CANCELLED   CANCELLED      FAILED
 | CANCELLED | (terminal) |
 | FAILED | (terminal) |
 
-## Payment Status (Future)
+## Payment Status
 
-Payment status is stored separately from order status: `PENDING`, `PAID`, `FAILED`, `REFUNDED`, `PARTIALLY_REFUNDED`. The Payments module will manage this field.
+Payment status is stored separately from order status: `PENDING`, `PAID`, `FAILED`, `REFUNDED`, `PARTIALLY_REFUNDED`.
+
+**Prepaid plan orders:** Orders created from prepaid plan deliveries (BUY_ONCE, SEVEN_DAY_TRIAL, MONTHLY) are born with `paymentStatus: "PAID"`. The plan payment was collected at plan confirmation time (via wallet debit or cash collection). No second charge occurs for these orders.
 
 ---
 

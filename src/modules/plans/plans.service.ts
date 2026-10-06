@@ -7,6 +7,8 @@ import {
 } from "@nestjs/common";
 import type { PlanConfig } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { WalletService } from "../wallet/wallet.service";
+import { WalletTransactionReferenceType } from "../wallet/wallet.constants";
 import {
   PlanType,
   DeliveryFrequency,
@@ -21,7 +23,7 @@ import {
 import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
 import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
 import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
-import { ConfirmPlanDto } from "./dto/customer/confirm-plan.dto";
+import { ConfirmPlanDto, PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
 import { parseUpdateAdminPlanDto } from "./dto/admin/update-admin-plan.dto";
 
 // ─── Response interfaces ────────────────────────────────────────────
@@ -120,6 +122,9 @@ export interface ConfirmationResponse {
   quoteId: string;
   plan: string;
   status: string;
+  paymentMethod: string;
+  paidAmountPaise: number;
+  cashCollectionId?: string;
 }
 
 // ─── Delivery calculation utility ───────────────────────────────────
@@ -293,7 +298,10 @@ export function toAdminPlanResponse(config: PlanConfig): AdminPlanConfigResponse
 export class PlansService {
   private readonly logger = new Logger(PlansService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly walletService: WalletService,
+  ) {}
 
   // ── Plans Overview ──────────────────────────────────────────────
 
@@ -663,14 +671,6 @@ export class PlansService {
     dto: ConfirmPlanDto,
   ): Promise<ConfirmationResponse> {
     return this.prisma.$transaction(async (tx) => {
-      // Serialize ALL confirmations for this customer at the DATABASE level with
-      // a per-user advisory lock held for the duration of the transaction. This
-      // closes the cross-quote eligibility race: two different quotes for the
-      // same customer (e.g. two Trials, or Buy Once + Trial) can no longer be
-      // confirmed concurrently, so the count-based eligibility re-checks below
-      // always observe the committed state. The lock auto-releases on commit or
-      // rollback (safe under transaction pooling). A partial unique index on
-      // Trial selections (see migration) is a second, hard DB-level backstop.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
 
       const quote = await tx.planQuote.findUnique({
@@ -692,7 +692,6 @@ export class PlansService {
       }
 
       if (quote.expiresAt < new Date()) {
-        // Mark expired and reject.
         await tx.planQuote.update({
           where: { id: quote.id },
           data: { status: PlanQuoteStatus.EXPIRED },
@@ -700,8 +699,6 @@ export class PlansService {
         throw new BadRequestException("Quote has expired");
       }
 
-      // A plan disabled by the admin after this quote was issued accepts no new
-      // selections. Existing selections are untouched.
       const activeConfig = await this.getActiveConfigTx(tx, quote.planType as PlanType);
       if (!activeConfig) {
         throw new ForbiddenException(
@@ -717,7 +714,6 @@ export class PlansService {
         );
       }
 
-      // Re-check eligibility inside the transaction.
       if (quote.planType === PlanType.BUY_ONCE) {
         const trialUsed = await this.hasUsedPlanTx(tx, userId, PlanType.SEVEN_DAY_TRIAL);
         if (trialUsed) {
@@ -739,34 +735,18 @@ export class PlansService {
         }
       }
 
-      // Atomically transition the quote PENDING -> CONFIRMED. Using a guarded
-      // updateMany (rather than a plain update after the status check above)
-      // makes the transition race-safe: under READ COMMITTED isolation Postgres
-      // re-evaluates the `status: PENDING` predicate against the latest
-      // committed row version, so a second concurrent confirmation of the same
-      // quote matches zero rows and is rejected instead of producing a duplicate
-      // PlanSelection (double-spend).
-      const transition = await tx.planQuote.updateMany({
-        where: { id: quote.id, status: PlanQuoteStatus.PENDING },
-        data: { status: PlanQuoteStatus.CONFIRMED },
-      });
-      if (transition.count === 0) {
-        throw new BadRequestException(
-          "Quote is no longer pending (it may have just been confirmed)",
-        );
-      }
-
-      // Derive the concrete delivery schedule window + live (mutable) config
-      // from the immutable quote snapshot. This is what Manage Delivery edits.
       const schedule = this.resolveScheduleFromQuote(quote);
+      const paymentAmount = quote.totalSellingAmount;
 
-      // Create the plan selection record, seeding the live schedule config.
+      // Step 1: Create PlanSelection in PENDING_PAYMENT state first, so we have
+      // the ID for the wallet ledger reference before the debit.
       const selection = await tx.planSelection.create({
         data: {
           userId,
           quoteId: quote.id,
           planType: quote.planType as PlanType,
-          status: PlanSelectionStatus.CONFIRMED,
+          status: PlanSelectionStatus.PENDING_PAYMENT,
+          paymentMethod: dto.paymentMethod,
           frequency: schedule.frequency,
           quantityMode: schedule.quantityMode,
           quantity: schedule.quantity,
@@ -777,39 +757,161 @@ export class PlansService {
         },
       });
 
-      // Materialise one PlanDelivery row per scheduled date so that Manage
-      // Delivery can enforce future-only edits and keep history immutable.
-      const dates = generateDeliveryDates(
-        schedule.frequency,
-        schedule.start,
-        schedule.end,
-      );
-      if (dates.length > 0) {
-        await tx.planDelivery.createMany({
-          data: dates.map((date, i) => ({
-            selectionId: selection.id,
-            userId,
-            deliveryDate: date,
-            occurrence: i + 1,
-            quantityLitres: quantityForOccurrence(
-              schedule.quantityMode,
-              i + 1,
-              schedule.quantity,
-              schedule.quantityA,
-              schedule.quantityB,
-            ),
-            status: DeliveryStatus.SCHEDULED,
-          })),
+      if (dto.paymentMethod === PlanPaymentMethod.WALLET) {
+        // Check balance before attempting debit for a clearer error.
+        const wallet = await tx.wallet.findUnique({ where: { userId } });
+        if (!wallet || wallet.balancePaise < paymentAmount) {
+          // Rollback: delete the PENDING_PAYMENT selection so it doesn't
+          // block future attempts via the partial unique index.
+          await tx.planSelection.delete({ where: { id: selection.id } });
+          throw new BadRequestException({
+            error: "INSUFFICIENT_WALLET_BALANCE",
+            message: "Insufficient wallet balance",
+            currentBalancePaise: wallet?.balancePaise ?? 0,
+            requiredPaise: paymentAmount,
+            shortfallPaise: paymentAmount - (wallet?.balancePaise ?? 0),
+          });
+        }
+
+        // Debit wallet using the existing atomic balance path.
+        await this.walletService.debitWalletWithin(
+          tx,
+          userId,
+          paymentAmount,
+          WalletTransactionReferenceType.PLAN_SELECTION,
+          selection.id,
+          `Plan payment (${quote.planType})`,
+        );
+
+        // Payment succeeded — confirm everything atomically.
+        const now = new Date();
+        await tx.planSelection.update({
+          where: { id: selection.id },
+          data: {
+            status: PlanSelectionStatus.CONFIRMED,
+            paidAt: now,
+            paidAmountPaise: paymentAmount,
+          },
         });
+
+        await tx.planQuote.updateMany({
+          where: { id: quote.id, status: PlanQuoteStatus.PENDING },
+          data: { status: PlanQuoteStatus.CONFIRMED },
+        });
+
+        // Materialise delivery rows only after payment.
+        await this.materializeDeliveries(tx, selection.id, userId, schedule);
+
+        return {
+          selectionId: selection.id,
+          quoteId: quote.id,
+          plan: quote.planType,
+          status: PlanSelectionStatus.CONFIRMED,
+          paymentMethod: dto.paymentMethod,
+          paidAmountPaise: paymentAmount,
+        };
       }
+
+      // CASH payment: create CashCollection, do NOT activate plan.
+      const cashCollection = await tx.cashCollection.create({
+        data: {
+          userId,
+          planSelectionId: selection.id,
+          amountPaise: paymentAmount,
+          status: "PENDING",
+        },
+      });
+
+      // Quote stays PENDING until admin confirms the cash.
 
       return {
         selectionId: selection.id,
         quoteId: quote.id,
         plan: quote.planType,
-        status: selection.status,
+        status: PlanSelectionStatus.PENDING_PAYMENT,
+        paymentMethod: dto.paymentMethod,
+        paidAmountPaise: paymentAmount,
+        cashCollectionId: cashCollection.id,
       };
     });
+  }
+
+  /**
+   * Materialises PlanDelivery rows from a schedule. Extracted so it can be
+   * called both from wallet payment (inline) and cash confirmation (admin).
+   */
+  async materializeDeliveries(
+    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    selectionId: string,
+    userId: string,
+    schedule: ReturnType<PlansService["resolveScheduleFromQuote"]>,
+  ): Promise<void> {
+    const dates = generateDeliveryDates(
+      schedule.frequency,
+      schedule.start,
+      schedule.end,
+    );
+    if (dates.length > 0) {
+      await (tx as any).planDelivery.createMany({
+        data: dates.map((date, i) => ({
+          selectionId,
+          userId,
+          deliveryDate: date,
+          occurrence: i + 1,
+          quantityLitres: quantityForOccurrence(
+            schedule.quantityMode,
+            i + 1,
+            schedule.quantity,
+            schedule.quantityA,
+            schedule.quantityB,
+          ),
+          status: DeliveryStatus.SCHEDULED,
+        })),
+      });
+    }
+  }
+
+  /**
+   * Called by the Payments module when an admin confirms a plan cash payment.
+   * Completes the plan purchase atomically.
+   */
+  async confirmPlanAfterCashPayment(
+    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    planSelectionId: string,
+  ): Promise<void> {
+    const selection = await (tx as any).planSelection.findUnique({
+      where: { id: planSelectionId },
+      include: { quote: true },
+    });
+
+    if (!selection) {
+      throw new NotFoundException("Plan selection not found");
+    }
+
+    if (selection.status !== PlanSelectionStatus.PENDING_PAYMENT) {
+      throw new BadRequestException(
+        `Plan selection is not pending payment (status: ${selection.status})`,
+      );
+    }
+
+    const now = new Date();
+
+    await (tx as any).planSelection.update({
+      where: { id: planSelectionId },
+      data: {
+        status: PlanSelectionStatus.CONFIRMED,
+        paidAt: now,
+        paidAmountPaise: selection.quote.totalSellingAmount,
+      },
+    });
+
+    await (tx as any).planQuote.updateMany({
+      where: { id: selection.quoteId, status: PlanQuoteStatus.PENDING },
+      data: { status: PlanQuoteStatus.CONFIRMED },
+    });
+
+    const schedule = this.resolveScheduleFromQuote(selection.quote);
+    await this.materializeDeliveries(tx, planSelectionId, selection.userId, schedule);
   }
 
   // ── Admin: Plan Configuration ───────────────────────────────────
@@ -944,7 +1046,7 @@ export class PlansService {
    * - SEVEN_DAY_TRIAL: `deliveryOccurrences` consecutive DAILY deliveries.
    * - BUY_ONCE: a single DAILY delivery on the start day.
    */
-  private resolveScheduleFromQuote(quote: {
+  resolveScheduleFromQuote(quote: {
     planType: string;
     frequency: string | null;
     quantityMode: string | null;

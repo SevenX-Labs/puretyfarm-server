@@ -481,9 +481,11 @@ Delivers every alternate day with alternating quantities: $Q_A$ on delivery 1, $
 ---
 
 ### ────────────────────────────────────────────────────────
-### 2.8 Confirm Plan Quote
+### 2.8 Confirm Plan Quote (with Payment)
 ### ────────────────────────────────────────────────────────
-Atomically confirms a valid server-generated quote. This locks the plan selection and transitions the quote status from `PENDING` to `CONFIRMED`.
+Confirms a valid server-generated quote and initiates payment. All plans are **prepaid** — the quoted total covers all scheduled deliveries. The customer chooses `WALLET` or `CASH` as the payment method.
+
+There is **no direct PayU checkout for plan purchases**. PayU is used only for wallet top-ups (Add Money). To pay a plan with wallet, the customer must first have sufficient balance.
 
 - **Method**: `POST`
 - **Path**: `/api/v1/customer/plans/confirm`
@@ -493,20 +495,63 @@ Atomically confirms a valid server-generated quote. This locks the plan selectio
 - **Request Body**:
   ```json
   {
-    "quoteId": "b2e1f480-1a23-4c56-9d8e-0f1a2b3c4d5e"
+    "quoteId": "b2e1f480-1a23-4c56-9d8e-0f1a2b3c4d5e",
+    "paymentMethod": "WALLET"
   }
   ```
 - **Body Attributes**:
   - `quoteId` (UUID v4, Required): The exact `quoteId` returned by any of the quote endpoints.
-- **Success Response (200 OK)**:
-  ```json
-  {
-    "selectionId": "f6c5d824-5e67-8a90-d12c-4d5e6f7a8b9c",
-    "quoteId": "b2e1f480-1a23-4c56-9d8e-0f1a2b3c4d5e",
-    "plan": "BUY_ONCE",
-    "status": "CONFIRMED"
-  }
-  ```
+  - `paymentMethod` (String, Required): `"WALLET"` or `"CASH"`.
+
+#### WALLET Payment — Success (200 OK)
+
+Wallet is atomically debited by the quoted total. Plan is confirmed and deliveries are materialised immediately.
+
+```json
+{
+  "selectionId": "f6c5d824-5e67-8a90-d12c-4d5e6f7a8b9c",
+  "quoteId": "b2e1f480-1a23-4c56-9d8e-0f1a2b3c4d5e",
+  "plan": "BUY_ONCE",
+  "status": "CONFIRMED",
+  "paymentMethod": "WALLET",
+  "paidAmountPaise": 17000
+}
+```
+
+#### WALLET Payment — Insufficient Balance (400)
+
+```json
+{
+  "error": "INSUFFICIENT_WALLET_BALANCE",
+  "message": "Insufficient wallet balance",
+  "currentBalancePaise": 5000,
+  "requiredPaise": 17000,
+  "shortfallPaise": 12000
+}
+```
+
+When this happens, the customer must first top up their wallet using `POST /api/v1/customer/payments/create` with `paymentMethod: "ONLINE"` (PayU). After the wallet is credited, the customer returns and confirms the plan with `paymentMethod: "WALLET"`.
+
+**First wallet top-up** always requires admin approval before the wallet is credited. Subsequent verified online top-ups auto-credit based on the customer's `Wallet.autoCreditEnabled` flag (see `docs/customer/wallet.md` §3).
+
+#### CASH Payment — Success (200 OK)
+
+A `CashCollection` is created. The plan stays in `PENDING_PAYMENT` until the admin confirms physical cash receipt. Deliveries are **not** created until the admin confirms.
+
+```json
+{
+  "selectionId": "f6c5d824-5e67-8a90-d12c-4d5e6f7a8b9c",
+  "quoteId": "b2e1f480-1a23-4c56-9d8e-0f1a2b3c4d5e",
+  "plan": "BUY_ONCE",
+  "status": "PENDING_PAYMENT",
+  "paymentMethod": "CASH",
+  "paidAmountPaise": 17000,
+  "cashCollectionId": "csh-a1b2c3d4-..."
+}
+```
+
+The admin confirms via `POST /api/v1/admin/payments/cash-collections/:id/confirm`, which activates the plan and creates deliveries.
+
 - **Error Responses**:
   - `400 Bad Request` — Quote expired:
     ```json
@@ -524,6 +569,8 @@ Atomically confirms a valid server-generated quote. This locks the plan selectio
       "error": "Bad Request"
     }
     ```
+  - `400 Bad Request` — Missing or invalid paymentMethod.
+  - `400 INSUFFICIENT_WALLET_BALANCE` — See above.
   - `404 Not Found` — Quote does not exist or belongs to another user (IDOR protection):
     ```json
     {
@@ -596,15 +643,15 @@ export BUY_ONCE_QUOTE_ID="<COPIED_QUOTE_ID>"
 
 ---
 
-### STEP 5: Confirm Buy Once Plan
+### STEP 5: Confirm Buy Once Plan (Wallet Payment)
 
 ```bash
 curl -i -X POST "$BASE_URL/confirm" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"quoteId\": \"$BUY_ONCE_QUOTE_ID\"}"
+  -d "{\"quoteId\": \"$BUY_ONCE_QUOTE_ID\", \"paymentMethod\": \"WALLET\"}"
 ```
-**Expected Response**: `200 OK` with `"status": "CONFIRMED"` and a new `selectionId`.
+**Expected Response**: `200 OK` with `"status": "CONFIRMED"`, `"paymentMethod": "WALLET"`, `"paidAmountPaise"`, and a new `selectionId`. Wallet balance is debited atomically.
 
 ---
 
@@ -691,15 +738,15 @@ export MONTHLY_QUOTE_ID="<COPIED_QUOTE_ID>"
 
 ---
 
-### STEP 11: Confirm Monthly Plan
+### STEP 11: Confirm Monthly Plan (Wallet Payment)
 
 ```bash
 curl -i -X POST "$BASE_URL/confirm" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"quoteId\": \"$MONTHLY_QUOTE_ID\"}"
+  -d "{\"quoteId\": \"$MONTHLY_QUOTE_ID\", \"paymentMethod\": \"WALLET\"}"
 ```
-**Expected Response**: `200 OK` with `"status": "CONFIRMED"` and a `selectionId`.
+**Expected Response**: `200 OK` with `"status": "CONFIRMED"`, `"paymentMethod": "WALLET"`, `"paidAmountPaise"` (the prepaid total for the billing period), and a `selectionId`.
 
 ---
 
@@ -710,28 +757,40 @@ Try confirming the exact same `MONTHLY_QUOTE_ID` again:
 curl -i -X POST "$BASE_URL/confirm" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"quoteId\": \"$MONTHLY_QUOTE_ID\"}"
+  -d "{\"quoteId\": \"$MONTHLY_QUOTE_ID\", \"paymentMethod\": \"WALLET\"}"
 ```
 **Expected Response**: `400 Bad Request` (`Quote is no longer pending (status: CONFIRMED)`).
 
 ---
 
-## 3B. Confirmed plan → payment & wallet behaviour
+## 3B. Plan payment & prepaid delivery model
 
-Confirming a plan produces a `PlanSelection`. Charging the customer and
-crediting their wallet happens through the Payment and Wallet modules, not the
-Plans module. In particular:
+All plans are **prepaid**. The quoted total covers all deliveries. The customer pays at confirmation time via WALLET or CASH — there is no direct PayU checkout for plan purchases.
 
-- **Wallet top-ups** needed to pay for a plan go through
-  `POST /api/v1/customer/payments/create` (see `docs/customer/payments.md`).
-- **First wallet credit** always requires admin approval, regardless of plan
-  type. Subsequent verified online credits auto-credit per the customer's
-  `Wallet.autoCreditEnabled` flag (see `docs/customer/wallet.md` §3).
-- **Order payment** flow is implemented separately when an order is created
-  from the confirmed `PlanSelection`.
+### Payment methods for plans
 
-Nothing in the Plans module can bypass the wallet first-credit admin-approval
-rule or the PayU hash-verification gate.
+| Method | Behaviour |
+|--------|-----------|
+| **WALLET** | Wallet debited atomically. Plan confirmed and deliveries materialised immediately. |
+| **CASH** | CashCollection created (PENDING). Plan stays PENDING_PAYMENT. Admin confirms cash → plan confirmed → deliveries materialised. |
+
+### Insufficient wallet balance
+
+If the wallet balance is less than the quoted total, the confirm endpoint returns `INSUFFICIENT_WALLET_BALANCE` with `currentBalancePaise`, `requiredPaise`, and `shortfallPaise`. The customer must first top up via `POST /api/v1/customer/payments/create` with `paymentMethod: "ONLINE"` (PayU wallet top-up), then return and confirm with WALLET.
+
+### Wallet top-up rules
+
+- **First wallet credit** always requires admin approval, regardless of plan type.
+- **Subsequent verified online top-ups** auto-credit per the customer's `Wallet.autoCreditEnabled` flag (see `docs/customer/wallet.md` §3).
+- PayU is used **only** for wallet top-ups (Add Money), never for direct plan checkout.
+
+### Monthly prepaid
+
+The monthly quote total represents the prepaid amount for the entire billing period. Example: 30 deliveries × ₹100/delivery = ₹3,000 paid once. Future delivery orders are created with `paymentStatus = PAID` — no second wallet debit occurs.
+
+### Prepaid orders
+
+Orders generated from a prepaid plan delivery are born with `paymentStatus: "PAID"`. They cannot be paid again — attempting to pay a prepaid order returns `409 ORDER_ALREADY_PROCESSED`.
 
 ---
 

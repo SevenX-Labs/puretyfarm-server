@@ -17,6 +17,7 @@ import { PlansController } from "./plans.controller";
 import { AdminPlansController } from "./admin-plans.controller";
 import { PlansService } from "./plans.service";
 import { PrismaService } from "../../prisma/prisma.service";
+import { WalletService } from "../wallet/wallet.service";
 import {
   DeliveryFrequency,
   PlanQuoteStatus,
@@ -128,6 +129,21 @@ describe("Admin plan configuration -> customer plans (HTTP integration)", () => 
         db.selections.push(row);
         return row;
       },
+      update: async ({ where, data }: any) => {
+        const row = db.selections.find((s) => s.id === where.id)!;
+        Object.assign(row, data);
+        return { ...row };
+      },
+      delete: async ({ where }: any) => {
+        const idx = db.selections.findIndex((s) => s.id === where.id);
+        if (idx >= 0) db.selections.splice(idx, 1);
+      },
+    },
+    wallet: {
+      findUnique: async () => ({ balancePaise: 999_999_999 }),
+    },
+    cashCollection: {
+      create: async ({ data }: any) => ({ id: randomUUID(), ...data }),
     },
     planDelivery: {
       createMany: async ({ data }: any) => {
@@ -166,6 +182,7 @@ describe("Admin plan configuration -> customer plans (HTTP integration)", () => 
       providers: [
         PlansService,
         { provide: PrismaService, useValue: prisma },
+        { provide: WalletService, useValue: { debitWalletWithin: jest.fn() } },
         {
           provide: JwtService,
           useValue: {
@@ -206,7 +223,7 @@ describe("Admin plan configuration -> customer plans (HTTP integration)", () => 
     return http()
       .post("/api/v1/customer/plans/confirm")
       .set(auth)
-      .send({ quoteId: quote.body.quoteId })
+      .send({ quoteId: quote.body.quoteId, paymentMethod: "WALLET" })
       .expect(200);
   }
 
@@ -543,7 +560,7 @@ describe("Admin plan configuration -> customer plans (HTTP integration)", () => 
         .send({ quantityLitres: 1 }).expect(200);
       await patch("BUY_ONCE", { isActive: false }).expect(200);
       await http().post("/api/v1/customer/plans/confirm").set(CUST1)
-        .send({ quoteId: quote.body.quoteId }).expect(403);
+        .send({ quoteId: quote.body.quoteId, paymentMethod: "WALLET" }).expect(403);
       expect(db.selections).toHaveLength(0);
       expect(db.quotes[0].status).toBe(PlanQuoteStatus.PENDING);
     });

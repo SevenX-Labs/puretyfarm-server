@@ -14,7 +14,7 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
 import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
 import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
-import { ConfirmPlanDto } from "./dto/customer/confirm-plan.dto";
+import { ConfirmPlanDto, PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
 import { DeliveryFrequency, QuantityMode } from "./plans.constants";
 import { validate } from "class-validator";
 import { plainToInstance } from "class-transformer";
@@ -107,7 +107,7 @@ describe("PlansController", () => {
     });
 
     it("confirm delegates with user.sub and dto", async () => {
-      const dto = { quoteId: "550e8400-e29b-41d4-a716-446655440000" };
+      const dto = { quoteId: "550e8400-e29b-41d4-a716-446655440000", paymentMethod: PlanPaymentMethod.WALLET };
       await controller.confirm(jwtUser, dto);
       expect(mockPlansService.confirmPlan).toHaveBeenCalledWith("user-1", dto);
     });
@@ -231,9 +231,19 @@ describe("PlansController", () => {
     });
 
     describe("ConfirmPlanDto", () => {
-      it("accepts valid UUID", async () => {
+      it("accepts valid UUID with WALLET payment method", async () => {
         const dto = plainToInstance(ConfirmPlanDto, {
           quoteId: "123e4567-e89b-42d3-a456-426614174000",
+          paymentMethod: "WALLET",
+        });
+        const errors = await validate(dto);
+        expect(errors.length).toBe(0);
+      });
+
+      it("accepts valid UUID with CASH payment method", async () => {
+        const dto = plainToInstance(ConfirmPlanDto, {
+          quoteId: "123e4567-e89b-42d3-a456-426614174000",
+          paymentMethod: "CASH",
         });
         const errors = await validate(dto);
         expect(errors.length).toBe(0);
@@ -242,9 +252,27 @@ describe("PlansController", () => {
       it("rejects non-UUID quoteId", async () => {
         const dto = plainToInstance(ConfirmPlanDto, {
           quoteId: "not-a-uuid",
+          paymentMethod: "WALLET",
         });
         const errors = await validate(dto);
         expect(errors.some((e) => e.property === "quoteId")).toBe(true);
+      });
+
+      it("rejects missing paymentMethod", async () => {
+        const dto = plainToInstance(ConfirmPlanDto, {
+          quoteId: "123e4567-e89b-42d3-a456-426614174000",
+        });
+        const errors = await validate(dto);
+        expect(errors.some((e) => e.property === "paymentMethod")).toBe(true);
+      });
+
+      it("rejects invalid paymentMethod", async () => {
+        const dto = plainToInstance(ConfirmPlanDto, {
+          quoteId: "123e4567-e89b-42d3-a456-426614174000",
+          paymentMethod: "ONLINE",
+        });
+        const errors = await validate(dto);
+        expect(errors.some((e) => e.property === "paymentMethod")).toBe(true);
       });
     });
   });

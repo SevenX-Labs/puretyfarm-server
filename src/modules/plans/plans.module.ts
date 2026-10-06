@@ -4,9 +4,10 @@ import { PlansController } from "./plans.controller";
 import { AdminPlansController } from "./admin-plans.controller";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { AuthModule } from "../auth/auth.module";
+import { WalletModule } from "../wallet/wallet.module";
 
 @Module({
-  imports: [PrismaModule, AuthModule],
+  imports: [PrismaModule, AuthModule, WalletModule],
   controllers: [PlansController, AdminPlansController],
   providers: [PlansService],
   exports: [PlansService],

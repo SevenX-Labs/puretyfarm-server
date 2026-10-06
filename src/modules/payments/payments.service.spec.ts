@@ -444,6 +444,7 @@ describe('PaymentsService', () => {
       prisma,
       { get: () => undefined } as any,
       wallet as any,
+      { confirmPlanAfterCashPayment: jest.fn() } as any,
       provider,
     );
   });

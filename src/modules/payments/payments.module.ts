@@ -13,6 +13,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { OrdersModule } from '../orders/orders.module';
+import { PlansModule } from '../plans/plans.module';
 import { OrderPaymentsController } from './order-payments.controller';
 
 /**
@@ -27,7 +28,7 @@ import { OrderPaymentsController } from './order-payments.controller';
  * adding a provider class and changing this one binding.
  */
 @Module({
-  imports: [PrismaModule, AuthModule, forwardRef(() => WalletModule), OrdersModule],
+  imports: [PrismaModule, AuthModule, forwardRef(() => WalletModule), OrdersModule, forwardRef(() => PlansModule)],
   controllers: [
     PaymentsController,
     AdminPaymentsController,

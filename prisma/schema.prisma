@@ -340,6 +340,14 @@ model PlanSelection {
   /// Last delivery date of the current schedule window (date-only).
   endDate      DateTime?
 
+  // ── Payment tracking ─────────────────────────────────────────────
+  /// How the plan was paid: WALLET or CASH. Null for legacy free activations.
+  paymentMethod  String?
+  /// When the plan was paid. Null until payment completes.
+  paidAt         DateTime?
+  /// The amount paid in INTEGER PAISE. Null for legacy records.
+  paidAmountPaise Int?
+
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
 
@@ -348,6 +356,7 @@ model PlanSelection {
   deliveries     PlanDelivery[]
   changeRequests ManageDeliveryChangeRequest[]
   orders         Order[]
+  cashCollection CashCollection?
 
   @@index([userId])
   @@index([planType])
@@ -580,6 +589,7 @@ enum WalletTransactionType {
 enum WalletTransactionReferenceType {
   CREDIT_REQUEST
   ORDER
+  PLAN_SELECTION
 }
 
 model Wallet {
@@ -773,9 +783,11 @@ model Payment {
 model CashCollection {
   id                    String               @id @default(uuid())
   userId                String
-  /// One cash collection per credit request.
-  walletCreditRequestId String               @unique
-  /// INTEGER PAISE. Mirrors the credit request amount.
+  /// Wallet top-up purpose: one cash collection per credit request.
+  walletCreditRequestId String?              @unique
+  /// Plan payment purpose: one cash collection per plan selection.
+  planSelectionId       String?              @unique
+  /// INTEGER PAISE. Mirrors the credit request or plan quote amount.
   amountPaise           Int
   status                CashCollectionStatus @default(PENDING)
   /// When the delivery partner reported collecting the cash.
@@ -787,9 +799,10 @@ model CashCollection {
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
-  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  walletCreditRequest WalletCreditRequest @relation(fields: [walletCreditRequestId], references: [id], onDelete: Cascade)
-  confirmedByAdmin    Admin?              @relation(fields: [confirmedByAdminId], references: [id])
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletCreditRequest WalletCreditRequest? @relation(fields: [walletCreditRequestId], references: [id], onDelete: Cascade)
+  planSelection       PlanSelection?       @relation(fields: [planSelectionId], references: [id], onDelete: Cascade)
+  confirmedByAdmin    Admin?               @relation(fields: [confirmedByAdminId], references: [id])
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
