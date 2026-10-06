@@ -125,11 +125,6 @@ describe("AdminDashboardService", () => {
     });
 
     it("counts customers with active plan", async () => {
-      mockPrisma.planSelection.groupBy.mockImplementation(({ by, where }: any) => {
-        if (by?.includes("userId") && where?.status === "ACTIVE") return Promise.resolve([{ userId: "u1" }, { userId: "u2" }]);
-        if (by?.includes("planType") && where?.status === "ACTIVE") return Promise.resolve([]);
-        return Promise.resolve([]);
-      });
       mockPrisma.planSelection.findMany.mockResolvedValue([{ userId: "u1" }, { userId: "u2" }]);
       mockPrisma.order.findMany.mockResolvedValue([]);
       const result = await service.getOverview({});
@@ -403,9 +398,10 @@ describe("AdminDashboardService", () => {
       expect(result.profit.grossProfitPaise).toBe(490000);
     });
 
-    it("sets productCostPaise to 0 (not reliably stored)", async () => {
+    it("sets productCostPaise to 0 and costDataAvailable to false", async () => {
       const result = await service.getOverview({});
       expect(result.profit.productCostPaise).toBe(0);
+      expect(result.profit.costDataAvailable).toBe(false);
     });
 
     it("calculates gross margin percentage", async () => {
@@ -508,6 +504,98 @@ describe("AdminDashboardService", () => {
       const today = new Date().toISOString().slice(0, 10);
       expect(result.period.from).toBe(today);
       expect(result.period.to).toBe(today);
+    });
+
+    it("handles single-day range (from === to)", async () => {
+      const result = await service.getOverview({ from: "2026-10-01", to: "2026-10-01" });
+      expect(result.period.from).toBe("2026-10-01");
+      expect(result.period.to).toBe("2026-10-01");
+      expect(result.trend.daily).toHaveLength(1);
+    });
+  });
+
+  // ── Financial Double-Count Protection ──
+
+  describe("double-count protection", () => {
+    it("uses PlanSelection.paidAmountPaise as sales source of truth, not order totals", async () => {
+      mockPrisma.planSelection.groupBy.mockImplementation(({ by, where }: any) => {
+        if (by?.includes("planType") && where?.paidAt) {
+          return Promise.resolve([
+            { planType: "MONTHLY", _sum: { paidAmountPaise: 100000 } },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const result = await service.getOverview({});
+      expect(result.sales.totalPaise).toBe(100000);
+      // order.aggregate should NOT be called for sales calculation
+      const salesCalls = mockPrisma.planSelection.groupBy.mock.calls.filter(
+        ([{ by, where }]: any) => by?.includes("planType") && where?.paidAt,
+      );
+      expect(salesCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("wallet top-up CREDIT transactions never appear in revenue.collectedPaise", async () => {
+      mockPrisma.walletTransaction.aggregate.mockImplementation(({ where }: any) => {
+        if (where?.type === "CREDIT" && where?.referenceType === "CREDIT_REQUEST") {
+          return Promise.resolve({ _sum: { amountPaise: 1000000 } });
+        }
+        return Promise.resolve(EMPTY_AGGREGATE);
+      });
+      mockPrisma.cashCollection.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
+      mockPrisma.payment.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
+
+      const result = await service.getOverview({});
+      expect(result.revenue.collectedPaise).toBe(0);
+      expect(result.revenue.walletTopUpsPaise).toBe(1000000);
+    });
+  });
+
+  // ── Wallet customer-only filtering ──
+
+  describe("wallet customer filtering", () => {
+    it("filters wallet balances to CUSTOMER role users", async () => {
+      mockPrisma.wallet.aggregate.mockResolvedValue({ _sum: { balancePaise: 200000 } });
+      const result = await service.getOverview({});
+      expect(result.wallet.totalCustomerBalancePaise).toBe(200000);
+      expect(mockPrisma.wallet.aggregate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { user: { role: "CUSTOMER" } },
+        }),
+      );
+    });
+  });
+
+  // ── Profit costDataAvailable ──
+
+  describe("profit costDataAvailable", () => {
+    it("always returns costDataAvailable: false since procurement cost is not stored", async () => {
+      mockPrisma.planSelection.aggregate.mockResolvedValue({ _sum: { paidAmountPaise: 500000 } });
+      mockPrisma.order.aggregate.mockResolvedValue({ _sum: { deliveryFeePaise: 5000 } });
+      const result = await service.getOverview({});
+      expect(result.profit.costDataAvailable).toBe(false);
+      expect(result.profit.productCostPaise).toBe(0);
+      expect(result.profit.grossProfitPaise).toBe(495000);
+    });
+  });
+
+  // ── Delivery cost uses immutable order snapshot ──
+
+  describe("delivery cost", () => {
+    it("aggregates deliveryFeePaise from orders, excluding CANCELLED and FAILED", async () => {
+      mockPrisma.planSelection.aggregate.mockResolvedValue({ _sum: { paidAmountPaise: 100000 } });
+      mockPrisma.order.aggregate.mockImplementation(({ where }: any) => {
+        if (where?.status?.notIn) {
+          expect(where.status.notIn).toContain("CANCELLED");
+          expect(where.status.notIn).toContain("FAILED");
+          return Promise.resolve({ _sum: { deliveryFeePaise: 3000 } });
+        }
+        return Promise.resolve(EMPTY_AGGREGATE);
+      });
+
+      const result = await service.getOverview({});
+      expect(result.profit.deliveryCostPaise).toBe(3000);
     });
   });
 });

@@ -114,48 +114,37 @@ export class AdminDashboardService {
   }
 
   // ── Customer Metrics ──
+  // active = customers with an ACTIVE plan selection OR a qualifying order in the period.
 
   private async getCustomerMetrics(period: DateRange) {
-    const [total, newCount, withActivePlan, activeOrderUsers] = await Promise.all([
+    const [total, newCount, activePlanUserIds, orderUserIds] = await Promise.all([
       this.prisma.user.count({ where: { role: 'CUSTOMER' } }),
       this.getNewCustomerCount(period),
-      this.prisma.planSelection.groupBy({
-        by: ['userId'],
+      this.prisma.planSelection.findMany({
         where: { status: 'ACTIVE' },
-      }).then(r => r.length),
-      this.prisma.order.groupBy({
-        by: ['userId'],
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
+      this.prisma.order.findMany({
         where: {
           createdAt: { gte: period.from, lte: period.to },
           user: { role: 'CUSTOMER' },
           status: { notIn: ['CANCELLED', 'FAILED'] },
         },
-      }).then(r => r.length),
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
     ]);
 
-    const activePlanUserIds = await this.prisma.planSelection.findMany({
-      where: { status: 'ACTIVE' },
-      select: { userId: true },
-      distinct: ['userId'],
-    });
     const activePlanSet = new Set(activePlanUserIds.map(r => r.userId));
-
-    const orderUserIds = await this.prisma.order.findMany({
-      where: {
-        createdAt: { gte: period.from, lte: period.to },
-        user: { role: 'CUSTOMER' },
-        status: { notIn: ['CANCELLED', 'FAILED'] },
-      },
-      select: { userId: true },
-      distinct: ['userId'],
-    });
-    for (const r of orderUserIds) activePlanSet.add(r.userId);
+    const activeSet = new Set(activePlanSet);
+    for (const r of orderUserIds) activeSet.add(r.userId);
 
     return {
       total,
       new: newCount,
-      active: activePlanSet.size,
-      withActivePlan,
+      active: activeSet.size,
+      withActivePlan: activePlanSet.size,
     };
   }
 
@@ -488,6 +477,7 @@ export class AdminDashboardService {
   private async getWalletMetrics(period: DateRange) {
     const [balanceResult, topUpResult] = await Promise.all([
       this.prisma.wallet.aggregate({
+        where: { user: { role: 'CUSTOMER' } },
         _sum: { balancePaise: true },
       }),
       this.prisma.walletTransaction.aggregate({
@@ -507,40 +497,31 @@ export class AdminDashboardService {
   }
 
   // ── Profit Metrics ──
-  // Gross profit = sales - product cost - delivery cost.
-  // Product cost: derived from (actualPricePerLitrePaise - sellingPricePerLitrePaise) on orders
-  // where these snapshots exist. The "cost" is approximated as the actual price snapshot
-  // (representing MRP/cost) minus the selling price snapshot gives the margin; however the
-  // actual product cost is NOT reliably stored. We use sellingPricePerLitrePaise from order
-  // items as revenue and actualPricePerLitrePaise as the cost basis where available.
-  //
-  // Since actualPricePerLitre represents MRP (not procurement cost), and the system has no
-  // actual procurement cost field, productCostPaise is set to 0 with a clear note.
+  // The system has no actual procurement cost field. actualPricePerLitre is MRP,
+  // not procurement cost. productCostPaise is 0 and costDataAvailable is false.
+  // grossProfitPaise = salesPaise - deliveryCostPaise (contribution margin only).
 
   private async getProfitMetrics(period: DateRange) {
-    const salesResult = await this.prisma.planSelection.aggregate({
-      where: {
-        paidAt: { gte: period.from, lte: period.to },
-        status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
-        paidAmountPaise: { not: null },
-      },
-      _sum: { paidAmountPaise: true },
-    });
+    const [salesResult, deliveryCostResult] = await Promise.all([
+      this.prisma.planSelection.aggregate({
+        where: {
+          paidAt: { gte: period.from, lte: period.to },
+          status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
+          paidAmountPaise: { not: null },
+        },
+        _sum: { paidAmountPaise: true },
+      }),
+      this.prisma.order.aggregate({
+        where: {
+          createdAt: { gte: period.from, lte: period.to },
+          status: { notIn: ['CANCELLED', 'FAILED'] },
+        },
+        _sum: { deliveryFeePaise: true },
+      }),
+    ]);
 
     const salesPaise = salesResult._sum.paidAmountPaise || 0;
-
-    // Delivery cost: aggregate deliveryFeePaise from orders in the period
-    const deliveryCostResult = await this.prisma.order.aggregate({
-      where: {
-        createdAt: { gte: period.from, lte: period.to },
-        status: { notIn: ['CANCELLED', 'FAILED'] },
-      },
-      _sum: { deliveryFeePaise: true },
-    });
-
     const deliveryCostPaise = deliveryCostResult._sum.deliveryFeePaise || 0;
-
-    // Product cost: not reliably stored (actualPricePerLitre is MRP, not procurement cost)
     const productCostPaise = 0;
 
     const grossProfitPaise = salesPaise - productCostPaise - deliveryCostPaise;
@@ -554,6 +535,7 @@ export class AdminDashboardService {
       deliveryCostPaise,
       grossProfitPaise,
       grossMarginPercent,
+      costDataAvailable: false,
     };
   }
 

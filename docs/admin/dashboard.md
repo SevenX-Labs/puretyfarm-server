@@ -36,7 +36,7 @@ GET /admin/dashboard/overview
   "plans": { "activeMonthly", "activeTrial", "buyOnceCustomers", "newSelections" },
   "deliveries": { "scheduled", "delivered", "skipped", "cancelled", "failed", "completionPercent" },
   "wallet": { "totalCustomerBalancePaise", "walletTopUpsPaise" },
-  "profit": { "salesPaise", "productCostPaise", "deliveryCostPaise", "grossProfitPaise", "grossMarginPercent" },
+  "profit": { "salesPaise", "productCostPaise", "deliveryCostPaise", "grossProfitPaise", "grossMarginPercent", "costDataAvailable" },
   "alerts": { "pendingCashCollections", "pendingWalletApprovals", "pendingDeliveryChangeRequests", "failedOrders" },
   "comparison": { "previousPeriod", "customersNewChangePercent", "ordersChangePercent", "salesChangePercent", "revenueChangePercent", "grossProfitChangePercent" },
   "trend": { "daily": [{ "date", "salesPaise", "revenueCollectedPaise", "grossProfitPaise", "orders", "deliveries" }] }
@@ -65,22 +65,23 @@ All counts filtered by `Order.createdAt` within the period, grouped by `OrderSta
 
 **Wallet top-ups are NOT revenue.** A wallet top-up is customer funding; it becomes revenue only when spent on a purchase.
 
-### Wallet
-- **totalCustomerBalancePaise**: Sum of all `Wallet.balancePaise` (current liability).
-- **walletTopUpsPaise**: CREDIT transactions with `referenceType = CREDIT_REQUEST` in the period.
-
 ### Profit
-This is **Gross Profit**, NOT Net Profit.
+This is a **contribution margin** metric, NOT true Gross Profit or Net Profit.
 
 ```
 grossProfitPaise = salesPaise - productCostPaise - deliveryCostPaise
 grossMarginPercent = salesPaise > 0 ? (grossProfitPaise / salesPaise) * 100 : 0
 ```
 
-- **productCostPaise**: Set to 0. The system stores `actualPricePerLitre` (MRP) but not actual procurement cost.
-- **deliveryCostPaise**: Sum of `Order.deliveryFeePaise` for non-cancelled/failed orders in the period.
+- **productCostPaise**: Always 0. The system stores `actualPricePerLitre` (MRP, not procurement cost). **No actual procurement cost is tracked.** Do not fabricate this value.
+- **deliveryCostPaise**: Sum of `Order.deliveryFeePaise` (immutable historical snapshot) for non-cancelled/failed orders in the period.
+- **costDataAvailable**: Always `false`. Indicates that `productCostPaise` is unavailable — the `grossProfitPaise` value represents `salesPaise - deliveryCostPaise` only. Frontend should communicate this limitation to the admin.
 
 No operating expenses (salaries, rent, marketing, etc.) are tracked.
+
+### Wallet
+- **totalCustomerBalancePaise**: Sum of `Wallet.balancePaise` for users with `role = CUSTOMER` only. This represents customer wallet liability.
+- **walletTopUpsPaise**: Wallet CREDIT transactions with `referenceType = CREDIT_REQUEST` in the period. Does not include plan payment debits, order debits, or refund credits.
 
 ### Deliveries
 Sourced from `PlanDelivery`. The current schema has three statuses: SCHEDULED, DELIVERED, SKIPPED.

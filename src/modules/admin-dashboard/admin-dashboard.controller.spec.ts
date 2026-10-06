@@ -23,7 +23,7 @@ describe("AdminDashboardController", () => {
     plans: { activeMonthly: 0, activeTrial: 0, buyOnceCustomers: 0, newSelections: 0 },
     deliveries: { scheduled: 0, delivered: 0, skipped: 0, cancelled: 0, failed: 0, completionPercent: 0 },
     wallet: { totalCustomerBalancePaise: 0, walletTopUpsPaise: 0 },
-    profit: { salesPaise: 0, productCostPaise: 0, deliveryCostPaise: 0, grossProfitPaise: 0, grossMarginPercent: 0 },
+    profit: { salesPaise: 0, productCostPaise: 0, deliveryCostPaise: 0, grossProfitPaise: 0, grossMarginPercent: 0, costDataAvailable: false },
     alerts: { pendingCashCollections: 0, pendingWalletApprovals: 0, pendingDeliveryChangeRequests: 0, failedOrders: 0 },
     comparison: { previousPeriod: { from: "2026-10-05", to: "2026-10-05" }, customersNewChangePercent: 0, ordersChangePercent: 0, salesChangePercent: 0, revenueChangePercent: 0, grossProfitChangePercent: 0 },
     trend: { daily: [] },
