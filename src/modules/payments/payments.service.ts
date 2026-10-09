@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -2082,103 +2083,133 @@ export class PaymentsService {
     adminId: string,
     dto: ConfirmCashCollectionDto,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const now = new Date();
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const now = new Date();
 
-      const claimed = await tx.cashCollection.updateMany({
-        where: {
-          id,
-          status: {
-            in: [CashCollectionStatus.PENDING, CashCollectionStatus.COLLECTED],
+        const claimed = await tx.cashCollection.updateMany({
+          where: {
+            id,
+            status: {
+              in: [CashCollectionStatus.PENDING, CashCollectionStatus.COLLECTED],
+            },
           },
-        },
-        data: {
-          status: CashCollectionStatus.CONFIRMED,
-          collectedAt: now,
-          confirmedAt: now,
-          confirmedByAdminId: adminId,
-          adminNote: dto.note ?? null,
-        },
-      });
+          data: {
+            status: CashCollectionStatus.CONFIRMED,
+            collectedAt: now,
+            confirmedAt: now,
+            confirmedByAdminId: adminId,
+            adminNote: dto.note ?? null,
+          },
+        });
 
-      if (claimed.count === 0) {
-        const existing = await tx.cashCollection.findUnique({ where: { id } });
-        if (!existing) {
-          throw new NotFoundException({
-            error: 'CASH_COLLECTION_NOT_FOUND',
-            message: 'Cash collection not found',
+        if (claimed.count === 0) {
+          const existing = await tx.cashCollection.findUnique({ where: { id } });
+          if (!existing) {
+            throw new NotFoundException({
+              error: 'CASH_COLLECTION_NOT_FOUND',
+              message: 'Cash collection not found',
+            });
+          }
+          throw new ConflictException({
+            error: 'CASH_COLLECTION_ALREADY_PROCESSED',
+            message: `Cash collection has already been ${existing.status.toLowerCase()}`,
           });
         }
-        throw new ConflictException({
-          error: 'CASH_COLLECTION_ALREADY_PROCESSED',
-          message: `Cash collection has already been ${existing.status.toLowerCase()}`,
+
+        const collection = await tx.cashCollection.findUniqueOrThrow({
+          where: { id },
         });
-      }
 
-      const collection = await tx.cashCollection.findUniqueOrThrow({
-        where: { id },
+        // Route by purpose: wallet top-up vs plan payment.
+        if (collection.walletCreditRequestId) {
+          const credit = await this.walletService.creditConfirmedCashRequest(
+            tx,
+            collection.walletCreditRequestId,
+            adminId,
+          );
+
+          this.logger.log(
+            `Cash collection confirmed (wallet top-up) cashCollectionId=${collection.id} ` +
+              `creditRequestId=${collection.walletCreditRequestId} ` +
+              `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
+              `adminId=${adminId}`,
+          );
+
+          return {
+            success: true,
+            message: 'Cash confirmed and wallet credited.',
+            cashCollection: {
+              id: collection.id,
+              status: CashCollectionStatus.CONFIRMED,
+              amountPaise: collection.amountPaise,
+              confirmedAt: collection.confirmedAt,
+            },
+            walletCredit: credit.request,
+          };
+        }
+
+        // Plan payment cash confirmation.
+        if (collection.planSelectionId) {
+          await this.plansService.confirmPlanAfterCashPayment(
+            tx,
+            collection.planSelectionId,
+            { id: collection.id, amountPaise: collection.amountPaise },
+          );
+
+          this.logger.log(
+            `Cash collection confirmed (plan payment) cashCollectionId=${collection.id} ` +
+              `planSelectionId=${collection.planSelectionId} ` +
+              `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
+              `adminId=${adminId}`,
+          );
+
+          return {
+            success: true,
+            message: 'Cash confirmed and plan activated.',
+            cashCollection: {
+              id: collection.id,
+              status: CashCollectionStatus.CONFIRMED,
+              amountPaise: collection.amountPaise,
+              confirmedAt: collection.confirmedAt,
+            },
+          };
+        }
+
+        throw new BadRequestException({
+          error: 'CASH_COLLECTION_NO_PURPOSE',
+          message: 'Cash collection has no linked purpose (neither wallet nor plan)',
+        });
       });
-
-      // Route by purpose: wallet top-up vs plan payment.
-      if (collection.walletCreditRequestId) {
-        const credit = await this.walletService.creditConfirmedCashRequest(
-          tx,
-          collection.walletCreditRequestId,
-          adminId,
-        );
-
-        this.logger.log(
-          `Cash collection confirmed (wallet top-up) cashCollectionId=${collection.id} ` +
-            `creditRequestId=${collection.walletCreditRequestId} ` +
-            `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
-            `adminId=${adminId}`,
-        );
-
-        return {
-          success: true,
-          message: 'Cash confirmed and wallet credited.',
-          cashCollection: {
-            id: collection.id,
-            status: CashCollectionStatus.CONFIRMED,
-            amountPaise: collection.amountPaise,
-            confirmedAt: collection.confirmedAt,
-          },
-          walletCredit: credit.request,
-        };
+    } catch (error) {
+      if (error instanceof BadRequestException ||
+          error instanceof NotFoundException ||
+          error instanceof ConflictException) {
+        throw error;
       }
-
-      // Plan payment cash confirmation.
-      if (collection.planSelectionId) {
-        await this.plansService.confirmPlanAfterCashPayment(
-          tx,
-          collection.planSelectionId,
-          { id: collection.id, amountPaise: collection.amountPaise },
+      if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        this.logger.error(
+          `Cash confirmation failed cashCollectionId=${id} ` +
+            `prismaCode=${error.code} meta=${JSON.stringify(error.meta)}`,
+          error.stack,
         );
-
-        this.logger.log(
-          `Cash collection confirmed (plan payment) cashCollectionId=${collection.id} ` +
-            `planSelectionId=${collection.planSelectionId} ` +
-            `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
-            `adminId=${adminId}`,
-        );
-
-        return {
-          success: true,
-          message: 'Cash confirmed and plan activated.',
-          cashCollection: {
-            id: collection.id,
-            status: CashCollectionStatus.CONFIRMED,
-            amountPaise: collection.amountPaise,
-            confirmedAt: collection.confirmedAt,
-          },
-        };
+        if (error.code === 'P2002') {
+          throw new ConflictException({
+            error: 'CASH_CONFIRMATION_CONFLICT',
+            message: 'This cash collection has already been processed or a related record already exists',
+            detail: error.meta,
+          });
+        }
       }
-
+      this.logger.error(
+        `Cash confirmation failed cashCollectionId=${id} adminId=${adminId}`,
+        error instanceof Error ? error.stack : error,
+      );
       throw new BadRequestException({
-        error: 'CASH_COLLECTION_NO_PURPOSE',
-        message: 'Cash collection has no linked purpose (neither wallet nor plan)',
+        error: 'CASH_CONFIRMATION_FAILED',
+        message: error instanceof Error ? error.message : 'Cash confirmation failed unexpectedly',
       });
-    });
+    }
   }
 
   /**
