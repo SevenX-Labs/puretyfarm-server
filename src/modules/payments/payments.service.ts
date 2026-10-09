@@ -28,6 +28,7 @@ import type {
   ProviderVerificationResult,
 } from './providers/payment-provider.interface';
 import {
+  ACTIVE_PAYMENT_PROVIDER,
   CashCollectionStatus,
   PAYMENT_CURRENCY,
   PAYMENT_EXPIRY_MINUTES_DEFAULT,
@@ -38,7 +39,6 @@ import {
   PAYMENT_TXNID_PREFIX,
   PAYMENT_WALLET_TOPUP_PRODUCT_INFO,
   PaymentMethod,
-  PaymentProviderType,
   PaymentPurpose,
   PaymentTransactionStatus,
 } from './payments.constants';
@@ -106,13 +106,18 @@ export class PaymentsService {
   // ══════════════════════════════════════════════════════════════════
 
   /**
-   * Generates the merchant transaction id sent to PayU as `txnid`.
+   * Generates the merchant transaction id sent to the gateway (PayU `txnid`,
+   * PhonePe `merchantOrderId`).
    *
    * Server-generated and unpredictable: a client never supplies or influences
    * it. Timestamp component keeps ids roughly sortable; 5 random bytes make
    * collisions practically impossible, and the DB unique constraint on
-   * `transactionId` is the final backstop. Length stays well under PayU's
-   * 25-character limit.
+   * `transactionId` is the final backstop. Length stays well under both PayU's
+   * 25-character and PhonePe's 63-character limits, and the id is uppercase
+   * alphanumeric, which satisfies PhonePe's character restrictions.
+   *
+   * Unpredictability also protects the PhonePe browser return route, whose
+   * only parameter is this id.
    */
   private generateTransactionId(): string {
     const stamp = Date.now().toString(36).toUpperCase();
@@ -133,7 +138,8 @@ export class PaymentsService {
    * Starts a wallet top-up.
    *
    * ONLINE: creates a PENDING WalletCreditRequest + PENDING Payment, then
-   * returns PayU Hosted Checkout fields. The wallet is NOT touched.
+   * returns the PhonePe Standard Checkout redirect URL. The wallet is NOT
+   * touched.
    *
    * CASH: creates a PENDING WalletCreditRequest + PENDING CashCollection and
    * NO Payment row — there is no online payment to verify, and the wallet is
@@ -162,8 +168,8 @@ export class PaymentsService {
     idempotencyKey: string,
     requestHash: string,
   ) {
-    // Customer contact details are needed by PayU and must come from our own
-    // records, never from the request body.
+    // Customer contact details must come from our own records, never from the
+    // request body.
     const customer = await this.getCustomerForCheckout(userId);
 
     const created = await this.prisma.$transaction(async (tx) => {
@@ -193,7 +199,7 @@ export class PaymentsService {
         });
 
       // The key resolved to an existing credit request that was NOT created
-      // for an online payment. Reusing it would attach a PayU payment to a
+      // for an online payment. Reusing it would attach an online payment to a
       // cash top-up, so it is a parameter conflict, not a replay.
       if (replayed && request.source !== PaymentMethod.ONLINE) {
         throw new ConflictException({
@@ -207,7 +213,7 @@ export class PaymentsService {
         data: {
           userId,
           walletCreditRequestId: request.id,
-          provider: PaymentProviderType.PAYU,
+          provider: ACTIVE_PAYMENT_PROVIDER,
           purpose: PaymentPurpose.WALLET_TOPUP,
           paymentMethod: PaymentMethod.ONLINE,
           transactionId: this.generateTransactionId(),
@@ -327,9 +333,13 @@ export class PaymentsService {
   }
 
   /**
-   * Loads the contact details PayU requires. Email is mandatory at PayU, so a
-   * customer without one is told to add it rather than being sent to a
-   * checkout that would be rejected.
+   * Loads the customer's contact details.
+   *
+   * The email requirement predates PhonePe: PayU rejected a checkout without
+   * one. PhonePe Standard Checkout does not require an email, but the gate is
+   * kept deliberately — relaxing it would change who can start an online
+   * top-up, which is outside the scope of a provider swap. See the migration
+   * notes in docs/customer/payments.md.
    */
   private async getCustomerForCheckout(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -514,7 +524,7 @@ export class PaymentsService {
         data: {
           userId,
           walletCreditRequestId: previous.walletCreditRequestId,
-          provider: PaymentProviderType.PAYU,
+          provider: ACTIVE_PAYMENT_PROVIDER,
           purpose: PaymentPurpose.WALLET_TOPUP,
           paymentMethod: PaymentMethod.ONLINE,
           transactionId: this.generateTransactionId(),
@@ -999,7 +1009,7 @@ export class PaymentsService {
 
       if (orderUpdate.count === 0) {
         this.logger.log(
-          `ORDER already PAID; routing late PayU success to refund ` +
+          `ORDER already PAID; routing late gateway success to refund ` +
             `source=${source} paymentId=${paymentId} orderId=${order.id} ` +
             `transactionId=${payment.transactionId}`,
         );
@@ -1031,8 +1041,8 @@ export class PaymentsService {
 
   /**
    * SUCCESS -> REFUND_PENDING in-transaction. Used for the late-arrival
-   * case where PayU's verified SUCCESS lands AFTER the wallet already settled
-   * the order. The actual PayU refund call is fired after commit so a slow
+   * case where the gateway's verified SUCCESS lands AFTER the wallet already
+   * settled the order. The actual refund call is fired after commit so a slow
    * provider does not hold DB locks. If the process dies between commit and
    * provider call, the Payment row stays REFUND_PENDING and the admin can
    * retry via POST /admin/payments/order/:id/refund (see initiateOrderRefund).
@@ -1072,7 +1082,7 @@ export class PaymentsService {
   }
 
   /**
-   * Common PayU refund call shared by:
+   * Common provider refund call shared by:
    *   - the credit-request rejection path (initiateRefundForRejectedCreditRequest)
    *   - the late-arrival ORDER success -> REFUND_PENDING path
    *   - the admin initiateOrderRefund retry
@@ -1312,12 +1322,12 @@ export class PaymentsService {
   //    - payOrderFromWallet(userId, orderId)
   //         ONE transaction: conditional Order PENDING→PAID + wallet DEBIT.
   //         If either step fails, both roll back. Does NOT touch any live
-  //         PayU Order payment — the shared SUCCESS settlement handles those
-  //         via the late-arrival REFUND_PENDING path.
+  //         gateway Order payment — the shared SUCCESS settlement handles
+  //         those via the late-arrival REFUND_PENDING path.
   //    - createOrderPayment(userId, orderId, idempotencyKey)
-  //         Creates a Payment row (purpose=ORDER, orderId) and returns PayU
-  //         Hosted Checkout fields. The partial unique index
-  //         `payments_one_live_payment_per_order` prevents two live PayU
+  //         Creates a Payment row (purpose=ORDER, orderId) and returns the
+  //         PhonePe checkout redirect URL. The partial unique index
+  //         `payments_one_live_payment_per_order` prevents two live gateway
   //         payments for the same order.
   //
   //  Shared SUCCESS settlement is in applySuccess above.
@@ -1366,7 +1376,7 @@ export class PaymentsService {
         `Order payment (${order.id})`,
       );
 
-      // Atomic conditional Order update. If a parallel PayU success raced us
+      // Atomic conditional Order update. If a parallel gateway success raced us
       // and already marked the order PAID, we'd match 0 rows here — but the
       // debit above would have succeeded, so we'd be double-paying. Throwing
       // rolls back the whole transaction including the ledger row.
@@ -1464,7 +1474,7 @@ export class PaymentsService {
           data: {
             userId,
             orderId: order.id,
-            provider: PaymentProviderType.PAYU,
+            provider: ACTIVE_PAYMENT_PROVIDER,
             purpose: PaymentPurpose.ORDER,
             paymentMethod: PaymentMethod.ONLINE,
             transactionId: this.generateTransactionId(),
@@ -1516,7 +1526,7 @@ export class PaymentsService {
     });
 
     this.logger.log(
-      `Order PayU payment created paymentId=${created.payment.id} ` +
+      `Order online payment created paymentId=${created.payment.id} ` +
         `orderId=${order.id} transactionId=${created.payment.transactionId} ` +
         `userId=${userId} amountPaise=${created.payment.amountPaise} ` +
         `replayed=${created.replayed}`,
@@ -1533,8 +1543,8 @@ export class PaymentsService {
   }
 
   /**
-   * Admin retry for an ORDER-purpose PayU refund. Not currently exposed as an
-   * endpoint — kept for the future admin refund panel.
+   * Admin retry for an ORDER-purpose gateway refund. Not currently exposed as
+   * an endpoint — kept for the future admin refund panel.
    */
   async initiateOrderRefund(orderId: string) {
     const payment = await this.prisma.payment.findFirst({
@@ -1617,7 +1627,7 @@ export class PaymentsService {
    *
    * Returns `{ refundInitiated: false }` instead of throwing in the two
    * benign cases that come up on that path:
-   *   - the credit request is a CASH top-up (no PayU payment exists), or
+   *   - the credit request is a CASH top-up (no online payment exists), or
    *   - a previous reject already produced the refund request (idempotent
    *     retries).
    *
@@ -2368,8 +2378,8 @@ export class PaymentsService {
    * Customer/admin-safe projection of a payment.
    *
    * Deliberately omits `idempotencyKey`, `requestHash` and the raw provider
-   * payload, and there is no field anywhere in this object derived from
-   * PAYU_SALT.
+   * payload, and there is no field anywhere in this object derived from a
+   * gateway credential.
    */
   private formatCustomerPayment(payment: {
     id: string;

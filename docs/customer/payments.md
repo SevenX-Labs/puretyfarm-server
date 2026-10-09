@@ -20,16 +20,16 @@ Two ways to top up a wallet:
 
 | Method | Gateway | What proves the money arrived | Wallet is credited by |
 |--------|---------|-------------------------------|-----------------------|
-| `ONLINE` | PayU Hosted Checkout | SHA-512 hash-verified PayU callback or webhook | Admin approval (first time) or automatic (per-wallet `autoCreditEnabled=true`) |
+| `ONLINE` | PhonePe Standard Checkout (v2) | PhonePe's **Order Status API**, queried server-to-server after an authenticated webhook or the browser return | Admin approval (first time) or automatic (per-wallet `autoCreditEnabled=true`) |
 | `CASH` | None | Admin confirmation after physical cash reaches the depot | Admin confirmation only — never automatic |
 
 **Plan payments and this module:** Plans are paid directly at plan confirmation
 time via the Plans module (`POST /customer/plans/confirm` with `paymentMethod:
 "WALLET"` or `"CASH"`). When a customer's wallet balance is insufficient, they
-use this Payment module to top up their wallet (Add Money → ONLINE → PayU),
+use this Payment module to top up their wallet (Add Money → ONLINE → PhonePe),
 then return to the Plans module to complete the purchase with WALLET. There is
-**no direct PayU checkout for plan purchases** — PayU is used only for wallet
-top-ups.
+**no direct gateway checkout for plan purchases** — PhonePe is used only for
+wallet top-ups and online order payments.
 
 ### Authentication
 
@@ -45,9 +45,9 @@ Authorization: Bearer <CUSTOMER_ACCESS_TOKEN>
 
 ### Money convention
 
-**Integer paise everywhere in the API.** The server does the
-paise → rupee-decimal conversion itself when calling PayU (`"1000.00"`), using
-integer arithmetic — never floats.
+**Integer paise everywhere in the API.** PhonePe also speaks integer paise, so
+no rupee-decimal conversion happens anywhere in the online payment path. (PayU
+required one; it is gone.)
 
 ### Route prefixes
 
@@ -64,7 +64,7 @@ Each route is served at both `/api/v1/customer/payments/...` and
                  ┌────────────┴────────────┐
                  │                         │
                ONLINE                    CASH
-            (PayU gateway)       (physical collection)
+          (PhonePe gateway)      (physical collection)
                  │                         │
                  ↓                         ↓
           Payment record            CashCollection
@@ -89,7 +89,7 @@ Each route is served at both `/api/v1/customer/payments/...` and
                     Wallet balance change
 ```
 
-> **Scheduler**: a cron (every 10 minutes) expires PayU payments the customer
+> **Scheduler**: a cron (every 10 minutes) expires online payments the customer
 > never completed, so an abandoned checkout does not block future top-ups.
 > See `docs/admin/scheduler.md`. The scheduler never credits a wallet.
 
@@ -103,7 +103,7 @@ Credited" are **two different events**. The UI must show them differently:
 ```text
 FIRST CREDIT
 
-PayU SUCCESS
+PhonePe order COMPLETED (confirmed via the Order Status API)
    ↓
 Payment SUCCESS                       ← money collected, show "Payment Successful"
    ↓
@@ -121,7 +121,7 @@ Wallet.autoCreditEnabled → true
 For every **subsequent** online credit (per-wallet `autoCreditEnabled = true`):
 
 ```text
-PayU SUCCESS
+PhonePe order COMPLETED
    ↓
 Payment SUCCESS
    ↓
@@ -132,7 +132,7 @@ Read these fields from the API:
 
 | Field | Meaning |
 |-------|---------|
-| `payment.status = "SUCCESS"` | Money reached PayU and we verified it |
+| `payment.status = "SUCCESS"` | Money reached PhonePe and we verified it server-to-server |
 | `walletCredit.status = "PENDING"` | Awaiting admin approval — balance unchanged |
 | `walletCredit.status = "COMPLETED"` | Balance has already increased |
 
@@ -155,13 +155,13 @@ Wallet credited, autoCreditEnabled → true (if first credit)
 Cash **never** auto-credits, even if `autoCreditEnabled = true`. The admin
 confirmation is the only trigger.
 
-Cash is also **never refunded through PayU**. Cash cancellation
+Cash is also **never refunded through the gateway**. Cash cancellation
 (`/admin/payments/cash-collections/:id/cancel`) moves the credit request to
 `CANCELLED` and the cash is reconciled offline.
 
 ---
 
-## 5. Rejection → automatic PayU refund
+## 5. Rejection → automatic gateway refund
 
 When an admin rejects a credit request that had a settled ONLINE payment, the
 Payment module **automatically** starts the refund during that same admin
@@ -174,17 +174,27 @@ Admin REJECT  (POST /admin/wallet/credit-requests/:id/reject)
    ↓
 Wallet NEVER credited, no ledger row
    ↓
-Payment SUCCESS → REFUND_PENDING  (atomic claim; a second reject can't double-call PayU)
+Payment SUCCESS → REFUND_PENDING  (atomic claim; a second reject can't double-call PhonePe)
    ↓
-PayU cancel_refund_transaction API called
+PhonePe POST /payments/v2/refund called with merchantRefundId = RFND-<txnid>
    ↓
-(wait for PayU verified refund webhook)
+(wait for a PhonePe refund confirmation)
    ↓
 Payment REFUNDED, WalletCreditRequest.refundStatus = REFUNDED
 ```
 
-`REFUNDED` is only reached after a signed, hash-verified refund webhook from
-PayU — never on the back of PayU merely accepting the request.
+`merchantRefundId` is derived from the transaction id, so a retried rejection
+is the **same** refund request to PhonePe rather than a second refund.
+
+`REFUNDED` is only reached after PhonePe's Refund Status API reports
+`COMPLETED` — never on the back of PhonePe merely accepting the request.
+
+> ⚠️ **Configuration gap:** reaching `REFUNDED` automatically requires the
+> `pg.refund.completed` and `pg.refund.failed` events to be enabled for the
+> webhook in the PhonePe dashboard. They are **not** currently selected (only
+> `checkout.order.completed` and `checkout.order.failed` are). Until they are,
+> a refund stays in `REFUND_PENDING` after PhonePe accepts it; the handler for
+> those events is already implemented and needs no code change.
 
 The customer can read the current state at any time:
 - `GET /customer/payments/:id` — includes `walletCredit.refundStatus`
@@ -228,7 +238,7 @@ Starts a wallet top-up.
     "id": "pay-...",
     "transactionId": "PFMH2K8A1B2C3D4E5F",
     "providerPaymentId": null,
-    "provider": "PAYU",
+    "provider": "PHONEPE",
     "purpose": "WALLET_TOPUP",
     "paymentMethod": "ONLINE",
     "amountPaise": 100000,
@@ -246,39 +256,39 @@ Starts a wallet top-up.
   },
   "walletCreditRequestId": "wcr-...",
   "checkout": {
-    "endpoint": "https://secure.payu.in/_payment",
-    "method": "POST",
-    "fields": {
-      "key": "<merchant key>",
-      "txnid": "PFMH2K8A1B2C3D4E5F",
-      "amount": "1000.00",
-      "productinfo": "PuretyFarm Wallet Top-up",
-      "firstname": "Asha",
-      "email": "asha@example.com",
-      "phone": "9876543210",
-      "surl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/success",
-      "furl": "https://api-puretyfarm.onrender.com/api/v1/payments/payu/failure",
-      "udf1": "",
-      "udf2": "",
-      "udf3": "",
-      "udf4": "",
-      "udf5": "",
-      "hash": "<128-char SHA-512>"
-    }
+    "endpoint": "https://mercury.phonepe.com/transact/pg?token=...",
+    "method": "REDIRECT",
+    "fields": {},
+    "redirectUrl": "https://mercury.phonepe.com/transact/pg?token=...",
+    "providerOrderId": "OMO2501011234567890",
+    "expiresAt": 1767000000000
   },
   "message": "Payment created. Submit the checkout fields to the payment gateway to complete it."
 }
 ```
 
-**How the frontend uses `checkout`:**
+> 🔴 **FRONTEND CHANGE REQUIRED — this is the only breaking change in the
+> PayU → PhonePe migration.** Every other request and response field, error
+> code and status value is unchanged.
 
-1. Build an HTML form with `action = checkout.endpoint` and `method = "POST"`.
-2. Add one hidden `<input name="...">` for every key in `checkout.fields` with
-   its exact value.
-3. Submit it (`form.submit()`). The browser lands on PayU Hosted Checkout.
-4. Do **not** modify any field — every one is covered by `hash`.
-5. PayU redirects the browser back to the configured
-   `PAYMENT_RESULT_REDIRECT_URL` with query params `txnid`, `result`, `status`.
+**How the frontend uses `checkout` (new):**
+
+1. Read `checkout.method`. For PhonePe it is always `"REDIRECT"`.
+2. Navigate the browser to `checkout.redirectUrl` (identical to
+   `checkout.endpoint`): `window.location.assign(checkout.redirectUrl)`, or
+   open it in a WebView / Custom Tab on mobile.
+3. There is **no form to build and no field to submit** — `checkout.fields` is
+   always `{}`. Delete the form-POST code path.
+4. Do **not** cache, rewrite or append anything to `redirectUrl`. It is a
+   one-time, order-scoped PhonePe token URL.
+5. PhonePe returns the browser to the server, which verifies the payment and
+   then redirects to the configured `PAYMENT_RESULT_REDIRECT_URL` with the
+   **same** `txnid`, `result` and `status` query params as before — so the
+   existing payment-result page needs **no change**.
+
+Two optional fields are new and may be ignored:
+`checkout.providerOrderId` (PhonePe's own order id) and `checkout.expiresAt`
+(epoch **milliseconds** after which the checkout URL stops working).
 
 **Response `201` — CASH:**
 
@@ -313,7 +323,7 @@ was already used with the same parameters.
 
 ### 6.2 `POST /api/v1/customer/payments/verify`
 
-Server-to-server re-check of a payment's true state with PayU. Use when:
+Server-to-server re-check of a payment's true state with PhonePe. Use when:
 - The browser callback was lost (app closed, connection dropped).
 - The user returned to the app and the UI needs the authoritative state.
 
@@ -323,7 +333,7 @@ Server-to-server re-check of a payment's true state with PayU. Use when:
 { "transactionId": "PFMH2K8A1B2C3D4E5F" }
 ```
 
-The request carries no status — the client cannot assert an outcome. PayU is
+The request carries no status — the client cannot assert an outcome. PhonePe is
 the source of truth.
 
 **Response `200`:**
@@ -388,7 +398,7 @@ fresh `transactionId` and hash are generated.
 ### 6.4 `POST /api/v1/customer/payments/cancel`
 
 Cancels an online top-up the customer **abandoned before paying** (closed the
-PayU page, hit back, etc.) and immediately releases the one-pending-per-wallet
+PhonePe page, hit back, etc.) and immediately releases the one-pending-per-wallet
 slot so a new recharge can start without waiting for the 30-minute expiry sweep.
 
 **Headers:**
@@ -402,15 +412,20 @@ slot so a new recharge can start without waiting for the 30-minute expiry sweep.
 ```
 
 **Safety:** the live payment is never cancelled on the client's word. The server
-first re-checks the authoritative status with PayU:
+first re-checks the authoritative status with PhonePe's Order Status API:
 
-- **success** → the payment is settled (wallet credited) and the cancel is
+- **`COMPLETED`** → the payment is settled (wallet credited) and the cancel is
   refused (`PAYMENT_ALREADY_SUCCESSFUL`).
-- **in progress** → refused (`PAYMENT_IN_PROGRESS`); let the callback/verify path
-  resolve it.
-- **failure** → the slot is released; `cancelled: true`.
-- **no record at PayU** → the customer never paid; cancelled locally and the slot
-  is released.
+- **`PENDING` with a payment attempt on it** → refused
+  (`PAYMENT_IN_PROGRESS`); let the webhook/verify path resolve it.
+- **`FAILED`** → the slot is released; `cancelled: true`.
+- **no record at PhonePe, or `PENDING` with no attempt yet** → the customer
+  never started paying; cancelled locally and the slot is released.
+
+The last case is why a freshly created PhonePe order is not treated as
+in-flight: PhonePe reports a created-but-untouched order as `PENDING`, and
+reading that as `PROCESSING` would make an abandoned top-up impossible to
+cancel.
 
 **Response `200`:**
 
@@ -431,7 +446,7 @@ first re-checks the authoritative status with PayU:
 |------|---------|-------|
 | 404 | `PAYMENT_NOT_FOUND` | Unknown or not yours |
 | 409 | `PAYMENT_NOT_CANCELLABLE` | Not a wallet top-up payment |
-| 409 | `PAYMENT_ALREADY_SUCCESSFUL` | PayU reports the payment succeeded; it was credited, not cancelled |
+| 409 | `PAYMENT_ALREADY_SUCCESSFUL` | PhonePe reports the order `COMPLETED`; it was credited, not cancelled |
 | 409 | `PAYMENT_IN_PROGRESS` | A capture is in flight; try again shortly |
 | 409 | `PAYMENT_CANNOT_BE_VERIFIED` | Provider status could not be checked; it will auto-expire if left |
 
@@ -487,32 +502,68 @@ One payment, enriched with its wallet-credit state.
 
 ---
 
-## 7. Public PayU routes (not called by your app)
+## 7. Public PhonePe routes (not called by your app)
 
-These are called by PayU directly — the frontend must not call them.
+These are called by PhonePe directly — the frontend must not call them.
 
 ```
-POST /api/v1/payments/payu/success    — browser callback (public, hash-verified)
-POST /api/v1/payments/payu/failure    — browser callback (public, hash-verified)
-POST /api/v1/payments/webhooks/payu   — server-to-server webhook (public, hash-verified)
-                                        handles successful, failed, and refund events
+GET  /api/v1/payments/phonepe/return?txnid=…  — browser return (public, carries no authority)
+POST /api/v1/payments/phonepe/return?txnid=…  — same handler, for providers that post
+POST /api/v1/payments/webhooks/phonepe        — server-to-server webhook (public, header-authenticated)
+                                                handles checkout.order.completed / .failed
 ```
 
-After verifying, the browser callback issues a `302` to
-`PAYMENT_RESULT_REDIRECT_URL` with:
+The PayU routes (`/payments/payu/success`, `/payments/payu/failure`,
+`/payments/webhooks/payu`) **no longer exist**. The PayU provider classes are
+still on disk for rollback but are not registered, so those paths return 404.
+
+### 7.1 Browser return
+
+PhonePe uses **one** return URL for both outcomes rather than PayU's
+`surl`/`furl` pair, so there is no `/success` and `/failure` split any more.
+
+The handler ignores everything in the request except the `txnid` the server
+itself put in the URL, asks PhonePe's Order Status API what actually happened,
+applies the outcome, and then issues a `302` to `PAYMENT_RESULT_REDIRECT_URL`
+with the **unchanged** parameter set:
 
 | Query param | Values |
 |-------------|--------|
 | `txnid` | The merchant transaction id |
-| `result` | `wallet_credited` \| `awaiting_approval` \| `recorded` \| `error` |
+| `result` | `wallet_credited` \| `awaiting_approval` \| `recorded` \| `pending` \| `error` |
 | `status` | The resulting payment status |
 
-The redirect carries **no** `amount`, `hash`, or anything derived from
-`PAYU_SALT`. URLs end up in browser history and referrers; secrets never do.
+`result=pending` is new: it means PhonePe had no actionable state for the order
+at the moment the browser came back. Treat it exactly like `recorded` — poll
+`POST /customer/payments/verify` or `GET /customer/payments/:id` for the real
+answer.
 
-**The route name carries no authority.** Hitting `/payu/success` with an
-unsigned payload does nothing. A signed FAILURE payload posted to the success
-URL is recorded as a failure.
+The redirect carries **no** `amount` and nothing derived from a PhonePe
+credential. URLs end up in browser history and referrers; secrets never do.
+
+**The return route carries no authority at all.** PhonePe sends no trustworthy
+payload with the browser return, so hitting this URL by hand achieves nothing
+beyond one extra server-to-server status check against an unguessable
+transaction id. Only PhonePe's own API can make a payment successful.
+
+### 7.2 Webhook authentication
+
+PhonePe does **not** sign its webhook payloads the way PayU hashed them. Two
+independent gates protect this endpoint:
+
+1. **Authenticity** — PhonePe sets the `Authorization` header to
+   `SHA256(PHONEPE_WEBHOOK_USERNAME:PHONEPE_WEBHOOK_PASSWORD)`, hex-encoded,
+   using the credentials configured against the webhook in the PhonePe
+   dashboard. The server recomputes the digest and compares it in constant
+   time. A mismatch, a missing header or missing configuration is a `403` with
+   no state change.
+2. **Truth** — even an authentic event is never accepted as proof of payment.
+   The event only names *which* order to re-check; the outcome is then read
+   from PhonePe's Order Status API over a server-to-server call. A replayed or
+   tampered body therefore cannot assert a payment PhonePe does not hold.
+
+If PhonePe cannot be reached for that second check, the endpoint answers `503`
+so PhonePe **retries** the event rather than considering it delivered.
 
 **Treat the redirect as a hint, not as truth.** The webhook settles the
 payment independently of what the browser does. Even if the user closes the
@@ -526,13 +577,13 @@ is always `GET /customer/payments/:id` or `POST /customer/payments/verify`.
 | Status | Meaning | Can retry? |
 |--------|---------|------------|
 | `PENDING` | Created, awaiting the customer at checkout | no (still live) |
-| `PROCESSING` | PayU reports the payment in flight | no |
+| `PROCESSING` | PhonePe reports an attempt in flight (`PENDING` with a payment attempt) | no |
 | `SUCCESS` | Verified; wallet credit flow has run | no |
 | `FAILED` | Verified as failed; credit request moved to CANCELLED | yes |
 | `CANCELLED` | Abandoned | yes |
 | `EXPIRED` | `expiresAt` passed without completion; credit request CANCELLED | yes |
-| `REFUND_PENDING` | PayU refund has been requested | no |
-| `REFUNDED` | PayU refund confirmed via webhook | no |
+| `REFUND_PENDING` | A PhonePe refund has been requested and accepted | no |
+| `REFUNDED` | PhonePe's Refund Status API reports the refund `COMPLETED` | no |
 
 An abandoned payment expires automatically within one scheduler tick (10
 minutes after `expiresAt`) so the one-pending-per-wallet slot is freed and the
@@ -555,17 +606,20 @@ customer can start a new top-up.
 
 The server rejects or ignores any attempt to supply these from the client:
 
-- The payable amount sent to PayU (only `/create` accepts an amount, and it is
-  validated against the wallet's configured bounds).
-- The transaction id (`txnid`) — server-generated, unpredictable.
+- The payable amount sent to PhonePe (only `/create` accepts an amount, and it
+  is validated against the wallet's configured bounds).
+- The transaction id (`txnid` / PhonePe `merchantOrderId`) — server-generated,
+  unpredictable.
 - The payment status.
 - The wallet balance.
 - `autoCreditEnabled`.
 - `walletCreditRequestId` on a payment.
 - Whether a credit is approved.
-- The `surl` / `furl` callback URLs.
+- The PhonePe `redirectUrl` (browser return URL), which is built from
+  `PUBLIC_API_BASE_URL` server-side.
 - The result redirect target.
-- The hash on an incoming callback (the server recomputes it).
+- The outcome of a payment: it is read only from PhonePe's Order Status API,
+  never from a webhook body or a browser return.
 
 ---
 
@@ -637,8 +691,9 @@ curl -i -X GET "$BASE_URL/api/v1/customer/payments/<PAYMENT_ID>" \
 ## 12. Frontend integration checklist
 
 1. Generate a fresh `Idempotency-Key` per user intent and reuse it on retry.
-2. On an ONLINE create response, build a hidden form from `checkout.fields`
-   and submit it to `checkout.endpoint`. Do not alter any field.
+2. On an ONLINE create response, navigate the browser to
+   `checkout.redirectUrl` (`checkout.method === "REDIRECT"`). Do not build a
+   form — `checkout.fields` is always `{}` under PhonePe.
 3. On return to the result page, treat the URL params as a hint, then confirm
    with `POST /payments/verify` for an authoritative state.
 4. Show two distinct messages on first credit: "Payment Successful" (status
@@ -654,3 +709,89 @@ curl -i -X GET "$BASE_URL/api/v1/customer/payments/<PAYMENT_ID>" \
    the cash-collection status (visible through `GET /customer/wallet/credit-requests`).
 7. On a refund, poll `GET /customer/payments/:id` and show `REFUND_PENDING` →
    `REFUNDED` based on the authoritative payment status.
+
+---
+
+## 13. PayU → PhonePe migration notes
+
+### What changed for the frontend
+
+Exactly one thing: **the shape of `checkout` on an ONLINE `/create` and
+`/retry` response.** See §6.1.
+
+| Before (PayU) | After (PhonePe) |
+|---------------|-----------------|
+| `checkout.method = "POST"` | `checkout.method = "REDIRECT"` |
+| `checkout.fields` = 15 form fields incl. `hash` | `checkout.fields = {}` |
+| Build a hidden form, `form.submit()` | `window.location.assign(checkout.redirectUrl)` |
+| `payment.provider = "PAYU"` | `payment.provider = "PHONEPE"` |
+
+Everything else is byte-for-byte identical: all endpoints, request bodies,
+`Idempotency-Key` semantics, every `error` code, every payment status, the
+`PAYMENT_RESULT_REDIRECT_URL` query parameters (`txnid` / `result` / `status`,
+with one added `result=pending` value), the two-events first-credit rule, and
+the cash flow.
+
+If the frontend branches on `checkout.method` it will keep working against both
+gateways during the rollback window.
+
+### What did NOT change
+
+- Cash plan payments, cash collection confirmation and cash float reconciliation.
+- Plan purchase workflows (wallet-funded and online).
+- Pricing, inventory, order management and delivery fulfilment.
+- Platform fees, revenue calculation, cancellations.
+- Wallet funding rules, including first-top-up admin approval and the
+  subsequent per-wallet auto-credit behaviour.
+- Idempotency keys, the one-live-payment-per-credit-request index, the
+  one-live-payment-per-order index, the expiry sweep, and every conditional
+  state transition in `applyVerifiedOutcome`.
+- Authentication, authorisation, rate limiting, logging and API conventions.
+- The `CUSTOMER_EMAIL_REQUIRED` gate on ONLINE top-ups. PhonePe does not need
+  an email address, but relaxing the gate would change who can start an online
+  top-up, so it is deliberately left in place. Removing it is a separate,
+  product-level decision.
+
+### Required configuration
+
+```env
+PHONEPE_ENV=PRODUCTION
+PHONEPE_CLIENT_ID=<from the PhonePe dashboard>
+PHONEPE_CLIENT_SECRET=<from the PhonePe dashboard>
+PHONEPE_CLIENT_VERSION=<from the PhonePe dashboard>
+PHONEPE_WEBHOOK_USERNAME=<as configured against the webhook>
+PHONEPE_WEBHOOK_PASSWORD=<as configured against the webhook>
+```
+
+All six are asserted at boot: a deployment missing any of them fails to start
+rather than failing at a customer's first payment. `PHONEPE_ENV` is optional
+and defaults to `PRODUCTION`; an unrecognised value is rejected at boot so a
+typo can never silently route live traffic to the sandbox.
+
+`PAYU_KEY` and `PAYU_SALT` are **still required** at boot. PayU is off the
+active payment path, but the credentials are retained so the cutover can be
+rolled back without a credential hunt. Remove them, and the
+`src/modules/payments/providers/payu/` and `webhook/payu-webhook.*` files,
+once PhonePe is validated in production.
+
+The webhook registered in the PhonePe dashboard must be exactly:
+
+```
+https://api-puretyfarm.onrender.com/api/v1/payments/webhooks/phonepe
+```
+
+with **Authentication Type: SHA**, and the username/password matching
+`PHONEPE_WEBHOOK_USERNAME` / `PHONEPE_WEBHOOK_PASSWORD`.
+
+### Rolling back
+
+1. In `src/modules/payments/payments.module.ts`, swap the PhonePe controllers
+   and providers back to `PayuCallbackController`, `PayuWebhookController`,
+   `PayuWebhookService`, `PayuHashService`, `PayuClient`, `PayuService`, and
+   rebind `PAYMENT_PROVIDER` to `PayuService`.
+2. Set `ACTIVE_PAYMENT_PROVIDER` in `payments.constants.ts` back to
+   `PaymentProviderType.PAYU`.
+
+No migration, no data change and no frontend rollback beyond restoring the
+form-POST branch. Payments already created against PhonePe keep
+`provider = "PHONEPE"` and remain readable.

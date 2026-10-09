@@ -16,7 +16,7 @@ Admins act on `WalletCreditRequest` rows in one of two ways:
 | Action | Result | Side effect |
 |--------|--------|-------------|
 | **Approve** | Credit the wallet via `WalletService` inside a single DB transaction | Also flips the customer's `autoCreditEnabled` to `true` if this is their first completed credit |
-| **Reject** | Mark `REJECTED` + `refundStatus=REFUND_PENDING` and **automatically start the PayU refund** for online top-ups | Cash top-ups have no PayU payment, so the refund call is a no-op |
+| **Reject** | Mark `REJECTED` + `refundStatus=REFUND_PENDING` and **automatically start the PhonePe refund** for online top-ups | Cash top-ups have no online payment, so the refund call is a no-op |
 
 Admin identity for both actions comes from `JWT.sub`. The request body **never**
 accepts an `adminId`.
@@ -83,7 +83,7 @@ PENDING ─────── admin approve ──────▶ COMPLETED  (te
    │
    └── funding never arrived ─────▶ CANCELLED  (terminal; no refund obligation)
                                           ▲
-                 (set by Payment module when a PayU payment
+                 (set by Payment module when an online payment
                   fails/is cancelled/is expired, or by admin
                   cash cancellation)
 ```
@@ -124,10 +124,10 @@ guard, so two concurrent admins never both win.
 
 ---
 
-## 5. Reject flow (with automatic PayU refund)
+## 5. Reject flow (with automatic PhonePe refund)
 
 **Breaking change from earlier versions:** the admin reject endpoint now
-automatically starts the PayU refund for online top-ups. The frontend no
+automatically starts the PhonePe refund for online top-ups. The frontend no
 longer has to make a second call to `/admin/payments/credit-requests/:id/refund`
 after a reject.
 
@@ -145,22 +145,22 @@ after a reject.
 4. Same request: PaymentsService.initiateRefundIfApplicable(id)
    ├── Finds the settled ONLINE Payment (status=SUCCESS) linked to this request
    │     ├── Atomic claim: Payment.status SUCCESS → REFUND_PENDING
-   │     ├── Calls PayuService.refundPayment() → PayU cancel_refund_transaction API
+   │     ├── Calls PhonePeService.refundPayment() → POST /apis/pg/payments/v2/refund
    │     └── Stores providerRefundId
    │
-   ├── Cash top-up (no PayU Payment) → no-op, reason="NO_REFUNDABLE_PAYMENT"
+   ├── Cash top-up (no online Payment) → no-op, reason="NO_REFUNDABLE_PAYMENT"
    ├── Already in progress → no-op, reason="REFUND_ALREADY_IN_PROGRESS"
    └── Any genuine failure → bubbles up as a 5xx; wallet reject still holds
    ↓
 5. Return 200 OK with { ...rejection, refund: { refundInitiated, reason? } }
    ↓
-6. (Asynchronously) PayU sends a verified refund webhook
+6. (Asynchronously) PhonePe sends pg.refund.completed, re-verified via the refund status API
    ↓
 7. Webhook handler: Payment REFUND_PENDING → REFUNDED,
                      WalletCreditRequest.refundStatus = REFUNDED
 ```
 
-The wallet reject **always** holds, even if the PayU call fails. The admin can
+The wallet reject **always** holds, even if the PhonePe call fails. The admin can
 then retry via the manual refund endpoint
 `POST /admin/payments/credit-requests/:id/refund` (see `docs/admin/payments.md`).
 
@@ -324,8 +324,8 @@ Concurrent approves: exactly one wins (DB-enforced), the other gets 409.
 
 | `refundInitiated` | `reason` | Meaning |
 |-------------------|----------|---------|
-| `true` | — | PayU refund request was accepted; wait for the refund webhook |
-| `false` | `"NO_REFUNDABLE_PAYMENT"` | Cash top-up (no PayU payment exists) |
+| `true` | — | PhonePe accepted the refund request; wait for the refund confirmation |
+| `false` | `"NO_REFUNDABLE_PAYMENT"` | Cash top-up (no online payment exists) |
 | `false` | `"REFUND_ALREADY_IN_PROGRESS"` | A previous attempt already claimed the refund |
 | `false` | `"CREDIT_REQUEST_NOT_REJECTED"` | Guard tripped (shouldn't occur on this path) |
 
@@ -333,9 +333,9 @@ Concurrent approves: exactly one wins (DB-enforced), the other gets 409.
 - `WalletCreditRequest` → `REJECTED` with `refundStatus = REFUND_PENDING`.
 - Wallet balance is NOT touched. No `WalletTransaction` is created.
 - For an online top-up: linked `Payment` moves `SUCCESS → REFUND_PENDING`; the
-  PayU refund API is called with `providerPaymentId` and the stored
+  PhonePe refund API is called with the transaction id and the stored
   `amountPaise`. The admin cannot change the refund amount.
-- For a cash top-up: nothing is sent to PayU.
+- For a cash top-up: nothing is sent to PhonePe.
 
 **Errors:**
 
@@ -345,7 +345,7 @@ Concurrent approves: exactly one wins (DB-enforced), the other gets 409.
 | 404 | `CREDIT_REQUEST_NOT_FOUND` | Unknown id |
 | 409 | `CREDIT_REQUEST_ALREADY_PROCESSED` | Status is not `PENDING` |
 
-> If the PayU provider call itself fails (network error, upstream 5xx), the
+> If the PhonePe provider call itself fails (network error, upstream 5xx), the
 > wallet rejection is still durable. The response surfaces the HTTP error, and
 > the admin can retry the refund via the manual endpoint
 > `POST /admin/payments/credit-requests/:id/refund` later.
@@ -451,7 +451,7 @@ curl -i -X POST \
   -d '{}'
 ```
 
-### Reject a credit request (auto-initiates PayU refund for online)
+### Reject a credit request (auto-initiates a PhonePe refund for online)
 ```bash
 curl -i -X POST \
   "$BASE_URL/api/v1/admin/wallet/credit-requests/<ID>/reject" \
@@ -479,7 +479,7 @@ curl -i -X GET \
 2. For `refund.reason === "NO_REFUNDABLE_PAYMENT"` show "Cash top-up — no
    refund needed." Reconcile physical cash offline.
 3. The refund is **not** complete after this call — it only moves to
-   `REFUND_PENDING`. Final `REFUNDED` state comes from a verified PayU
+   `REFUND_PENDING`. Final `REFUNDED` state comes from a verified PhonePe
    webhook. Poll `GET /admin/payments/:id` or `GET /admin/wallet/credit-requests/:id`
    to see the final state.
 4. On a race / 409 response, refetch the request detail: another admin likely

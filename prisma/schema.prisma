@@ -681,8 +681,12 @@ model WalletTransaction {
 /// Payment gateway / provider. Named `PaymentProviderType` rather than
 /// `PaymentProvider` so it does not collide with the `IPaymentProvider`
 /// TypeScript abstraction in the payments module.
+/// PHONEPE is the active gateway. PAYU is retained so historical Payment rows
+/// still deserialise and so the PhonePe cutover can be rolled back without a
+/// second migration; it is no longer assigned to new payments.
 enum PaymentProviderType {
   PAYU
+  PHONEPE
 }
 
 /// What the money is for. ORDER is modelled now so order checkout can be

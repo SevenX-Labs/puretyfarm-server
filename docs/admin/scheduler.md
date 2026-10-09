@@ -2,10 +2,10 @@
 
 ## Why this exists
 
-A customer who starts a PayU Hosted Checkout and then closes the tab leaves a
+A customer who starts a PhonePe Standard Checkout and then closes the tab leaves a
 `Payment` row stuck in `PENDING` and the matching `WalletCreditRequest` stuck
 in `PENDING`. The one-pending-per-wallet database index then blocks every
-future top-up for that customer. The PayU browser callback and the PayU
+future top-up for that customer. The PhonePe browser return and the PhonePe
 webhook never fire for an abandoned checkout, so without a timer nothing ever
 closes the row.
 
@@ -60,7 +60,7 @@ any business rule.
 - It does **not** change the first-credit admin-approval rule.
 - It does **not** change the subsequent auto-credit rule.
 - It does **not** touch cash collections or bypass cash confirmation.
-- It does **not** call PayU for anything (no verify, no refund).
+- It does **not** call PhonePe for anything (no verify, no refund).
 
 Those responsibilities stay in the modules that already own them.
 
@@ -71,7 +71,7 @@ FIRST ONLINE CREDIT:
 
 Customer
    ↓
-PayU SUCCESS
+PhonePe order COMPLETED
    ↓
 Payment SUCCESS
    ↓
@@ -87,7 +87,7 @@ SECOND+ ONLINE CREDIT:
 
 Customer
    ↓
-PayU SUCCESS
+PhonePe order COMPLETED
    ↓
 Payment SUCCESS
    ↓
@@ -105,7 +105,7 @@ ABANDONED PAYMENT (the only case the scheduler acts on):
 
 Customer
    ↓
-PayU checkout started
+PhonePe checkout started
    ↓
 PENDING
    ↓
@@ -155,7 +155,7 @@ logged (class name only, no payload) and swallowed, so a transient database
 error does not take down the Nest process. The next scheduled tick picks up
 whatever is still stale.
 
-The log never includes `PAYU_SALT`, PayU credentials, access tokens, or any
+The log never includes any gateway credential, access token, or any
 payment payload.
 
 ## Future jobs

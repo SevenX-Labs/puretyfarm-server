@@ -1,11 +1,11 @@
 # Admin Payments & Cash Collection API
 
 Admin reference for the payment ledger, cash-collection reconciliation and
-manual PayU refund retry.
+manual gateway refund retry.
 
 > **Related docs:**
-> - `docs/admin/wallet.md` — admin approval/rejection; the rejection endpoint already auto-initiates the PayU refund
-> - `docs/customer/payments.md` — top-up creation, verification, PayU callbacks
+> - `docs/admin/wallet.md` — admin approval/rejection; the rejection endpoint already auto-initiates the PhonePe refund
+> - `docs/customer/payments.md` — top-up creation, verification, PhonePe webhook and browser return
 > - `docs/customer/wallet.md` — wallet balance / ledger / credit-request lifecycle
 
 ---
@@ -16,14 +16,14 @@ Admins have three kinds of control over money:
 
 | Area | Where | Behaviour |
 |------|-------|-----------|
-| **Online payments** | this document (read-only) + wallet reject | Admins can only read online payment state. The payment becomes `SUCCESS` strictly through verified PayU communication — never through an admin action. |
+| **Online payments** | this document (read-only) + wallet reject | Admins can only read online payment state. The payment becomes `SUCCESS` strictly through a verified PhonePe Order Status API result — never through an admin action. |
 | **Cash collections** | this document | Admins confirm or cancel physical cash. Cash collections serve two purposes: **wallet top-up** (credits the wallet on confirm) and **plan payment** (activates the plan and creates deliveries on confirm). |
-| **Refunds** | wallet reject auto-initiates; this document exposes a manual retry | A rejected online credit request triggers a PayU refund automatically (see `docs/admin/wallet.md` §5). This document's refund endpoint exists for manual retry if the automatic call failed. |
+| **Refunds** | wallet reject auto-initiates; this document exposes a manual retry | A rejected online credit request triggers a PhonePe refund automatically (see `docs/admin/wallet.md` §5). This document's refund endpoint exists for manual retry if the automatic call failed. |
 
 ### Architectural separation (non-negotiable)
 
 - **Payment verification gate**: `Payment.status = SUCCESS` happens only via a
-  hash-verified PayU callback or webhook. No admin endpoint can set it.
+  PhonePe Order Status API check. No admin endpoint can set it.
 - **Physical cash gate**: cash credits land only after an admin confirms the
   physical collection.
 - **Wallet ledger ownership**: `WalletService` is the only writer of
@@ -44,7 +44,7 @@ Protected with `@UseGuards(JwtAuthGuard)` and `@Roles('ADMIN')`.
 ### Money & route conventions
 
 - All amounts are **integer paise**.
-- No response contains `PAYU_SALT`, raw card data, provider tokens or private
+- No response contains a gateway credential, raw card data, provider tokens or private
   keys. The stored `providerResponse` is sanitised before persistence.
 - Every route is served at both `/api/v1/admin/payments/...` and
   `/admin/payments/...`.
@@ -94,7 +94,7 @@ Protected with `@UseGuards(JwtAuthGuard)` and `@Roles('ADMIN')`.
       "id": "pay-...",
       "transactionId": "PFMH2K8A1B2C3D4E5F",
       "providerPaymentId": "403993715530182741",
-      "provider": "PAYU",
+      "provider": "PHONEPE",
       "purpose": "WALLET_TOPUP",
       "paymentMethod": "ONLINE",
       "amountPaise": 100000,
@@ -152,9 +152,9 @@ Protected with `@UseGuards(JwtAuthGuard)` and `@Roles('ADMIN')`.
 Notes:
 - `providerResponse` is **always** sanitised: `hash`, `salt`, `key`, card
   numbers, tokens are stripped before persistence; only primitive echo values
-  survive. `PAYU_SALT` is never written to the database.
+  survive. No gateway credential is ever written to the database.
 - `walletCredit.transactionId` is the id of the matching `WalletTransaction`
-  ledger row (not the PayU txnid); null when the credit has not been applied.
+  ledger row (not the gateway transaction id); null when the credit has not been applied.
 
 **Errors:** `404 PAYMENT_NOT_FOUND`.
 
@@ -355,8 +355,8 @@ Cancels a cash collection — cash was never received.
 - `CashCollection.status`: `PENDING | COLLECTED → CANCELLED`.
 - **Wallet top-up purpose:** Linked `WalletCreditRequest.status`: `PENDING → CANCELLED` (frees the one-pending-per-wallet slot).
 - **Plan payment purpose:** Linked `PlanSelection.status`: `PENDING_PAYMENT → CANCELLED` and `PlanQuote.status`: `PENDING → CANCELLED`.
-- **No wallet credit, no PayU refund call** — cash was never collected and
-  there is no PayU payment to reverse. Any physical cash that did arrive is
+- **No wallet credit, no gateway refund call** — cash was never collected and
+  there is no online payment to reverse. Any physical cash that did arrive is
   reconciled offline.
 
 **Errors:**
@@ -407,16 +407,21 @@ admin cannot change it.
       WHERE id=:id AND status='SUCCESS'
    (second caller matches 0 rows → 409)
    ↓
-4. PayuService.refundPayment(providerPaymentId, amountPaise, refundToken)
-      - refundToken = `RFND-<transactionId>` (deterministic; PayU dedupes retries)
+4. PhonePeService.refundPayment(transactionId, amountPaise)
+      → POST /apis/pg/payments/v2/refund
+      - merchantRefundId = `RFND-<transactionId>` (deterministic; PhonePe
+        dedupes retries)
+      - originalMerchantOrderId = `<transactionId>`
    ↓
-5. PayU accepts → store providerRefundId
-   PayU refuses  → release claim: REFUND_PENDING → SUCCESS,
-                   refundStatus → REFUND_FAILED, return 409
-   Network error → release claim, bubble up as 5xx
+5. PhonePe accepts (state=PENDING) → store providerRefundId (PhonePe refundId)
+   PhonePe refuses → release claim: REFUND_PENDING → SUCCESS,
+                     refundStatus → REFUND_FAILED, return 409
+   Network error  → release claim, bubble up as 5xx
    ↓
-6. (Asynchronously) PayU sends refund webhook
-      POST /api/v1/payments/webhooks/payu  (status='refunded')
+6. (Asynchronously) PhonePe sends pg.refund.completed to
+      POST /api/v1/payments/webhooks/phonepe
+   The handler re-checks GET /payments/v2/refund/RFND-<txnid>/status and
+   acts only on state=COMPLETED.
    ↓
 7. Payment REFUND_PENDING → REFUNDED, refundedAt=NOW
    WalletCreditRequest.refundStatus → REFUNDED
@@ -429,33 +434,44 @@ admin cannot change it.
 | 404 | `CREDIT_REQUEST_NOT_FOUND` | Unknown id |
 | 409 | `CREDIT_REQUEST_NOT_REJECTED` | The credit request is not in `REJECTED` |
 | 409 | `NO_REFUNDABLE_PAYMENT` | No settled ONLINE payment exists (cash top-up) |
-| 409 | `PROVIDER_PAYMENT_ID_MISSING` | Online payment has no PayU payment reference |
+| 409 | `PROVIDER_PAYMENT_ID_MISSING` | Online payment has no PhonePe order reference |
 | 409 | `REFUND_ALREADY_IN_PROGRESS` | Another request already claimed the refund |
-| 409 | `REFUND_REJECTED_BY_PROVIDER` | PayU refused the refund |
+| 409 | `REFUND_REJECTED_BY_PROVIDER` | PhonePe refused the refund |
 
 **Idempotency:**
 - The `SUCCESS → REFUND_PENDING` conditional update means a second concurrent
   caller fails with `409 REFUND_ALREADY_IN_PROGRESS`.
-- The refund token sent to PayU is `RFND-<transactionId>`, deterministic per
-  payment, so repeated attempts at the provider for the same payment are the
-  same request to PayU rather than two separate refunds.
+- The `merchantRefundId` sent to PhonePe is `RFND-<transactionId>`,
+  deterministic per payment, so repeated attempts at the provider for the same
+  payment are the same request to PhonePe rather than two separate refunds.
 
 ---
 
-## 10. The PayU webhook (public)
+## 10. The PhonePe webhook (public)
 
-PayU calls `POST /api/v1/payments/webhooks/payu` for successful, failed and
-refund events. The admin app does not call this. For completeness:
+PhonePe calls `POST /api/v1/payments/webhooks/phonepe` for the
+`checkout.order.completed` and `checkout.order.failed` events selected in the
+dashboard. The admin app does not call this. For completeness:
 
 - **Public endpoint**, no JWT.
-- Authentication is **PayU hash verification only** — a forged payload returns
+- Authentication is the `Authorization` header only: PhonePe sets it to
+  `SHA256(PHONEPE_WEBHOOK_USERNAME:PHONEPE_WEBHOOK_PASSWORD)`, hex-encoded,
+  and the server compares it in constant time. A mismatch returns
   `403 PAYMENT_SIGNATURE_INVALID`.
+- **The event body is never proof of payment.** After the header check passes,
+  the handler re-reads the outcome from PhonePe's Order Status API over a
+  server-to-server call, and applies only that. An authentic-looking event
+  claiming a success PhonePe does not hold changes nothing.
+- A PhonePe outage during that re-check returns `503`, so PhonePe retries the
+  event rather than treating it as delivered.
 - Idempotent: a replayed webhook matches no row via conditional updates and
   returns `{ outcome: "DUPLICATE" }`.
 - Settles the payment through the exact same state machine as the browser
-  callback, so even if the user closed the tab the webhook still credits the
+  return, so even if the user closed the tab the webhook still credits the
   wallet (for subsequent auto-credit) or holds the credit request pending (for
   first credit).
+
+> The old `POST /api/v1/payments/webhooks/payu` route no longer exists.
 
 ---
 
@@ -474,7 +490,7 @@ refund events. The admin app does not call this. For completeness:
 | 409 | `NO_REFUNDABLE_PAYMENT` | Cash top-up or no settled payment |
 | 409 | `PROVIDER_PAYMENT_ID_MISSING` | Online payment missing providerPaymentId |
 | 409 | `REFUND_ALREADY_IN_PROGRESS` | A refund is in flight |
-| 409 | `REFUND_REJECTED_BY_PROVIDER` | PayU refused the refund |
+| 409 | `REFUND_REJECTED_BY_PROVIDER` | PhonePe refused the refund |
 
 ---
 
@@ -536,7 +552,7 @@ curl -i -X POST \
    customer's wallet view — the wallet now shows the new balance.
 3. For a cash top-up, the refund button must be hidden in the UI. Cash
    refunds happen offline.
-4. Treat `REFUND_PENDING` as "awaiting PayU confirmation". Only when the
+4. Treat `REFUND_PENDING` as "awaiting PhonePe confirmation". Only when the
    payment lands in `REFUNDED` should the UI show "Refund complete".
 5. The admin **cannot** change a refund amount — it always matches the stored
    `Payment.amountPaise`. If the UI shows an input for refund amount, remove

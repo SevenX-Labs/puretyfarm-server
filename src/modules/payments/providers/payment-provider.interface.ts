@@ -24,15 +24,38 @@ export interface CreateProviderPaymentInput {
 
 /**
  * Everything the frontend needs to hand the customer to hosted checkout.
- * Contains no secret: the salt is used only to compute `fields.hash`.
+ * Contains no secret.
+ *
+ * Two shapes, distinguished by `method`, so one contract covers both kinds of
+ * hosted checkout this project has used:
+ *
+ *  - `POST`     — a signed browser form POST. `endpoint` is the form action and
+ *                 `fields` are the exact fields to submit (PayU Hosted
+ *                 Checkout).
+ *  - `REDIRECT` — a provider-generated one-time URL. `redirectUrl` (and
+ *                 `endpoint`, which carries the same value) is where the
+ *                 browser must be navigated; `fields` is empty (PhonePe
+ *                 Standard Checkout v2).
  */
 export interface ProviderCheckoutInstruction {
-  /** Form action URL to POST the fields to. */
+  /**
+   * Where to send the customer: the form action for `POST`, or the checkout
+   * URL for `REDIRECT`. Always populated, for both shapes.
+   */
   endpoint: string;
-  /** HTTP method the form must use. */
-  method: 'POST';
-  /** Exact form fields, including the server-computed hash. */
+  /** How the frontend must hand the customer over. */
+  method: 'POST' | 'REDIRECT';
+  /** Exact form fields for a `POST` checkout. Empty for `REDIRECT`. */
   fields: Record<string, string>;
+  /**
+   * The checkout URL to navigate to, present only for `REDIRECT`. Duplicated
+   * from `endpoint` so a client can branch on the field it recognises.
+   */
+  redirectUrl?: string;
+  /** Provider-side order/transaction reference, when known at creation time. */
+  providerOrderId?: string;
+  /** Epoch milliseconds after which the provider will reject this checkout. */
+  expiresAt?: number;
 }
 
 /** Normalised outcome of verifying an untrusted provider message. */

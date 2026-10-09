@@ -50,20 +50,51 @@ export function validateEnv(
   requireNonEmpty('GEOAPIFY_API_KEY');
   requireNonEmpty('GEOAPIFY_BASE_URL');
 
-  // PayU merchant credentials. Required so a misconfigured deployment fails at
-  // boot rather than when a customer tries to pay. PAYU_SALT is the signing
-  // secret: it is read here only to assert presence, and is never logged,
-  // persisted, or returned in any API response.
+  // PhonePe merchant credentials (the ACTIVE payment gateway). Required so a
+  // misconfigured deployment fails at boot rather than when a customer tries
+  // to pay. The secrets are read here only to assert presence, and are never
+  // logged, persisted, or returned in any API response.
+  requireNonEmpty('PHONEPE_CLIENT_ID');
+  requireNonEmpty('PHONEPE_CLIENT_SECRET');
+  requireNonEmpty('PHONEPE_CLIENT_VERSION');
+
+  // PhonePe webhook credentials, as configured against the webhook URL in the
+  // PhonePe dashboard. PhonePe authenticates each webhook by setting the
+  // Authorization header to SHA256(username:password), so without these the
+  // webhook endpoint cannot authenticate anything and would reject every
+  // event. Required at boot for exactly that reason.
+  requireNonEmpty('PHONEPE_WEBHOOK_USERNAME');
+  requireNonEmpty('PHONEPE_WEBHOOK_PASSWORD');
+
+  // PhonePe environment selector. Optional: the provider defaults to
+  // PRODUCTION, so an unset value never silently points live traffic at the
+  // sandbox. Validated only when present, so a typo cannot do so either.
+  const phonePeEnv = config['PHONEPE_ENV'];
+  if (phonePeEnv !== undefined) {
+    const allowed = ['PRODUCTION', 'SANDBOX', 'UAT', 'PREPROD'];
+    if (
+      typeof phonePeEnv !== 'string' ||
+      !allowed.includes(phonePeEnv.trim().toUpperCase())
+    ) {
+      errors.push(`PHONEPE_ENV must be one of: ${allowed.join(', ')}`);
+    }
+  }
+
+  // PayU merchant credentials. PayU is DEPRECATED and no longer on the active
+  // payment path, but these stay required until the PhonePe cutover has been
+  // validated in production, so a rollback needs only a module rebinding and
+  // not a credential hunt. Remove these two lines, and the PayU provider
+  // files, once PhonePe is confirmed live.
   requireNonEmpty('PAYU_KEY');
   requireNonEmpty('PAYU_SALT');
 
-  // Public base URL of THIS API. Used to build the PayU `surl`/`furl` callback
-  // URLs server-side so a client can never redirect a payment result anywhere
-  // of its choosing.
+  // Public base URL of THIS API. Used to build the gateway's browser return
+  // URL server-side (PhonePe `redirectUrl`, formerly PayU `surl`/`furl`) so a
+  // client can never redirect a payment result anywhere of its choosing.
   const apiBaseUrl = requireNonEmpty('PUBLIC_API_BASE_URL');
 
-  // Frontend page the customer's browser is redirected to after PayU posts the
-  // result back. Must be absolute so the 302 cannot be turned into an open
+  // Frontend page the customer's browser is redirected to after the gateway
+  // returns them. Must be absolute so the 302 cannot be turned into an open
   // redirect by a relative path.
   const resultRedirectUrl = requireNonEmpty('PAYMENT_RESULT_REDIRECT_URL');
 

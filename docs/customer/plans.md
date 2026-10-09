@@ -485,7 +485,7 @@ Delivers every alternate day with alternating quantities: $Q_A$ on delivery 1, $
 ### ────────────────────────────────────────────────────────
 Confirms a valid server-generated quote and initiates payment. All plans are **prepaid** — the quoted total covers all scheduled deliveries. The customer chooses `WALLET` or `CASH` as the payment method.
 
-There is **no direct PayU checkout for plan purchases**. PayU is used only for wallet top-ups (Add Money). To pay a plan with wallet, the customer must first have sufficient balance.
+There is **no direct gateway checkout for plan purchases**. PhonePe is used only for wallet top-ups (Add Money). To pay a plan with wallet, the customer must first have sufficient balance.
 
 - **Method**: `POST`
 - **Path**: `/api/v1/customer/plans/confirm`
@@ -530,7 +530,7 @@ Wallet is atomically debited by the quoted total. Plan is confirmed and deliveri
 }
 ```
 
-When this happens, the customer must first top up their wallet using `POST /api/v1/customer/payments/create` with `paymentMethod: "ONLINE"` (PayU). After the wallet is credited, the customer returns and confirms the plan with `paymentMethod: "WALLET"`.
+When this happens, the customer must first top up their wallet using `POST /api/v1/customer/payments/create` with `paymentMethod: "ONLINE"` (PhonePe). After the wallet is credited, the customer returns and confirms the plan with `paymentMethod: "WALLET"`.
 
 **First wallet top-up** always requires admin approval before the wallet is credited. Subsequent verified online top-ups auto-credit based on the customer's `Wallet.autoCreditEnabled` flag (see `docs/customer/wallet.md` §3).
 
@@ -765,7 +765,7 @@ curl -i -X POST "$BASE_URL/confirm" \
 
 ## 3B. Plan payment & prepaid delivery model
 
-All plans are **prepaid**. The quoted total covers all deliveries. The customer pays at confirmation time via WALLET or CASH — there is no direct PayU checkout for plan purchases.
+All plans are **prepaid**. The quoted total covers all deliveries. The customer pays at confirmation time via WALLET or CASH — there is no direct gateway checkout for plan purchases.
 
 ### Payment methods for plans
 
@@ -776,13 +776,13 @@ All plans are **prepaid**. The quoted total covers all deliveries. The customer 
 
 ### Insufficient wallet balance
 
-If the wallet balance is less than the quoted total, the confirm endpoint returns `INSUFFICIENT_WALLET_BALANCE` with `currentBalancePaise`, `requiredPaise`, and `shortfallPaise`. The customer must first top up via `POST /api/v1/customer/payments/create` with `paymentMethod: "ONLINE"` (PayU wallet top-up), then return and confirm with WALLET.
+If the wallet balance is less than the quoted total, the confirm endpoint returns `INSUFFICIENT_WALLET_BALANCE` with `currentBalancePaise`, `requiredPaise`, and `shortfallPaise`. The customer must first top up via `POST /api/v1/customer/payments/create` with `paymentMethod: "ONLINE"` (PhonePe wallet top-up), then return and confirm with WALLET.
 
 ### Wallet top-up rules
 
 - **First wallet credit** always requires admin approval, regardless of plan type.
 - **Subsequent verified online top-ups** auto-credit per the customer's `Wallet.autoCreditEnabled` flag (see `docs/customer/wallet.md` §3).
-- PayU is used **only** for wallet top-ups (Add Money), never for direct plan checkout.
+- PhonePe is used **only** for wallet top-ups (Add Money), never for direct plan checkout.
 
 ### Monthly prepaid
 

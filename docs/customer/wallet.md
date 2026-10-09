@@ -4,7 +4,7 @@ Complete customer-facing reference for the PuretyFarm Wallet module. The
 frontend should implement wallet UI strictly from this document.
 
 > **Related docs:**
-> - `docs/customer/payments.md` — how money enters the wallet (PayU / Cash)
+> - `docs/customer/payments.md` — how money enters the wallet (PhonePe / Cash)
 > - `docs/admin/wallet.md` — admin approval, rejection and auto-refund flow
 
 ---
@@ -13,7 +13,7 @@ frontend should implement wallet UI strictly from this document.
 
 Each customer has one `Wallet` holding a prepaid INR balance in **integer
 paise** (₹1 = 100 paise). The wallet is credited through the Payment module
-(PayU online or physical cash) and may be debited by future order payments.
+(PhonePe online or physical cash) and may be debited by future order payments.
 
 ### Key concepts
 
@@ -104,9 +104,9 @@ setting**; one customer's state never affects another.
 ```text
 Customer → POST /customer/payments/create (ONLINE)
    ↓
-PayU Hosted Checkout
+PhonePe Standard Checkout
    ↓
-PayU SUCCESS
+PhonePe order COMPLETED
    ↓
 Payment SUCCESS                        ← money collected
    ↓
@@ -125,7 +125,7 @@ autoCreditEnabled → true                   - flag flipped
 ```text
 Customer → POST /customer/payments/create (ONLINE)
    ↓
-PayU SUCCESS
+PhonePe order COMPLETED
    ↓
 Payment SUCCESS
    ↓
@@ -141,7 +141,7 @@ WalletTransaction CREDIT
 ```text
 Customer → POST /customer/payments/create (CASH)
    ↓
-CashCollection PENDING                   ← no PayU, no Payment row
+CashCollection PENDING                   ← no gateway, no Payment row
    ↓
 Delivery partner collects physical cash
    ↓
@@ -156,7 +156,7 @@ autoCreditEnabled → true (if first)
 ### First online credit — rejected (auto-refund)
 
 ```text
-PayU SUCCESS → Payment SUCCESS → WalletCreditRequest PENDING
+PhonePe order COMPLETED → Payment SUCCESS → WalletCreditRequest PENDING
    ↓
 Admin → POST /admin/wallet/credit-requests/:id/reject (with note)
    ↓
@@ -164,9 +164,9 @@ WalletCreditRequest REJECTED, refundStatus=REFUND_PENDING
    ↓
 (same request) PaymentsService.initiateRefundIfApplicable
    ↓
-Payment SUCCESS → REFUND_PENDING, PayU refund API called
+Payment SUCCESS → REFUND_PENDING, PhonePe refund API called
    ↓
-PayU refund webhook arrives (verified)
+PhonePe refund confirmed (re-verified via the refund status API)
    ↓
 Payment REFUNDED, WalletCreditRequest refundStatus=REFUNDED
 Wallet balance never changed; autoCreditEnabled stays false
@@ -193,15 +193,15 @@ Wallet balance never changed; autoCreditEnabled stays false
 | `PENDING` | Awaiting admin approval, cash confirmation, or verified ONLINE auto-credit | no |
 | `COMPLETED` | Wallet was credited | yes |
 | `REJECTED` | Admin rejected; refund workflow started for online top-ups | yes |
-| `CANCELLED` | Funding never arrived (PayU payment failed/cancelled/expired, or cash collection cancelled). No refund. | yes |
+| `CANCELLED` | Funding never arrived (online payment failed/cancelled/expired, or cash collection cancelled). No refund. | yes |
 
 Refund status (only relevant for `REJECTED`):
 
 | `refundStatus` | Meaning |
 |----------------|---------|
 | `NOT_REQUIRED` | Default; no money was ever collected |
-| `REFUND_PENDING` | PayU refund has been requested |
-| `REFUNDED` | PayU refund webhook confirmed |
+| `REFUND_PENDING` | A PhonePe refund has been requested |
+| `REFUNDED` | PhonePe confirmed the refund `COMPLETED` |
 | `REFUND_FAILED` | Provider refused the refund request |
 
 ---
@@ -243,7 +243,7 @@ Field notes:
 
 Direct wallet credit request. This is the **unverified** path — it exists for
 legacy flows and is subject to the same first-credit rule as the Payment
-module. For actual money collection via PayU or cash, use
+module. For actual money collection via PhonePe or cash, use
 `POST /customer/payments/create` instead.
 
 **Headers:**
@@ -435,12 +435,12 @@ Standard infrastructure errors:
    key on network errors — the server deduplicates.
 2. Treat `autoCreditEnabled: false` as the default new-user state. Show
    "pending admin approval" messaging after any first credit request.
-3. Treat `autoCreditEnabled: true` as a signal that a successful PayU payment
+3. Treat `autoCreditEnabled: true` as a signal that a successful PhonePe payment
    will land in the wallet immediately, so the UI can show "Wallet credited"
    on the result page.
 4. Never read `balancePaise` from your own cache after a payment attempt —
-   always refetch `GET /customer/wallet` on return from PayU to see the real
+   always refetch `GET /customer/wallet` on return from PhonePe to see the real
    state.
 5. For the "payment success + wallet pending" case (first credit), the UI must
-   show two distinct messages: "Payment Successful" (the money reached PayU)
+   show two distinct messages: "Payment Successful" (the money reached PhonePe)
    and "Wallet Credit Awaiting Approval" (the admin has not approved yet).

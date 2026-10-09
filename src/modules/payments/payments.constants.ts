@@ -6,9 +6,18 @@
  * and DTOs do not import generated Prisma types directly.
  */
 
+/**
+ * Payment gateways this project has used. PHONEPE is the active one;
+ * PAYU is retained so historical Payment rows still deserialise and so the
+ * cutover can be rolled back without a migration.
+ */
 export enum PaymentProviderType {
   PAYU = 'PAYU',
+  PHONEPE = 'PHONEPE',
 }
+
+/** The gateway new payments are created against. */
+export const ACTIVE_PAYMENT_PROVIDER = PaymentProviderType.PHONEPE;
 
 export enum PaymentPurpose {
   ORDER = 'ORDER',
@@ -87,15 +96,19 @@ export const PAYMENT_RETRYABLE_STATUSES: PaymentTransactionStatus[] = [
 export const PAYMENT_TXNID_PREFIX = 'PF';
 
 /**
- * PayU rejects a `txnid` longer than 25 characters. The generator is built to
- * stay comfortably inside that bound.
+ * PayU rejected a `txnid` longer than 25 characters; PhonePe allows a
+ * `merchantOrderId` of up to 63. The tighter bound is kept so the generated id
+ * stays valid for either gateway during the rollback window.
  */
 export const PAYMENT_TXNID_MAX_LENGTH = 25;
 
 /** How long a created-but-unpaid payment stays claimable before it expires. */
 export const PAYMENT_EXPIRY_MINUTES_DEFAULT = 30;
 
-/** `productinfo` sent to PayU for a wallet top-up. Never customer-controlled. */
+/**
+ * Payment description sent to the gateway for a wallet top-up (PayU
+ * `productinfo`, PhonePe `metaInfo.udf1`). Never customer-controlled.
+ */
 export const PAYMENT_WALLET_TOPUP_PRODUCT_INFO = 'PuretyFarm Wallet Top-up';
 
 /** Only INR is supported today. */
@@ -110,6 +123,12 @@ export const PROVIDER_RESPONSE_REDACTED_KEYS: string[] = [
   'hash',
   'salt',
   'key',
+  // PhonePe: the webhook Authorization digest and OAuth bearer material.
+  'authorization',
+  'access_token',
+  'accesstoken',
+  'client_secret',
+  'clientsecret',
   'card_token',
   'cardtoken',
   'cardnum',
