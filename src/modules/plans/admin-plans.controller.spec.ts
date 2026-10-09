@@ -69,7 +69,7 @@ describe("AdminPlansController", () => {
   it("exposes no create or delete route (plan types are fixed)", () => {
     const methods = Object.getOwnPropertyNames(AdminPlansController.prototype);
     expect(methods.sort()).toEqual(
-      ["constructor", "getPlan", "getPlans", "updatePlan"].sort(),
+      ["constructor", "getPlan", "getPlans", "getSubscriptions", "updatePlan"].sort(),
     );
   });
 

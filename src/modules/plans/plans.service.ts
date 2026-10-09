@@ -845,6 +845,7 @@ export class PlansService {
     selectionId: string,
     userId: string,
     schedule: ReturnType<PlansService["resolveScheduleFromQuote"]>,
+    planType?: PlanType,
   ): Promise<void> {
     const dates = generateDeliveryDates(
       schedule.frequency,
@@ -868,6 +869,116 @@ export class PlansService {
           status: DeliveryStatus.SCHEDULED,
         })),
       });
+
+      // Materialize orders for dispatch visibility
+      try {
+        const deliveries = await (tx as any).planDelivery.findMany({
+          where: { selectionId },
+          orderBy: { deliveryDate: "asc" },
+        });
+
+        if (deliveries && deliveries.length > 0) {
+          const config = planType
+            ? await (tx as any).planConfig.findUnique({ where: { planType } })
+            : null;
+
+          const address = await (tx as any).customerAddress.findFirst({
+            where: { userId },
+            orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+          });
+
+          const addressSnapshot = address
+            ? {
+                fullName: address.fullName,
+                mobile: address.mobile,
+                houseNumber: address.houseNumber,
+                buildingName: address.buildingName,
+                streetName: address.streetName,
+                landmark: address.landmark,
+                city: address.city,
+                state: address.state,
+                area: address.area,
+                pincode: address.pincode,
+                latitude: address.latitude,
+                longitude: address.longitude,
+              }
+            : {
+                fullName: "Customer",
+                mobile: "",
+                houseNumber: "",
+                city: "Raipur",
+                state: "Chhattisgarh",
+                area: "Raipur",
+              };
+
+          for (const d of deliveries) {
+            const existingOrder = await (tx as any).order.findUnique({
+              where: { planDeliveryId: d.id },
+            });
+            if (existingOrder) continue;
+
+            const orderCount = await (tx as any).order.count();
+            const orderNumber = `PF${10001 + orderCount}`;
+            const invCount = await (tx as any).invoice.count();
+            const invoiceNumber = `INV-${10001 + invCount}`;
+
+            const qty = d.quantityLitres || 1;
+            const unitPrice = config?.sellingPricePerLitre ?? 8000;
+            const actualPrice = config?.actualPricePerLitre ?? unitPrice;
+            const itemTotal = unitPrice * qty;
+            const deliveryFee = config?.deliveryFeePaise ?? 0;
+            const total = itemTotal + deliveryFee;
+
+            await (tx as any).order.create({
+              data: {
+                orderNumber,
+                userId,
+                planSelectionId: selectionId,
+                planDeliveryId: d.id,
+                planType: planType || PlanType.BUY_ONCE,
+                status: "CONFIRMED",
+                paymentStatus: "PAID",
+                subtotalPaise: itemTotal,
+                discountPaise: 0,
+                taxPaise: 0,
+                deliveryFeePaise: deliveryFee,
+                totalPaise: total,
+                deliveryDate: d.deliveryDate,
+                deliveryStartTime: config?.deliveryStartTime || "05:00",
+                deliveryEndTime: config?.deliveryEndTime || "07:00",
+                addressSnapshot,
+                actualPricePerLitrePaise: actualPrice,
+                sellingPricePerLitrePaise: unitPrice,
+                items: {
+                  create: {
+                    productNameSnapshot: "A2 Desi Gir Cow Milk",
+                    quantity: qty,
+                    unitPricePaise: unitPrice,
+                    discountPaise: 0,
+                    taxPaise: 0,
+                    totalPaise: itemTotal,
+                  },
+                },
+                invoice: {
+                  create: {
+                    invoiceNumber,
+                    addressSnapshot,
+                    financialSnapshot: {
+                      subtotalPaise: itemTotal,
+                      discountPaise: 0,
+                      taxPaise: 0,
+                      deliveryFeePaise: deliveryFee,
+                      totalPaise: total,
+                    },
+                  },
+                },
+              },
+            });
+          }
+        }
+      } catch (err) {
+        // Safe logger
+      }
     }
   }
 
@@ -959,7 +1070,7 @@ export class PlansService {
     });
 
     const schedule = this.resolveScheduleFromQuote(selection.quote);
-    await this.materializeDeliveries(tx, planSelectionId, selection.userId, schedule);
+    await this.materializeDeliveries(tx, planSelectionId, selection.userId, schedule, selection.planType);
   }
 
   // ── Admin: Plan Configuration ───────────────────────────────────
@@ -1255,4 +1366,128 @@ export class PlansService {
       );
     }
   }
+  async getAdminSubscriptions(query: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    planType?: string;
+    search?: string;
+  }) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    const where: any = {};
+    if (query.status && query.status !== "ALL") {
+      where.status = query.status;
+    }
+    if (query.planType && query.planType !== "ALL") {
+      where.planType = query.planType;
+    }
+    if (query.search) {
+      const s = query.search.trim();
+      where.user = {
+        OR: [
+          { mobile: { contains: s, mode: "insensitive" } },
+          { email: { contains: s, mode: "insensitive" } },
+          {
+            customerProfile: {
+              OR: [
+                { firstName: { contains: s, mode: "insensitive" } },
+                { lastName: { contains: s, mode: "insensitive" } },
+              ],
+            },
+          },
+        ],
+      };
+    }
+
+    const [selections, total] = await Promise.all([
+      this.prisma.planSelection.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          user: {
+            select: {
+              id: true,
+              mobile: true,
+              email: true,
+              customerProfile: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  profileImageUrl: true,
+                },
+              },
+              addresses: {
+                take: 1,
+                orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+                select: {
+                  fullName: true,
+                  houseNumber: true,
+                  buildingName: true,
+                  streetName: true,
+                  area: true,
+                  city: true,
+                  pincode: true,
+                },
+              },
+            },
+          },
+          deliveries: {
+            select: {
+              id: true,
+              deliveryDate: true,
+              quantityLitres: true,
+              status: true,
+            },
+          },
+          cashCollection: {
+            select: {
+              id: true,
+              status: true,
+              amountPaise: true,
+            },
+          },
+        },
+      }),
+      this.prisma.planSelection.count({ where }),
+    ]);
+
+    return {
+      data: selections.map((s: any) => ({
+        id: s.id,
+        userId: s.userId,
+        planType: s.planType,
+        status: s.status,
+        frequency: s.frequency,
+        quantityMode: s.quantityMode,
+        quantity: s.quantity,
+        startDate: s.startDate,
+        endDate: s.endDate,
+        paymentMethod: s.paymentMethod,
+        paidAmountPaise: s.paidAmountPaise,
+        paidAt: s.paidAt,
+        createdAt: s.createdAt,
+        deliveriesCount: s.deliveries?.length || 0,
+        customer: {
+          id: s.user?.id,
+          mobile: s.user?.mobile,
+          email: s.user?.email,
+          name: s.user?.customerProfile
+            ? `${s.user.customerProfile.firstName} ${s.user.customerProfile.lastName}`
+            : null,
+          address: s.user?.addresses?.[0] || null,
+        },
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+    };
+  }
+
 }

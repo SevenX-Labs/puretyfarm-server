@@ -8,6 +8,7 @@ import {
   Param,
   ParseEnumPipe,
   Patch,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import { PlansService } from "./plans.service";
@@ -36,6 +37,24 @@ const planTypePipe = new ParseEnumPipe(PlanType, {
 @Roles("ADMIN")
 export class AdminPlansController {
   constructor(private readonly plansService: PlansService) {}
+
+  @Get("subscriptions")
+  @HttpCode(HttpStatus.OK)
+  async getSubscriptions(
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("status") status?: string,
+    @Query("planType") planType?: string,
+    @Query("search") search?: string,
+  ) {
+    return this.plansService.getAdminSubscriptions({
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 20,
+      status,
+      planType,
+      search,
+    });
+  }
 
   @Get()
   @HttpCode(HttpStatus.OK)
