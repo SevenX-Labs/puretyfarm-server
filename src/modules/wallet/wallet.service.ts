@@ -114,15 +114,38 @@ export class WalletService {
     tx?: Prisma.TransactionClient,
   ) {
     const client = tx || this.prisma;
-    return client.wallet.upsert({
-      where: { userId },
-      create: { userId },
-      update: {},
-    });
+    try {
+      return await client.wallet.upsert({
+        where: { userId },
+        create: { userId },
+        update: {},
+      });
+    } catch (err) {
+      // Prisma's upsert is find-then-insert-or-update at the application layer,
+      // so two concurrent calls for the same user can both race past the find
+      // and collide on the unique `userId` insert. The loser re-fetches.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const wallet = await client.wallet.findUnique({ where: { userId } });
+        if (wallet) return wallet;
+      }
+      throw err;
+    }
   }
 
   async getWallet(userId: string) {
-    const wallet = await this.getOrCreateWallet(userId);
+    const wallet = await this.prisma.wallet.findUnique({ where: { userId } });
+    if (!wallet) {
+      const now = new Date();
+      return {
+        balancePaise: 0,
+        currency: 'INR',
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
     return {
       balancePaise: wallet.balancePaise,
       currency: 'INR',
@@ -283,7 +306,13 @@ export class WalletService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
-    const wallet = await this.getOrCreateWallet(userId);
+    const wallet = await this.prisma.wallet.findUnique({ where: { userId } });
+    if (!wallet) {
+      return {
+        data: [],
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      };
+    }
 
     const where: any = { walletId: wallet.id };
     if (query.type) where.type = query.type;
@@ -330,7 +359,13 @@ export class WalletService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
-    const wallet = await this.getOrCreateWallet(userId);
+    const wallet = await this.prisma.wallet.findUnique({ where: { userId } });
+    if (!wallet) {
+      return {
+        data: [],
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      };
+    }
 
     const where: any = { walletId: wallet.id };
     if (query.status) where.status = query.status;
