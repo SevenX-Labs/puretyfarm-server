@@ -140,3 +140,14 @@ export const PROVIDER_RESPONSE_REDACTED_KEYS: string[] = [
   'ccexpyr',
   'token',
 ];
+
+/**
+ * Interactive-transaction budget for admin cash-collection confirmation.
+ *
+ * Confirming cash for a PLAN materialises a delivery, an order and an invoice
+ * per occurrence, which is well over a hundred sequential statements for a long
+ * plan. Prisma's 5s default tripped P2028 part-way through and rolled the whole
+ * confirmation back, so this path states its own budget explicitly.
+ */
+export const CASH_CONFIRM_TX_MAX_WAIT_MS = 10_000;
+export const CASH_CONFIRM_TX_TIMEOUT_MS = 60_000;

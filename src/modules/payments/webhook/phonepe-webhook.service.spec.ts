@@ -1,3 +1,7 @@
+jest.mock('@nestjs/config', () => ({
+  ConfigService: jest.fn().mockImplementation(() => ({ get: jest.fn() })),
+}));
+
 import {
   BadRequestException,
   ForbiddenException,

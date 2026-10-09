@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -29,6 +30,8 @@ import type {
 } from './providers/payment-provider.interface';
 import {
   ACTIVE_PAYMENT_PROVIDER,
+  CASH_CONFIRM_TX_MAX_WAIT_MS,
+  CASH_CONFIRM_TX_TIMEOUT_MS,
   CashCollectionStatus,
   PAYMENT_CURRENCY,
   PAYMENT_EXPIRY_MINUTES_DEFAULT,
@@ -1644,8 +1647,8 @@ export class PaymentsService {
       // Benign: cash requests have no settled online Payment to refund, and a
       // retried rejection may hit "already in progress".
       if (error && typeof error === 'object' && 'response' in error) {
-        const code = ((error as { response: { error?: string } }).response
-          ?.error) as string | undefined;
+        const code = (error as { response: { error?: string } }).response
+          ?.error as string | undefined;
         if (
           code === 'NO_REFUNDABLE_PAYMENT' ||
           code === 'REFUND_ALREADY_IN_PROGRESS' ||
@@ -2030,7 +2033,9 @@ export class PaymentsService {
       include: {
         user: { select: this.customerSelect },
         walletCreditRequest: { include: { transaction: true } },
-        planSelection: { select: { id: true, status: true, planType: true, paidAt: true } },
+        planSelection: {
+          select: { id: true, status: true, planType: true, paidAt: true },
+        },
       },
     });
 
@@ -2045,7 +2050,9 @@ export class PaymentsService {
       id: collection.id,
       amountPaise: collection.amountPaise,
       status: collection.status,
-      purpose: collection.walletCreditRequestId ? 'WALLET_TOPUP' : 'PLAN_PAYMENT',
+      purpose: collection.walletCreditRequestId
+        ? 'WALLET_TOPUP'
+        : 'PLAN_PAYMENT',
       collectedAt: collection.collectedAt,
       confirmedAt: collection.confirmedAt,
       confirmedByAdminId: collection.confirmedByAdminId,
@@ -2094,128 +2101,176 @@ export class PaymentsService {
     dto: ConfirmCashCollectionDto,
   ) {
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const now = new Date();
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const now = new Date();
 
-        const claimed = await tx.cashCollection.updateMany({
-          where: {
-            id,
-            status: {
-              in: [CashCollectionStatus.PENDING, CashCollectionStatus.COLLECTED],
+          const claimed = await tx.cashCollection.updateMany({
+            where: {
+              id,
+              status: {
+                in: [
+                  CashCollectionStatus.PENDING,
+                  CashCollectionStatus.COLLECTED,
+                ],
+              },
             },
-          },
-          data: {
-            status: CashCollectionStatus.CONFIRMED,
-            collectedAt: now,
-            confirmedAt: now,
-            confirmedByAdminId: adminId,
-            adminNote: dto.note ?? null,
-          },
-        });
+            data: {
+              status: CashCollectionStatus.CONFIRMED,
+              collectedAt: now,
+              confirmedAt: now,
+              confirmedByAdminId: adminId,
+              adminNote: dto.note ?? null,
+            },
+          });
 
-        if (claimed.count === 0) {
-          const existing = await tx.cashCollection.findUnique({ where: { id } });
-          if (!existing) {
-            throw new NotFoundException({
-              error: 'CASH_COLLECTION_NOT_FOUND',
-              message: 'Cash collection not found',
+          if (claimed.count === 0) {
+            const existing = await tx.cashCollection.findUnique({
+              where: { id },
+            });
+            if (!existing) {
+              throw new NotFoundException({
+                error: 'CASH_COLLECTION_NOT_FOUND',
+                message: 'Cash collection not found',
+              });
+            }
+            throw new ConflictException({
+              error: 'CASH_COLLECTION_ALREADY_PROCESSED',
+              message: `Cash collection has already been ${existing.status.toLowerCase()}`,
             });
           }
-          throw new ConflictException({
-            error: 'CASH_COLLECTION_ALREADY_PROCESSED',
-            message: `Cash collection has already been ${existing.status.toLowerCase()}`,
+
+          const collection = await tx.cashCollection.findUniqueOrThrow({
+            where: { id },
           });
-        }
 
-        const collection = await tx.cashCollection.findUniqueOrThrow({
-          where: { id },
-        });
+          // Route by purpose: wallet top-up vs plan payment.
+          if (collection.walletCreditRequestId) {
+            const credit = await this.walletService.creditConfirmedCashRequest(
+              tx,
+              collection.walletCreditRequestId,
+              adminId,
+            );
 
-        // Route by purpose: wallet top-up vs plan payment.
-        if (collection.walletCreditRequestId) {
-          const credit = await this.walletService.creditConfirmedCashRequest(
-            tx,
-            collection.walletCreditRequestId,
-            adminId,
-          );
+            this.logger.log(
+              `Cash collection confirmed (wallet top-up) cashCollectionId=${collection.id} ` +
+                `creditRequestId=${collection.walletCreditRequestId} ` +
+                `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
+                `adminId=${adminId}`,
+            );
 
-          this.logger.log(
-            `Cash collection confirmed (wallet top-up) cashCollectionId=${collection.id} ` +
-              `creditRequestId=${collection.walletCreditRequestId} ` +
-              `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
-              `adminId=${adminId}`,
-          );
+            return {
+              success: true,
+              message: 'Cash confirmed and wallet credited.',
+              cashCollection: {
+                id: collection.id,
+                status: CashCollectionStatus.CONFIRMED,
+                amountPaise: collection.amountPaise,
+                confirmedAt: collection.confirmedAt,
+              },
+              walletCredit: credit.request,
+            };
+          }
 
-          return {
-            success: true,
-            message: 'Cash confirmed and wallet credited.',
-            cashCollection: {
-              id: collection.id,
-              status: CashCollectionStatus.CONFIRMED,
-              amountPaise: collection.amountPaise,
-              confirmedAt: collection.confirmedAt,
-            },
-            walletCredit: credit.request,
-          };
-        }
+          // Plan payment cash confirmation.
+          if (collection.planSelectionId) {
+            await this.plansService.confirmPlanAfterCashPayment(
+              tx,
+              collection.planSelectionId,
+              { id: collection.id, amountPaise: collection.amountPaise },
+            );
 
-        // Plan payment cash confirmation.
-        if (collection.planSelectionId) {
-          await this.plansService.confirmPlanAfterCashPayment(
-            tx,
-            collection.planSelectionId,
-            { id: collection.id, amountPaise: collection.amountPaise },
-          );
+            this.logger.log(
+              `Cash collection confirmed (plan payment) cashCollectionId=${collection.id} ` +
+                `planSelectionId=${collection.planSelectionId} ` +
+                `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
+                `adminId=${adminId}`,
+            );
 
-          this.logger.log(
-            `Cash collection confirmed (plan payment) cashCollectionId=${collection.id} ` +
-              `planSelectionId=${collection.planSelectionId} ` +
-              `userId=${collection.userId} amountPaise=${collection.amountPaise} ` +
-              `adminId=${adminId}`,
-          );
+            return {
+              success: true,
+              message: 'Cash confirmed and plan activated.',
+              cashCollection: {
+                id: collection.id,
+                status: CashCollectionStatus.CONFIRMED,
+                amountPaise: collection.amountPaise,
+                confirmedAt: collection.confirmedAt,
+              },
+            };
+          }
 
-          return {
-            success: true,
-            message: 'Cash confirmed and plan activated.',
-            cashCollection: {
-              id: collection.id,
-              status: CashCollectionStatus.CONFIRMED,
-              amountPaise: collection.amountPaise,
-              confirmedAt: collection.confirmedAt,
-            },
-          };
-        }
-
-        throw new BadRequestException({
-          error: 'CASH_COLLECTION_NO_PURPOSE',
-          message: 'Cash collection has no linked purpose (neither wallet nor plan)',
-        });
-      });
+          throw new BadRequestException({
+            error: 'CASH_COLLECTION_NO_PURPOSE',
+            message:
+              'Cash collection has no linked purpose (neither wallet nor plan)',
+          });
+        },
+        // The plan branch materialises one delivery, order and invoice per
+        // occurrence, so a long plan issues well over a hundred sequential
+        // statements against a remote database. Prisma's 5s default aborted
+        // that mid-flight (P2028) and rolled back a confirmation the admin had
+        // already been told to expect, so this path gets an explicit budget.
+        {
+          maxWait: CASH_CONFIRM_TX_MAX_WAIT_MS,
+          timeout: CASH_CONFIRM_TX_TIMEOUT_MS,
+        },
+      );
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
       }
+
+      // Every failure below rolled the transaction back, so no cash was
+      // confirmed, no wallet credited and no plan activated. The reference is
+      // logged alongside the stack so an admin can quote it to support and
+      // land on the exact entry.
+      const reference = randomBytes(4).toString('hex');
+      const context = `cashCollectionId=${id} adminId=${adminId} reference=${reference}`;
+
       if (error instanceof Prisma.PrismaClientKnownRequestError) {
         this.logger.error(
-          `Cash confirmation failed cashCollectionId=${id} ` +
+          `Cash confirmation failed ${context} ` +
             `prismaCode=${error.code} meta=${JSON.stringify(error.meta)}`,
           error.stack,
         );
+
         if (error.code === 'P2002') {
           throw new ConflictException({
             error: 'CASH_CONFIRMATION_CONFLICT',
-            message: 'This cash collection has already been processed or a related record already exists',
+            message:
+              'This cash collection has already been processed or a related record already exists',
             detail: error.meta,
+            reference,
           });
         }
+
+        // P2028 is the interactive-transaction timeout. Nothing was committed,
+        // so this is safe — and correct — to retry.
+        if (error.code === 'P2028') {
+          throw new ServiceUnavailableException({
+            error: 'CASH_CONFIRMATION_TIMED_OUT',
+            message:
+              'Confirmation took too long and was rolled back. No cash was ' +
+              'confirmed and nothing was credited — please try again.',
+            retryable: true,
+            reference,
+          });
+        }
+      } else {
+        this.logger.error(
+          `Cash confirmation failed ${context}`,
+          error instanceof Error ? error.stack : error,
+        );
       }
-      this.logger.error(
-        `Cash confirmation failed cashCollectionId=${id} adminId=${adminId}`,
-        error instanceof Error ? error.stack : error,
-      );
+
       throw new BadRequestException({
         error: 'CASH_CONFIRMATION_FAILED',
-        message: error instanceof Error ? error.message : 'Cash confirmation failed unexpectedly',
+        message:
+          'Cash confirmation could not be completed. Nothing was credited, so ' +
+          'it is safe to retry; if it keeps failing, quote the reference below ' +
+          'to support.',
+        detail: error instanceof Error ? error.message : String(error),
+        reference,
       });
     }
   }

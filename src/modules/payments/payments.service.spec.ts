@@ -7,7 +7,9 @@ import {
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PaymentsService } from './payments.service';
 import {
@@ -1790,6 +1792,91 @@ describe('PaymentsService', () => {
         { id: planRow.id, amountPaise: 25000 },
       );
       expect(wallet.creditConfirmedCashRequest).not.toHaveBeenCalled();
+    });
+
+    // ── Failure surfacing ───────────────────────────────────────────
+    //
+    // Every failure here happens inside the transaction, so nothing was
+    // committed. The admin must be told that plainly: a message that reads
+    // like a partial write would send them hunting for a credit that does not
+    // exist, or stop them retrying a confirmation that is safe to retry.
+
+    function seedPlanCash() {
+      const row = {
+        id: 'cash-plan-fail',
+        userId: 'u-1',
+        walletCreditRequestId: null,
+        planSelectionId: 'sel-plan-fail',
+        amountPaise: 25000,
+        status: CashCollectionStatus.PENDING,
+        collectedAt: null,
+        confirmedAt: null,
+        confirmedByAdminId: null,
+        adminNote: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      db.cashCollections.push(row);
+      return row;
+    }
+
+    it('maps a transaction timeout (P2028) to a retryable 503 that states nothing was credited', async () => {
+      const row = seedPlanCash();
+      plansServiceMock.confirmPlanAfterCashPayment.mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('Transaction already closed', {
+          code: 'P2028',
+          clientVersion: 'test',
+        }),
+      );
+
+      const err = await service
+        .confirmCashCollection(row.id, 'admin-1', {})
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      const body = err.getResponse();
+      expect(body.error).toBe('CASH_CONFIRMATION_TIMED_OUT');
+      expect(body.retryable).toBe(true);
+      expect(body.message).toMatch(/nothing was credited/i);
+      expect(body.reference).toMatch(/^[0-9a-f]{8}$/);
+    });
+
+    it('does not leak a raw internal error as the admin-facing message', async () => {
+      const row = seedPlanCash();
+      plansServiceMock.confirmPlanAfterCashPayment.mockRejectedValueOnce(
+        new Error('connect ECONNREFUSED 10.0.0.4:5432'),
+      );
+
+      const err = await service
+        .confirmCashCollection(row.id, 'admin-1', {})
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(BadRequestException);
+      const body = err.getResponse();
+      expect(body.error).toBe('CASH_CONFIRMATION_FAILED');
+      expect(body.message).not.toMatch(/ECONNREFUSED/);
+      expect(body.message).toMatch(/safe to retry/i);
+      // The cause stays available for the admin/support path, just not as the
+      // headline message.
+      expect(body.detail).toMatch(/ECONNREFUSED/);
+      expect(body.reference).toMatch(/^[0-9a-f]{8}$/);
+    });
+
+    it('still surfaces a domain HttpException unchanged, with no reference attached', async () => {
+      const row = seedPlanCash();
+      plansServiceMock.confirmPlanAfterCashPayment.mockRejectedValueOnce(
+        new BadRequestException({
+          error: 'CASH_SHORT_FOR_PLAN',
+          message: 'Collected cash is less than plan total',
+        }),
+      );
+
+      const err = await service
+        .confirmCashCollection(row.id, 'admin-1', {})
+        .catch((e) => e);
+
+      expect(err.getResponse().error).toBe('CASH_SHORT_FOR_PLAN');
+      expect(err.getResponse().reference).toBeUndefined();
     });
   });
 
