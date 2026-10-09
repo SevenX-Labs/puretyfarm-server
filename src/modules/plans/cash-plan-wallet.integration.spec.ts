@@ -388,15 +388,28 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(wallet?.balancePaise).toBe(10000);
   });
 
-  it("Edge case: collected cash less than plan total on empty wallet -> rolls back with INSUFFICIENT_WALLET_BALANCE", async () => {
+  it("Edge case: collected cash less than plan total -> rejects with CASH_SHORT_FOR_PLAN and rolls back fully", async () => {
     // Underpayment: collected ₹200 for ₹250 plan on 0 balance wallet
     const { selectionId, collectionId } = seedCashPlan(25000, 20000);
 
-    await expect(
-      paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {}),
-    ).rejects.toThrow(BadRequestException);
+    let caught: any;
+    try {
+      await paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {});
+    } catch (err) {
+      caught = err;
+    }
 
-    // Transaction was rolled back:
+    expect(caught).toBeInstanceOf(BadRequestException);
+    const body = caught.getResponse();
+    expect(body.error).toBe("CASH_SHORT_FOR_PLAN");
+    expect(body.error).not.toBe("INSUFFICIENT_WALLET_BALANCE");
+    expect(body.collectedPaise).toBe(20000);
+    expect(body.requiredPaise).toBe(25000);
+    expect(body.shortfallPaise).toBe(5000);
+    expect(body.message).toMatch(/20000/);
+    expect(body.message).toMatch(/25000/);
+
+    // Transaction was rolled back fully: no credit, no debit, no claim.
     expect(db.transactions).toHaveLength(0);
     const sel = db.planSelections.find((s) => s.id === selectionId);
     expect(sel?.status).toBe(PlanSelectionStatus.PENDING_PAYMENT);

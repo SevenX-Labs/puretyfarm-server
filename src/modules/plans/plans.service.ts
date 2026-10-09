@@ -902,6 +902,25 @@ export class PlansService {
       }));
 
     if (collection) {
+      // Cash collected for a plan is set to the plan total at quote-confirm
+      // time (see confirmPlan CASH branch) and cannot be mutated afterwards.
+      // Guard anyway: if less was somehow recorded, surface a specific error
+      // instead of letting the plan debit fail with INSUFFICIENT_WALLET_BALANCE,
+      // which hides the real cause. Overpayment is allowed as surplus
+      // (unchanged behavior).
+      if (collection.amountPaise < selection.quote.totalSellingAmount) {
+        throw new BadRequestException({
+          error: "CASH_SHORT_FOR_PLAN",
+          message:
+            `Collected cash (${collection.amountPaise} paise) is less than ` +
+            `plan total (${selection.quote.totalSellingAmount} paise)`,
+          collectedPaise: collection.amountPaise,
+          requiredPaise: selection.quote.totalSellingAmount,
+          shortfallPaise:
+            selection.quote.totalSellingAmount - collection.amountPaise,
+        });
+      }
+
       // 1. CREDIT the wallet by the collected cash amount
       await this.walletService.creditWalletWithin(
         tx as any,
