@@ -215,13 +215,47 @@ describe("AdminDashboardService", () => {
   });
 
   // ── Revenue ──
+  //
+  // Revenue is sourced from the paid PlanSelection itself (paidAmountPaise +
+  // paymentMethod), counted exactly once per purchase. It is NOT summed from the
+  // wallet/cash ledger, which would double-count cash plans (Cash collection +
+  // the PLAN_SELECTION wallet debit from the Cash -> Wallet CREDIT -> Plan DEBIT
+  // flow). See the "cash double-count regression" block below.
+
+  // Mocks planSelection.groupBy for the revenue/sales paths.
+  function mockPaidPlanGroupBy(opts: {
+    byMethod?: { paymentMethod: string | null; paidAmountPaise: number }[];
+    byType?: { planType: string; paidAmountPaise: number }[];
+  }) {
+    mockPrisma.planSelection.groupBy.mockImplementation(({ by, where }: any) => {
+      if (!where?.paidAt) return Promise.resolve([]);
+      if (by?.includes("paymentMethod")) {
+        return Promise.resolve(
+          (opts.byMethod ?? []).map((r) => ({
+            paymentMethod: r.paymentMethod,
+            _sum: { paidAmountPaise: r.paidAmountPaise },
+          })),
+        );
+      }
+      if (by?.includes("planType")) {
+        return Promise.resolve(
+          (opts.byType ?? []).map((r) => ({
+            planType: r.planType,
+            _sum: { paidAmountPaise: r.paidAmountPaise },
+          })),
+        );
+      }
+      return Promise.resolve([]);
+    });
+  }
 
   describe("revenue", () => {
-    it("calculates wallet revenue from DEBIT transactions for PLAN_SELECTION and ORDER", async () => {
+    it("calculates wallet plan revenue from paid WALLET plan selections plus standalone ORDER debits", async () => {
+      mockPaidPlanGroupBy({
+        byMethod: [{ paymentMethod: "WALLET", paidAmountPaise: 100000 }],
+        byType: [{ planType: "MONTHLY", paidAmountPaise: 100000 }],
+      });
       mockPrisma.walletTransaction.aggregate.mockImplementation(({ where }: any) => {
-        if (where?.type === "DEBIT" && where?.referenceType === "PLAN_SELECTION") {
-          return Promise.resolve({ _sum: { amountPaise: 100000 } });
-        }
         if (where?.type === "DEBIT" && where?.referenceType === "ORDER") {
           return Promise.resolve({ _sum: { amountPaise: 20000 } });
         }
@@ -230,26 +264,39 @@ describe("AdminDashboardService", () => {
         }
         return Promise.resolve(EMPTY_AGGREGATE);
       });
-      mockPrisma.cashCollection.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
-      mockPrisma.payment.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
 
       const result = await service.getOverview({});
+      // 100000 wallet-funded plan + 20000 standalone order debit
       expect(result.revenue.walletPaise).toBe(120000);
+      expect(result.revenue.cashPaise).toBe(0);
+      expect(result.revenue.collectedPaise).toBe(120000);
       expect(result.revenue.walletTopUpsPaise).toBe(500000);
     });
 
-    it("calculates cash revenue from CONFIRMED cash collections for plans", async () => {
-      mockPrisma.walletTransaction.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
+    it("calculates cash plan revenue from paid CASH plan selections (once), not from the ledger", async () => {
+      mockPaidPlanGroupBy({
+        byMethod: [{ paymentMethod: "CASH", paidAmountPaise: 75000 }],
+        byType: [{ planType: "BUY_ONCE", paidAmountPaise: 75000 }],
+      });
+      // The ledger still shows BOTH a CONFIRMED cash collection AND a
+      // PLAN_SELECTION wallet debit for this cash plan — neither must be
+      // summed into revenue, or the cash plan would be double-counted.
       mockPrisma.cashCollection.aggregate.mockImplementation(({ where }: any) => {
         if (where?.planSelectionId && where?.status === "CONFIRMED") {
           return Promise.resolve({ _sum: { amountPaise: 75000 } });
         }
         return Promise.resolve(EMPTY_AGGREGATE);
       });
-      mockPrisma.payment.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
+      mockPrisma.walletTransaction.aggregate.mockImplementation(({ where }: any) => {
+        if (where?.type === "DEBIT" && where?.referenceType === "PLAN_SELECTION") {
+          return Promise.resolve({ _sum: { amountPaise: 75000 } });
+        }
+        return Promise.resolve(EMPTY_AGGREGATE);
+      });
 
       const result = await service.getOverview({});
       expect(result.revenue.cashPaise).toBe(75000);
+      expect(result.revenue.walletPaise).toBe(0);
       expect(result.revenue.collectedPaise).toBe(75000);
     });
 
@@ -265,7 +312,7 @@ describe("AdminDashboardService", () => {
       expect(result.revenue.collectedPaise).toBe(0);
     });
 
-    it("excludes failed/cancelled payments from revenue", async () => {
+    it("surfaces refunds separately from collected revenue", async () => {
       mockPrisma.walletTransaction.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
       mockPrisma.cashCollection.aggregate.mockResolvedValue(EMPTY_AGGREGATE);
       mockPrisma.payment.aggregate.mockImplementation(({ where }: any) => {
@@ -277,6 +324,67 @@ describe("AdminDashboardService", () => {
 
       const result = await service.getOverview({});
       expect(result.revenue.refundsPaise).toBe(10000);
+    });
+
+    it("categorises revenue by plan type from paid plan selections", async () => {
+      mockPaidPlanGroupBy({
+        byMethod: [
+          { paymentMethod: "CASH", paidAmountPaise: 50000 },
+          { paymentMethod: "WALLET", paidAmountPaise: 300000 },
+        ],
+        byType: [
+          { planType: "BUY_ONCE", paidAmountPaise: 50000 },
+          { planType: "SEVEN_DAY_TRIAL", paidAmountPaise: 100000 },
+          { planType: "MONTHLY", paidAmountPaise: 200000 },
+        ],
+      });
+
+      const result = await service.getOverview({});
+      expect(result.revenue.buyOncePaise).toBe(50000);
+      expect(result.revenue.trialPaise).toBe(100000);
+      expect(result.revenue.monthlyPaise).toBe(200000);
+      expect(result.revenue.collectedPaise).toBe(350000);
+    });
+  });
+
+  // ── Cash plan double-count regression (Issue 1) ──
+
+  describe("cash double-count regression", () => {
+    it("a single ₹500 cash plan increases collectedPaise by exactly 50000, not 100000", async () => {
+      // One ₹500 cash plan confirmed. Its ledger footprint is:
+      //   CashCollection CONFIRMED = 50000
+      //   WalletTransaction CREDIT (CASH_COLLECTION) = 50000
+      //   WalletTransaction DEBIT  (PLAN_SELECTION)  = 50000
+      //   PlanSelection paidAmountPaise = 50000, paymentMethod = CASH
+      // The old aggregation summed the cash collection AND the plan debit =
+      // 100000. The corrected one counts the single paid plan selection = 50000.
+      mockPaidPlanGroupBy({
+        byMethod: [{ paymentMethod: "CASH", paidAmountPaise: 50000 }],
+        byType: [{ planType: "BUY_ONCE", paidAmountPaise: 50000 }],
+      });
+      mockPrisma.cashCollection.aggregate.mockImplementation(({ where }: any) => {
+        if (where?.planSelectionId && where?.status === "CONFIRMED") {
+          return Promise.resolve({ _sum: { amountPaise: 50000 } });
+        }
+        return Promise.resolve(EMPTY_AGGREGATE);
+      });
+      mockPrisma.walletTransaction.aggregate.mockImplementation(({ where }: any) => {
+        if (where?.type === "DEBIT" && where?.referenceType === "PLAN_SELECTION") {
+          return Promise.resolve({ _sum: { amountPaise: 50000 } });
+        }
+        return Promise.resolve(EMPTY_AGGREGATE);
+      });
+
+      const result = await service.getOverview({});
+
+      expect(result.revenue.collectedPaise).toBe(50000);
+      expect(result.revenue.collectedPaise).not.toBe(100000);
+      expect(result.revenue.cashPaise).toBe(50000);
+      expect(result.revenue.walletPaise).toBe(0);
+      // Sales also reflects exactly one ₹500 purchase.
+      expect(result.sales.totalPaise).toBe(50000);
+      // Wallet top-ups are unaffected by a cash plan purchase.
+      expect(result.revenue.walletTopUpsPaise).toBe(0);
     });
   });
 

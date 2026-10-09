@@ -809,8 +809,16 @@ export class PlansService {
           data: { status: PlanQuoteStatus.CONFIRMED },
         });
 
-        // Materialise delivery rows only after payment.
-        await this.materializeDeliveries(tx, selection.id, userId, schedule);
+        // Materialise delivery rows only after payment. Pass the actual plan
+        // type so orders are priced and typed from the correct PlanConfig
+        // (never the Buy Once / ₹80 fallback).
+        await this.materializeDeliveries(
+          tx,
+          selection.id,
+          userId,
+          schedule,
+          quote.planType as PlanType,
+        );
 
         return {
           selectionId: selection.id,
@@ -855,140 +863,154 @@ export class PlansService {
     selectionId: string,
     userId: string,
     schedule: ReturnType<PlansService["resolveScheduleFromQuote"]>,
-    planType?: PlanType,
+    planType: PlanType,
   ): Promise<void> {
     const dates = generateDeliveryDates(
       schedule.frequency,
       schedule.start,
       schedule.end,
     );
-    if (dates.length > 0) {
-      await (tx as any).planDelivery.createMany({
-        data: dates.map((date, i) => ({
-          selectionId,
-          userId,
-          deliveryDate: date,
-          occurrence: i + 1,
-          quantityLitres: quantityForOccurrence(
-            schedule.quantityMode,
-            i + 1,
-            schedule.quantity,
-            schedule.quantityA,
-            schedule.quantityB,
-          ),
-          status: DeliveryStatus.SCHEDULED,
-        })),
+    if (dates.length === 0) {
+      return;
+    }
+
+    await (tx as any).planDelivery.createMany({
+      data: dates.map((date, i) => ({
+        selectionId,
+        userId,
+        deliveryDate: date,
+        occurrence: i + 1,
+        quantityLitres: quantityForOccurrence(
+          schedule.quantityMode,
+          i + 1,
+          schedule.quantity,
+          schedule.quantityA,
+          schedule.quantityB,
+        ),
+        status: DeliveryStatus.SCHEDULED,
+      })),
+    });
+
+    // Load the authoritative plan configuration for pricing the materialised
+    // orders. A valid plan selection MUST have a configuration; without it we
+    // cannot price the order correctly. We fail safely (rolling back the whole
+    // transaction) rather than silently materialising a wrongly-priced order
+    // (e.g. a Trial/Monthly plan priced as Buy Once at the ₹80/L fallback).
+    const config: PlanConfig | null = await (tx as any).planConfig.findUnique({
+      where: { planType },
+    });
+    if (!config) {
+      throw new BadRequestException({
+        error: "PLAN_CONFIG_MISSING",
+        message: `Plan configuration for ${planType} is missing; cannot materialise priced orders`,
+        planType,
       });
+    }
 
-      // Materialize orders for dispatch visibility
-      try {
-        const deliveries = await (tx as any).planDelivery.findMany({
-          where: { selectionId },
-          orderBy: { deliveryDate: "asc" },
-        });
+    // Materialize orders for dispatch visibility. Any failure here propagates
+    // and rolls back the transaction — a paid plan must never be confirmed
+    // with missing or mis-priced orders.
+    const deliveries = await (tx as any).planDelivery.findMany({
+      where: { selectionId },
+      orderBy: { deliveryDate: "asc" },
+    });
 
-        if (deliveries && deliveries.length > 0) {
-          const config = planType
-            ? await (tx as any).planConfig.findUnique({ where: { planType } })
-            : null;
+    if (!deliveries || deliveries.length === 0) {
+      return;
+    }
 
-          const address = await (tx as any).customerAddress.findFirst({
-            where: { userId },
-            orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-          });
+    const address = await (tx as any).customerAddress.findFirst({
+      where: { userId },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+    });
 
-          const addressSnapshot = address
-            ? {
-                fullName: address.fullName,
-                mobile: address.mobile,
-                houseNumber: address.houseNumber,
-                buildingName: address.buildingName,
-                streetName: address.streetName,
-                landmark: address.landmark,
-                city: address.city,
-                state: address.state,
-                area: address.area,
-                pincode: address.pincode,
-                latitude: address.latitude,
-                longitude: address.longitude,
-              }
-            : {
-                fullName: "Customer",
-                mobile: "",
-                houseNumber: "",
-                city: "Raipur",
-                state: "Chhattisgarh",
-                area: "Raipur",
-              };
+    const addressSnapshot = address
+      ? {
+          fullName: address.fullName,
+          mobile: address.mobile,
+          houseNumber: address.houseNumber,
+          buildingName: address.buildingName,
+          streetName: address.streetName,
+          landmark: address.landmark,
+          city: address.city,
+          state: address.state,
+          area: address.area,
+          pincode: address.pincode,
+          latitude: address.latitude,
+          longitude: address.longitude,
+        }
+      : {
+          fullName: "Customer",
+          mobile: "",
+          houseNumber: "",
+          city: "Raipur",
+          state: "Chhattisgarh",
+          area: "Raipur",
+        };
 
-          for (const d of deliveries) {
-            const existingOrder = await (tx as any).order.findUnique({
-              where: { planDeliveryId: d.id },
-            });
-            if (existingOrder) continue;
+    for (const d of deliveries) {
+      const existingOrder = await (tx as any).order.findUnique({
+        where: { planDeliveryId: d.id },
+      });
+      if (existingOrder) continue;
 
-            const orderCount = await (tx as any).order.count();
-            const orderNumber = `PF${10001 + orderCount}`;
-            const invCount = await (tx as any).invoice.count();
-            const invoiceNumber = `INV-${10001 + invCount}`;
+      const orderCount = await (tx as any).order.count();
+      const orderNumber = `PF${10001 + orderCount}`;
+      const invCount = await (tx as any).invoice.count();
+      const invoiceNumber = `INV-${10001 + invCount}`;
 
-            const qty = d.quantityLitres || 1;
-            const unitPrice = config?.sellingPricePerLitre ?? 8000;
-            const actualPrice = config?.actualPricePerLitre ?? unitPrice;
-            const itemTotal = unitPrice * qty;
-            const deliveryFee = config?.deliveryFeePaise ?? 0;
-            const total = itemTotal + deliveryFee;
+      const qty = d.quantityLitres || 1;
+      const unitPrice = config.sellingPricePerLitre;
+      const actualPrice = config.actualPricePerLitre;
+      const itemTotal = unitPrice * qty;
+      const deliveryFee = config.deliveryFeePaise ?? 0;
+      const total = itemTotal + deliveryFee;
 
-            await (tx as any).order.create({
-              data: {
-                orderNumber,
-                userId,
-                planSelectionId: selectionId,
-                planDeliveryId: d.id,
-                planType: planType || PlanType.BUY_ONCE,
-                status: "CONFIRMED",
-                paymentStatus: "PAID",
+      await (tx as any).order.create({
+        data: {
+          orderNumber,
+          userId,
+          planSelectionId: selectionId,
+          planDeliveryId: d.id,
+          planType,
+          status: "CONFIRMED",
+          paymentStatus: "PAID",
+          subtotalPaise: itemTotal,
+          discountPaise: 0,
+          taxPaise: 0,
+          deliveryFeePaise: deliveryFee,
+          totalPaise: total,
+          deliveryDate: d.deliveryDate,
+          deliveryStartTime: config.deliveryStartTime || "05:00",
+          deliveryEndTime: config.deliveryEndTime || "07:00",
+          addressSnapshot,
+          actualPricePerLitrePaise: actualPrice,
+          sellingPricePerLitrePaise: unitPrice,
+          items: {
+            create: {
+              productNameSnapshot: "A2 Desi Gir Cow Milk",
+              quantity: qty,
+              unitPricePaise: unitPrice,
+              discountPaise: 0,
+              taxPaise: 0,
+              totalPaise: itemTotal,
+            },
+          },
+          invoice: {
+            create: {
+              invoiceNumber,
+              addressSnapshot,
+              financialSnapshot: {
                 subtotalPaise: itemTotal,
                 discountPaise: 0,
                 taxPaise: 0,
                 deliveryFeePaise: deliveryFee,
                 totalPaise: total,
-                deliveryDate: d.deliveryDate,
-                deliveryStartTime: config?.deliveryStartTime || "05:00",
-                deliveryEndTime: config?.deliveryEndTime || "07:00",
-                addressSnapshot,
-                actualPricePerLitrePaise: actualPrice,
-                sellingPricePerLitrePaise: unitPrice,
-                items: {
-                  create: {
-                    productNameSnapshot: "A2 Desi Gir Cow Milk",
-                    quantity: qty,
-                    unitPricePaise: unitPrice,
-                    discountPaise: 0,
-                    taxPaise: 0,
-                    totalPaise: itemTotal,
-                  },
-                },
-                invoice: {
-                  create: {
-                    invoiceNumber,
-                    addressSnapshot,
-                    financialSnapshot: {
-                      subtotalPaise: itemTotal,
-                      discountPaise: 0,
-                      taxPaise: 0,
-                      deliveryFeePaise: deliveryFee,
-                      totalPaise: total,
-                    },
-                  },
-                },
               },
-            });
-          }
-        }
-      } catch (err) {
-        // Safe logger
-      }
+            },
+          },
+        },
+      });
     }
   }
 

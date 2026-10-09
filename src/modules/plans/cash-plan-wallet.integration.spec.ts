@@ -37,7 +37,16 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     cashCollections: Row[];
     planDeliveries: Row[];
     planConfigs: Row[];
+    orders: Row[];
+    orderItems: Row[];
+    invoices: Row[];
+    customerAddresses: Row[];
   };
+
+  // Known Trial configuration. The materialised orders MUST be priced from this
+  // (₹95/L selling), never the removed ₹80/L fallback, and typed SEVEN_DAY_TRIAL.
+  const TRIAL_SELLING_PAISE = 9500;
+  const TRIAL_ACTUAL_PAISE = 11000;
 
   const matches = (row: Row, where: Row): boolean =>
     Object.entries(where).every(([field, condition]) => {
@@ -60,7 +69,22 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
       planSelections: [],
       cashCollections: [],
       planDeliveries: [],
-      planConfigs: [],
+      planConfigs: [
+        {
+          id: "cfg-trial",
+          planType: PlanType.SEVEN_DAY_TRIAL,
+          isActive: true,
+          actualPricePerLitre: TRIAL_ACTUAL_PAISE,
+          sellingPricePerLitre: TRIAL_SELLING_PAISE,
+          deliveryFeePaise: 0,
+          deliveryStartTime: "05:00",
+          deliveryEndTime: "07:00",
+        },
+      ],
+      orders: [],
+      orderItems: [],
+      invoices: [],
+      customerAddresses: [],
     };
 
     prisma = {
@@ -151,6 +175,62 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
             db.planDeliveries.push({ id: randomUUID(), ...d });
           });
           return { count: data.length };
+        },
+        findMany: async ({ where, orderBy }: any) => {
+          let list = db.planDeliveries.filter((d) => matches(d, where));
+          if (orderBy?.deliveryDate === "asc") {
+            list = [...list].sort(
+              (a, b) =>
+                new Date(a.deliveryDate).getTime() -
+                new Date(b.deliveryDate).getTime(),
+            );
+          }
+          return list.map((d) => ({ ...d }));
+        },
+      },
+      planConfig: {
+        findUnique: async ({ where }: any) => {
+          const row = db.planConfigs.find((c) => c.planType === where.planType);
+          return row ? { ...row } : null;
+        },
+      },
+      customerAddress: {
+        findFirst: async ({ where }: any) => {
+          const row = db.customerAddresses.find((a) => matches(a, where));
+          return row ? { ...row } : null;
+        },
+      },
+      invoice: {
+        count: async () => db.invoices.length,
+      },
+      order: {
+        findUnique: async ({ where }: any) => {
+          const row = db.orders.find(
+            (o) => o.planDeliveryId === where.planDeliveryId,
+          );
+          return row ? { ...row } : null;
+        },
+        count: async () => db.orders.length,
+        create: async ({ data }: any) => {
+          const { items, invoice, ...orderData } = data;
+          const orderId = randomUUID();
+          const order = { id: orderId, ...orderData };
+          db.orders.push(order);
+          if (items?.create) {
+            db.orderItems.push({
+              id: randomUUID(),
+              orderId,
+              ...items.create,
+            });
+          }
+          if (invoice?.create) {
+            db.invoices.push({
+              id: randomUUID(),
+              orderId,
+              ...invoice.create,
+            });
+          }
+          return { ...order };
         },
       },
       cashCollection: {
@@ -297,6 +377,19 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(sel?.paidAmountPaise).toBe(25000);
     expect(db.planDeliveries.length).toBe(7);
 
+    // Orders materialised with the CORRECT plan type and configured price —
+    // never the Buy Once / ₹80 fallback (Issue 2 regression).
+    expect(db.orders.length).toBe(7);
+    for (const o of db.orders) {
+      expect(o.planType).toBe(PlanType.SEVEN_DAY_TRIAL);
+      expect(o.sellingPricePerLitrePaise).toBe(TRIAL_SELLING_PAISE);
+      expect(o.actualPricePerLitrePaise).toBe(TRIAL_ACTUAL_PAISE);
+      expect(o.sellingPricePerLitrePaise).not.toBe(8000);
+      expect(o.paymentStatus).toBe("PAID");
+    }
+    expect(db.orderItems.every((i) => i.unitPricePaise === TRIAL_SELLING_PAISE)).toBe(true);
+    expect(db.invoices.length).toBe(7);
+
     // 2. Verify Wallet Transactions: exactly 1 CREDIT and 1 DEBIT
     expect(db.transactions).toHaveLength(2);
 
@@ -414,6 +507,38 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     const sel = db.planSelections.find((s) => s.id === selectionId);
     expect(sel?.status).toBe(PlanSelectionStatus.PENDING_PAYMENT);
     expect(db.planDeliveries).toHaveLength(0);
+    const col = db.cashCollections.find((c) => c.id === collectionId);
+    expect(col?.status).toBe(CashCollectionStatus.PENDING);
+  });
+
+  it("Missing plan configuration: fails safely (PLAN_CONFIG_MISSING) and rolls back the whole confirmation", async () => {
+    const { selectionId, collectionId } = seedCashPlan(25000, 25000);
+    // Simulate the plan's configuration being absent: without it, orders cannot
+    // be priced. We must NOT silently create wrongly-priced (₹80 / Buy Once)
+    // records — we fail and roll back instead.
+    db.planConfigs = [];
+
+    let caught: any;
+    try {
+      await paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {});
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(BadRequestException);
+    expect(caught.getResponse().error).toBe("PLAN_CONFIG_MISSING");
+
+    // Nothing was partially committed: no wallet movement, plan still pending,
+    // no deliveries and no orders created.
+    expect(db.transactions).toHaveLength(0);
+    const sel = db.planSelections.find((s) => s.id === selectionId);
+    expect(sel?.status).toBe(PlanSelectionStatus.PENDING_PAYMENT);
+    expect(sel?.paidAt == null).toBe(true);
+    expect(db.planDeliveries).toHaveLength(0);
+    expect(db.orders).toHaveLength(0);
+    expect(db.invoices).toHaveLength(0);
+    const wallet = db.wallets.find((w) => w.userId === USER_ID);
+    expect(wallet?.balancePaise ?? 0).toBe(0);
     const col = db.cashCollections.find((c) => c.id === collectionId);
     expect(col?.status).toBe(CashCollectionStatus.PENDING);
   });

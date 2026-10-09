@@ -45,6 +45,7 @@ describe("Admin plan configuration -> customer plans (HTTP integration)", () => 
     quotes: [] as Row[],
     selections: [] as Row[],
     deliveries: [] as Row[],
+    orders: [] as Row[],
   };
 
   const configDefaults = {
@@ -147,8 +148,34 @@ describe("Admin plan configuration -> customer plans (HTTP integration)", () => 
     },
     planDelivery: {
       createMany: async ({ data }: any) => {
-        db.deliveries.push(...data);
+        db.deliveries.push(
+          ...data.map((d: any) => ({ id: randomUUID(), ...d })),
+        );
         return { count: data.length };
+      },
+      findMany: async ({ where }: any) => {
+        const list = db.deliveries.filter(
+          (d) => d.selectionId === where.selectionId,
+        );
+        return list.map((d) => ({ ...d }));
+      },
+    },
+    customerAddress: {
+      findFirst: async () => null,
+    },
+    invoice: {
+      count: async () => db.orders.length,
+    },
+    order: {
+      findUnique: async ({ where }: any) =>
+        db.orders.find((o) => o.planDeliveryId === where.planDeliveryId) ??
+        null,
+      count: async () => db.orders.length,
+      create: async ({ data }: any) => {
+        const { items, invoice, ...orderData } = data;
+        const row = { id: randomUUID(), ...orderData };
+        db.orders.push(row);
+        return { ...row };
       },
     },
     $executeRaw: async () => 1,
@@ -209,6 +236,7 @@ describe("Admin plan configuration -> customer plans (HTTP integration)", () => 
     db.quotes = [];
     db.selections = [];
     db.deliveries = [];
+    db.orders = [];
   });
 
   const http = () => request(app.getHttpServer());

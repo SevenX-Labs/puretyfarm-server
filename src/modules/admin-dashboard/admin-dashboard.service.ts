@@ -242,40 +242,54 @@ export class AdminDashboardService {
   }
 
   // ── Revenue Metrics ──
-  // Revenue = actual money collected for purchases.
-  // Wallet payments for plans: WalletTransaction DEBIT with referenceType PLAN_SELECTION
-  // Cash payments for plans: CashCollection with planSelectionId, status CONFIRMED
-  // Wallet payments for orders: WalletTransaction DEBIT with referenceType ORDER
-  // Wallet top-ups are NOT revenue.
+  // Revenue = actual money collected for purchases, counted EXACTLY ONCE.
+  //
+  // Source of truth for plan revenue: the paid PlanSelection itself
+  // (paidAmountPaise + paymentMethod), NOT the wallet/cash ledger. This is the
+  // critical fix for the cash double-count: a cash plan flows
+  //   Cash collected -> Wallet CREDIT -> Wallet DEBIT (PLAN_SELECTION),
+  // so summing the CONFIRMED CashCollection AND the PLAN_SELECTION wallet debit
+  // counted the same ₹500 twice (₹1,000). The underlying Cash -> Wallet CREDIT
+  // -> Plan DEBIT ledger workflow is unchanged; only reporting is corrected.
+  //
+  //   cashPaise      = paid plan selections where paymentMethod = CASH
+  //   walletPaise    = paid plan selections where paymentMethod = WALLET
+  //                    + genuine standalone wallet ORDER debits
+  //   collectedPaise = all paid plan selections + standalone wallet ORDER debits
+  // Prepaid orders materialised from an already-paid plan carry no separate
+  // wallet ORDER debit, so they are never re-counted here.
+  // Wallet top-ups (CREDIT_REQUEST) are wallet funding, NOT revenue.
 
   private async getRevenueMetrics(period: DateRange) {
     const [
-      walletPlanRevenue,
-      cashPlanRevenue,
+      planByMethod,
+      planByType,
       walletOrderRevenue,
       walletTopUps,
       pendingCash,
       refunds,
     ] = await Promise.all([
-      // Wallet debits for plan selections
-      this.prisma.walletTransaction.aggregate({
+      // Paid plan selections grouped by payment method (counts each plan once).
+      this.prisma.planSelection.groupBy({
+        by: ['paymentMethod'],
         where: {
-          type: 'DEBIT',
-          referenceType: 'PLAN_SELECTION',
-          createdAt: { gte: period.from, lte: period.to },
+          paidAt: { gte: period.from, lte: period.to },
+          status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
+          paidAmountPaise: { not: null },
         },
-        _sum: { amountPaise: true },
+        _sum: { paidAmountPaise: true },
       }),
-      // Confirmed cash collections for plans
-      this.prisma.cashCollection.aggregate({
+      // Paid plan selections grouped by plan type (counts each plan once).
+      this.prisma.planSelection.groupBy({
+        by: ['planType'],
         where: {
-          planSelectionId: { not: null },
-          status: 'CONFIRMED',
-          confirmedAt: { gte: period.from, lte: period.to },
+          paidAt: { gte: period.from, lte: period.to },
+          status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
+          paidAmountPaise: { not: null },
         },
-        _sum: { amountPaise: true },
+        _sum: { paidAmountPaise: true },
       }),
-      // Wallet debits for orders
+      // Genuine standalone wallet debits for orders (not plan-materialised).
       this.prisma.walletTransaction.aggregate({
         where: {
           type: 'DEBIT',
@@ -284,7 +298,7 @@ export class AdminDashboardService {
         },
         _sum: { amountPaise: true },
       }),
-      // Wallet top-ups (CREDIT transactions from CREDIT_REQUEST)
+      // Wallet top-ups (CREDIT transactions from CREDIT_REQUEST) — NOT revenue.
       this.prisma.walletTransaction.aggregate({
         where: {
           type: 'CREDIT',
@@ -311,45 +325,25 @@ export class AdminDashboardService {
       }),
     ]);
 
-    const walletPaise =
-      (walletPlanRevenue._sum.amountPaise || 0) +
-      (walletOrderRevenue._sum.amountPaise || 0);
-    const cashPaise = cashPlanRevenue._sum.amountPaise || 0;
-    const collectedPaise = walletPaise + cashPaise;
+    let cashPaise = 0;
+    let walletPlanPaise = 0;
+    let totalPlanPaise = 0;
+    for (const g of planByMethod) {
+      const amount = g._sum.paidAmountPaise || 0;
+      totalPlanPaise += amount;
+      if (g.paymentMethod === 'CASH') cashPaise += amount;
+      else if (g.paymentMethod === 'WALLET') walletPlanPaise += amount;
+    }
 
-    // Revenue breakdown by plan type from wallet plan debits
-    const walletPlanByType = await this.prisma.$queryRaw<
-      { planType: string; total: bigint }[]
-    >`
-      SELECT ps."planType", SUM(wt."amountPaise")::bigint AS total
-      FROM wallet_transactions wt
-      JOIN plan_selections ps ON ps.id = wt."referenceId"
-      WHERE wt.type = 'DEBIT'
-        AND wt."referenceType" = 'PLAN_SELECTION'
-        AND wt."createdAt" >= ${period.from}
-        AND wt."createdAt" <= ${period.to}
-      GROUP BY ps."planType"
-    `;
-
-    const cashPlanByType = await this.prisma.$queryRaw<
-      { planType: string; total: bigint }[]
-    >`
-      SELECT ps."planType", SUM(cc."amountPaise")::bigint AS total
-      FROM cash_collections cc
-      JOIN plan_selections ps ON ps.id = cc."planSelectionId"
-      WHERE cc."planSelectionId" IS NOT NULL
-        AND cc.status = 'CONFIRMED'
-        AND cc."confirmedAt" >= ${period.from}
-        AND cc."confirmedAt" <= ${period.to}
-      GROUP BY ps."planType"
-    `;
+    const walletOrderPaise = walletOrderRevenue._sum.amountPaise || 0;
+    const walletPaise = walletPlanPaise + walletOrderPaise;
+    // Count every paid plan once (incl. any legacy null-method rows) plus
+    // genuine standalone order payments.
+    const collectedPaise = totalPlanPaise + walletOrderPaise;
 
     const revByType: Record<string, number> = {};
-    for (const r of walletPlanByType) {
-      revByType[r.planType] = (revByType[r.planType] || 0) + Number(r.total);
-    }
-    for (const r of cashPlanByType) {
-      revByType[r.planType] = (revByType[r.planType] || 0) + Number(r.total);
+    for (const g of planByType) {
+      revByType[g.planType] = g._sum.paidAmountPaise || 0;
     }
 
     return {
@@ -365,23 +359,19 @@ export class AdminDashboardService {
     };
   }
 
+  // Collected revenue for a period, counted exactly once per purchase. Mirrors
+  // getRevenueMetrics: paid plan selections (cash + wallet, once each) plus
+  // genuine standalone wallet ORDER debits. See getRevenueMetrics for why the
+  // ledger must not be summed directly for cash plans.
   private async getRevenueCollectedPaise(period: DateRange): Promise<number> {
-    const [walletPlan, cashPlan, walletOrder] = await Promise.all([
-      this.prisma.walletTransaction.aggregate({
+    const [paidPlans, walletOrder] = await Promise.all([
+      this.prisma.planSelection.aggregate({
         where: {
-          type: 'DEBIT',
-          referenceType: 'PLAN_SELECTION',
-          createdAt: { gte: period.from, lte: period.to },
+          paidAt: { gte: period.from, lte: period.to },
+          status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
+          paidAmountPaise: { not: null },
         },
-        _sum: { amountPaise: true },
-      }),
-      this.prisma.cashCollection.aggregate({
-        where: {
-          planSelectionId: { not: null },
-          status: 'CONFIRMED',
-          confirmedAt: { gte: period.from, lte: period.to },
-        },
-        _sum: { amountPaise: true },
+        _sum: { paidAmountPaise: true },
       }),
       this.prisma.walletTransaction.aggregate({
         where: {
@@ -393,8 +383,7 @@ export class AdminDashboardService {
       }),
     ]);
     return (
-      (walletPlan._sum.amountPaise || 0) +
-      (cashPlan._sum.amountPaise || 0) +
+      (paidPlans._sum.paidAmountPaise || 0) +
       (walletOrder._sum.amountPaise || 0)
     );
   }
@@ -598,8 +587,13 @@ export class AdminDashboardService {
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
 
-    // Fetch daily aggregates in parallel
-    const [salesByDay, revenueByDay, profitDeliveryCostByDay, ordersByDay, deliveriesByDay] =
+    // Fetch daily aggregates in parallel.
+    // Revenue per day shares getRevenueMetrics' source of truth: paid plan
+    // selections (counted once, by paidAt) PLUS genuine standalone wallet ORDER
+    // debits. It deliberately does NOT sum PLAN_SELECTION wallet debits or cash
+    // collections directly (which would double-count cash plans, or re-include
+    // a plan that was later cancelled).
+    const [salesByDay, orderRevenueByDay, profitDeliveryCostByDay, ordersByDay, deliveriesByDay] =
       await Promise.all([
         this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
           SELECT DATE("paidAt") AS day, SUM("paidAmountPaise")::bigint AS total
@@ -613,7 +607,7 @@ export class AdminDashboardService {
           SELECT DATE("createdAt") AS day, SUM("amountPaise")::bigint AS total
           FROM wallet_transactions
           WHERE type = 'DEBIT'
-            AND "referenceType" IN ('PLAN_SELECTION', 'ORDER')
+            AND "referenceType" = 'ORDER'
             AND "createdAt" >= ${period.from} AND "createdAt" <= ${period.to}
           GROUP BY DATE("createdAt")
         `,
@@ -640,7 +634,7 @@ export class AdminDashboardService {
       ]);
 
     const salesMap = this.toDayMap(salesByDay, 'total');
-    const revenueMap = this.toDayMap(revenueByDay, 'total');
+    const orderRevenueMap = this.toDayMap(orderRevenueByDay, 'total');
     const deliveryCostMap = this.toDayMap(profitDeliveryCostByDay, 'total');
     const ordersMap = this.toDayMap(ordersByDay, 'count');
     const deliveriesMap = this.toDayMap(deliveriesByDay, 'count');
@@ -651,7 +645,7 @@ export class AdminDashboardService {
       return {
         date,
         salesPaise,
-        revenueCollectedPaise: revenueMap[date] || 0,
+        revenueCollectedPaise: salesPaise + (orderRevenueMap[date] || 0),
         grossProfitPaise: salesPaise - deliveryCost,
         orders: ordersMap[date] || 0,
         deliveries: deliveriesMap[date] || 0,

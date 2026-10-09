@@ -42,7 +42,10 @@ describe("PlansService", () => {
       create: jest.fn(),
     },
     planSelection: { count: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
-    planDelivery: { createMany: jest.fn() },
+    planDelivery: { createMany: jest.fn(), findMany: jest.fn() },
+    order: { findUnique: jest.fn(), count: jest.fn(), create: jest.fn() },
+    invoice: { count: jest.fn() },
+    customerAddress: { findFirst: jest.fn() },
     wallet: { findUnique: jest.fn() },
     cashCollection: { create: jest.fn() },
     planQuote: {
@@ -898,11 +901,33 @@ describe("PlansService", () => {
           planSelection: mockPrisma.planSelection,
           planDelivery: mockPrisma.planDelivery,
           planConfig: mockPrisma.planConfig,
+          order: mockPrisma.order,
+          invoice: mockPrisma.invoice,
+          customerAddress: mockPrisma.customerAddress,
           wallet: mockPrisma.wallet,
           cashCollection: mockPrisma.cashCollection,
           $executeRaw: mockPrisma.$executeRaw,
         });
       });
+      // materializeDeliveries loads the plan config to price orders and lists
+      // the just-created deliveries. Returning [] keeps these unit tests focused
+      // on confirmPlan; full order materialisation is covered by the
+      // cash-plan-wallet integration spec.
+      mockPrisma.planConfig.findUnique.mockImplementation(
+        ({ where }: any) => {
+          switch (where.planType) {
+            case PlanType.BUY_ONCE:
+              return buyOnceConfig;
+            case PlanType.SEVEN_DAY_TRIAL:
+              return trialConfig;
+            case PlanType.MONTHLY:
+              return monthlyConfig;
+            default:
+              return null;
+          }
+        },
+      );
+      mockPrisma.planDelivery.findMany.mockResolvedValue([]);
       mockPrisma.planQuote.findUnique.mockResolvedValue(validQuote);
       mockPrisma.planQuote.update.mockResolvedValue({
         ...validQuote,
@@ -1139,7 +1164,11 @@ describe("PlansService", () => {
           update: jest.fn(),
         },
         planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-        planDelivery: { createMany: jest.fn() },
+        planDelivery: { createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+        planConfig: { findUnique: jest.fn().mockResolvedValue(buyOnceConfig) },
+        order: { findUnique: jest.fn(), count: jest.fn(), create: jest.fn() },
+        invoice: { count: jest.fn() },
+        customerAddress: { findFirst: jest.fn() },
       };
 
       await service.confirmPlanAfterCashPayment(mockTx, "sel-1", { id: "cash-1", amountPaise: 500 });
@@ -1718,6 +1747,7 @@ describe("PlansService", () => {
     it("calls tx.planConfig.findFirst, not this.prisma.planConfig.findFirst", async () => {
       const txPlanConfig = {
         findFirst: jest.fn().mockResolvedValue(buyOnceConfig),
+        findUnique: jest.fn().mockResolvedValue(buyOnceConfig),
       };
       mockPrisma.$transaction.mockImplementation(async (fn: any) =>
         fn({
