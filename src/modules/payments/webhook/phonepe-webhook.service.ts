@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { PhonePeService } from '../providers/phonepe/phonepe.service';
@@ -145,10 +146,26 @@ export class PhonePeWebhookService {
       };
     }
 
-    const applied = await this.paymentsService.applyVerifiedOutcome(
-      verification,
-      'WEBHOOK',
-    );
+    let applied: AppliedOutcome;
+    try {
+      applied = await this.paymentsService.applyVerifiedOutcome(
+        verification,
+        'WEBHOOK',
+      );
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        this.logger.warn(
+          `PhonePe webhook transaction not found in database: ${transactionId}. Acknowledging 200 so PhonePe stops retrying.`,
+        );
+        return {
+          received: true,
+          outcome: 'IGNORED',
+          status: 'UNKNOWN_TRANSACTION',
+          transactionId,
+        };
+      }
+      throw err;
+    }
 
     this.logger.log(
       `PhonePe webhook processed event=${event ?? 'unknown'} ` +

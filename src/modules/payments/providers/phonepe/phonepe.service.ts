@@ -397,31 +397,33 @@ export class PhonePeService implements IPaymentProvider {
     transactionId: string | null;
   } {
     const envelope = payload as PhonePeWebhookEvent;
+    const rawEvent = envelope.event ?? (envelope as Record<string, unknown>).type;
     const event =
-      typeof envelope.event === 'string' ? envelope.event.trim() : null;
-    const inner = envelope.payload ?? {};
+      typeof rawEvent === 'string' ? rawEvent.trim() : null;
+    const inner = (envelope.payload ?? {}) as Record<string, unknown>;
 
     const orderId =
-      typeof inner.merchantOrderId === 'string' && inner.merchantOrderId
-        ? inner.merchantOrderId
-        : null;
+      (typeof inner.merchantOrderId === 'string' && inner.merchantOrderId) ||
+      (typeof inner.originalMerchantOrderId === 'string' && inner.originalMerchantOrderId) ||
+      (typeof inner.orderId === 'string' && inner.orderId) ||
+      null;
 
-    switch (event) {
-      case PHONEPE_EVENT_ORDER_COMPLETED:
-      case PHONEPE_EVENT_ORDER_FAILED:
+    const normalized = (event ?? '').toLowerCase().replace(/_/g, '.');
+
+    switch (normalized) {
+      case 'checkout.order.completed':
+      case 'checkout.order.failed':
         return { kind: 'ORDER', event, transactionId: orderId };
 
-      case PHONEPE_EVENT_REFUND_COMPLETED:
-      case PHONEPE_EVENT_REFUND_FAILED:
+      case 'pg.refund.completed':
+      case 'pg.refund.failed':
         return {
           kind: 'REFUND',
           event,
-          // Refund events name the order they reverse, not a merchantOrderId.
           transactionId:
-            typeof inner.originalMerchantOrderId === 'string' &&
-            inner.originalMerchantOrderId
-              ? inner.originalMerchantOrderId
-              : orderId,
+            (typeof inner.originalMerchantOrderId === 'string' &&
+            inner.originalMerchantOrderId) ||
+            orderId,
         };
 
       default:
