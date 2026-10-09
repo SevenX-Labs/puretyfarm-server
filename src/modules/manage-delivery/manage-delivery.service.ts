@@ -42,6 +42,8 @@ export interface ActivePlanView {
   quantityB?: number | null;
   startDate: string | null;
   endDate: string | null;
+  deliveryStartTime?: string | null;
+  deliveryEndTime?: string | null;
 }
 
 export interface UpcomingDeliveryView {
@@ -77,11 +79,16 @@ export class ManageDeliveryService {
 
   async getManageDelivery(userId: string): Promise<ManageDeliveryResponse> {
     const selection = await this.requireActiveSelection(userId);
-    const deliveries = await this.prisma.planDelivery.findMany({
-      where: { selectionId: selection.id, userId },
-      orderBy: { deliveryDate: "asc" },
-    });
-    return this.buildView(selection, deliveries);
+    const [deliveries, config] = await Promise.all([
+      this.prisma.planDelivery.findMany({
+        where: { selectionId: selection.id, userId },
+        orderBy: { deliveryDate: "asc" },
+      }),
+      this.prisma.planConfig.findUnique({
+        where: { planType: selection.planType as any },
+      }),
+    ]);
+    return this.buildView(selection, deliveries, config?.deliveryStartTime, config?.deliveryEndTime);
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -821,6 +828,8 @@ export class ManageDeliveryService {
       quantityLitres: number;
       status: string;
     }>,
+    deliveryStartTime?: string | null,
+    deliveryEndTime?: string | null,
   ): ManageDeliveryResponse {
     const today = toDateOnly(new Date()).getTime();
 
@@ -832,6 +841,8 @@ export class ManageDeliveryService {
       quantityMode: selection.quantityMode,
       startDate: this.fmt(selection.startDate),
       endDate: this.fmt(selection.endDate),
+      deliveryStartTime: deliveryStartTime ?? "06:00",
+      deliveryEndTime: deliveryEndTime ?? "11:00",
     };
     if (selection.quantityMode === QuantityMode.ALTERNATING) {
       activePlan.quantityA = selection.quantityA;

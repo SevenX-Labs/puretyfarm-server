@@ -36,6 +36,8 @@ export interface PlanAvailability {
   maxUses?: number;
   used?: boolean;
   blockedReason?: string;
+  deliveryStartTime?: string | null;
+  deliveryEndTime?: string | null;
 }
 
 export interface PlansOverviewResponse {
@@ -306,10 +308,12 @@ export class PlansService {
   // ── Plans Overview ──────────────────────────────────────────────
 
   async getPlansOverview(userId: string): Promise<PlansOverviewResponse> {
-    const [buyOnceElig, trialElig, monthlyConfig] = await Promise.all([
+    const [buyOnceElig, trialElig, monthlyConfig, buyOnceConfig, trialConfig] = await Promise.all([
       this.getBuyOnceEligibility(userId),
       this.getTrialEligibility(userId),
       this.getActiveConfig(PlanType.MONTHLY),
+      this.getActiveConfig(PlanType.BUY_ONCE),
+      this.getActiveConfig(PlanType.SEVEN_DAY_TRIAL),
     ]);
 
     return {
@@ -319,6 +323,8 @@ export class PlansService {
           available: buyOnceElig.eligible,
           usageCount: buyOnceElig.usageCount,
           remainingUses: buyOnceElig.remainingUses,
+          deliveryStartTime: buyOnceConfig?.deliveryStartTime ?? "06:00",
+          deliveryEndTime: buyOnceConfig?.deliveryEndTime ?? "11:00",
           ...(buyOnceElig.blockedReason
             ? { blockedReason: buyOnceElig.blockedReason }
             : {}),
@@ -327,6 +333,8 @@ export class PlansService {
           type: PlanType.SEVEN_DAY_TRIAL,
           available: trialElig.eligible,
           used: trialElig.used,
+          deliveryStartTime: trialConfig?.deliveryStartTime ?? "06:00",
+          deliveryEndTime: trialConfig?.deliveryEndTime ?? "11:00",
           ...(trialElig.blockedReason
             ? { blockedReason: trialElig.blockedReason }
             : {}),
@@ -334,6 +342,8 @@ export class PlansService {
         {
           type: PlanType.MONTHLY,
           available: monthlyConfig !== null,
+          deliveryStartTime: monthlyConfig?.deliveryStartTime ?? "06:00",
+          deliveryEndTime: monthlyConfig?.deliveryEndTime ?? "11:00",
           ...(monthlyConfig ? {} : { blockedReason: "PLAN_NOT_CONFIGURED" }),
         },
       ],
