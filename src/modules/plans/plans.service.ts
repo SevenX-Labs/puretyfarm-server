@@ -346,9 +346,12 @@ export class PlansService {
         {
           type: PlanType.MONTHLY,
           available: monthlyConfig !== null,
-          deliveryStartTime: monthlyConfig?.deliveryStartTime ?? "06:00",
-          deliveryEndTime: monthlyConfig?.deliveryEndTime ?? "11:00",
-          ...(monthlyConfig ? {} : { blockedReason: "PLAN_NOT_CONFIGURED" }),
+          ...(monthlyConfig
+            ? {
+                deliveryStartTime: monthlyConfig.deliveryStartTime,
+                deliveryEndTime: monthlyConfig.deliveryEndTime,
+              }
+            : { blockedReason: "PLAN_NOT_CONFIGURED" }),
         },
       ],
     };
