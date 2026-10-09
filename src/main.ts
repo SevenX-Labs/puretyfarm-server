@@ -53,6 +53,8 @@ async function bootstrap() {
         'Accept',
         'Origin',
         'X-Requested-With',
+        'Idempotency-Key',
+        'idempotency-key',
       ],
     });
   } else {
@@ -67,6 +69,8 @@ async function bootstrap() {
         'Accept',
         'Origin',
         'X-Requested-With',
+        'Idempotency-Key',
+        'idempotency-key',
       ],
     });
   }
