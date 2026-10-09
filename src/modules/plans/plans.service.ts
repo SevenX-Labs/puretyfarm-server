@@ -925,7 +925,7 @@ export class PlansService {
 
     const address = await (tx as any).customerAddress.findFirst({
       where: { userId },
-      orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+      orderBy: { createdAt: "desc" },
     });
 
     const addressSnapshot = address
