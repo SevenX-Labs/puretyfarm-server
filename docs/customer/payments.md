@@ -385,7 +385,59 @@ fresh `transactionId` and hash are generated.
 
 ---
 
-### 6.4 `GET /api/v1/customer/payments`
+### 6.4 `POST /api/v1/customer/payments/cancel`
+
+Cancels an online top-up the customer **abandoned before paying** (closed the
+PayU page, hit back, etc.) and immediately releases the one-pending-per-wallet
+slot so a new recharge can start without waiting for the 30-minute expiry sweep.
+
+**Headers:**
+- `Authorization: Bearer <token>`
+- `Content-Type: application/json`
+
+**Request body:**
+
+```json
+{ "transactionId": "PFMH2K8A1B2C3D4E5F" }
+```
+
+**Safety:** the live payment is never cancelled on the client's word. The server
+first re-checks the authoritative status with PayU:
+
+- **success** → the payment is settled (wallet credited) and the cancel is
+  refused (`PAYMENT_ALREADY_SUCCESSFUL`).
+- **in progress** → refused (`PAYMENT_IN_PROGRESS`); let the callback/verify path
+  resolve it.
+- **failure** → the slot is released; `cancelled: true`.
+- **no record at PayU** → the customer never paid; cancelled locally and the slot
+  is released.
+
+**Response `200`:**
+
+```json
+{
+  "payment": { "...": "the payment in its new status" },
+  "cancelled": true,
+  "alreadyFinal": false
+}
+```
+
+- `cancelled` — whether this call moved the payment to a closed state.
+- `alreadyFinal` — `true` when the payment was already terminal (idempotent no-op).
+
+**Errors:**
+
+| HTTP | `error` | Cause |
+|------|---------|-------|
+| 404 | `PAYMENT_NOT_FOUND` | Unknown or not yours |
+| 409 | `PAYMENT_NOT_CANCELLABLE` | Not a wallet top-up payment |
+| 409 | `PAYMENT_ALREADY_SUCCESSFUL` | PayU reports the payment succeeded; it was credited, not cancelled |
+| 409 | `PAYMENT_IN_PROGRESS` | A capture is in flight; try again shortly |
+| 409 | `PAYMENT_CANNOT_BE_VERIFIED` | Provider status could not be checked; it will auto-expire if left |
+
+---
+
+### 6.5 `GET /api/v1/customer/payments`
 
 The customer's own payment history.
 
@@ -406,7 +458,7 @@ The customer's own payment history.
 
 ---
 
-### 6.5 `GET /api/v1/customer/payments/:id`
+### 6.6 `GET /api/v1/customer/payments/:id`
 
 One payment, enriched with its wallet-credit state.
 
@@ -560,6 +612,14 @@ curl -i -X POST "$BASE_URL/api/v1/customer/payments/retry" \
   -d '{ "transactionId": "PFMH2K8A1B2C3D4E5F" }'
 ```
 
+### Cancel an abandoned online top-up
+```bash
+curl -i -X POST "$BASE_URL/api/v1/customer/payments/cancel" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "transactionId": "PFMH2K8A1B2C3D4E5F" }'
+```
+
 ### List payments
 ```bash
 curl -i -X GET "$BASE_URL/api/v1/customer/payments?status=SUCCESS" \
@@ -585,7 +645,11 @@ curl -i -X GET "$BASE_URL/api/v1/customer/payments/<PAYMENT_ID>" \
    SUCCESS, walletCredit PENDING) and "Wallet Credited" (walletCredit
    COMPLETED).
 5. If a payment is `FAILED`/`CANCELLED`/`EXPIRED`, offer "Try again" which
-   calls `POST /retry` with a new `Idempotency-Key`.
+   calls `POST /retry` with a new `Idempotency-Key`. If it is still
+   `PENDING`/`PROCESSING` (an abandoned checkout), offer "Cancel" which calls
+   `POST /cancel` to release the pending slot. On `WALLET_PENDING_REQUEST_EXISTS`
+   from `POST /create`, surface the same retry/cancel actions on the blocking
+   top-up rather than a dead-end error.
 6. For `CASH`, show "Awaiting pickup" / "Collected" / "Confirmed" according to
    the cash-collection status (visible through `GET /customer/wallet/credit-requests`).
 7. On a refund, poll `GET /customer/payments/:id` and show `REFUND_PENDING` →

@@ -18,6 +18,7 @@ import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { CreatePaymentDto } from './dto/customer/create-payment.dto';
 import { VerifyPaymentDto } from './dto/customer/verify-payment.dto';
 import { RetryPaymentDto } from './dto/customer/retry-payment.dto';
+import { CancelPaymentDto } from './dto/customer/cancel-payment.dto';
 import { CustomerListPaymentsQueryDto } from './dto/customer/list-payments-query.dto';
 
 /**
@@ -92,6 +93,22 @@ export class PaymentsController {
       dto,
       this.requireIdempotencyKey(idempotencyKey),
     );
+  }
+
+  /**
+   * Cancels an online top-up the customer abandoned before paying, releasing
+   * the pending-top-up slot immediately so they can start a new one.
+   *
+   * The server re-verifies the real state with the gateway first, so a payment
+   * that actually succeeded is never discarded.
+   */
+  @Post('cancel')
+  @HttpCode(HttpStatus.OK)
+  async cancelPayment(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CancelPaymentDto,
+  ) {
+    return this.paymentsService.cancelPendingTopUp(user.sub, dto.transactionId);
   }
 
   /** The authenticated customer's own payments. Never another customer's. */

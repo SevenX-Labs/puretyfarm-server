@@ -33,6 +33,7 @@ import {
   PAYMENT_FAILURE_FROM_STATUSES,
   PAYMENT_RETRYABLE_STATUSES,
   PAYMENT_SUCCESS_FROM_STATUSES,
+  PAYMENT_TERMINAL_STATUSES,
   PAYMENT_TXNID_PREFIX,
   PAYMENT_WALLET_TOPUP_PRODUCT_INFO,
   PaymentMethod,
@@ -549,6 +550,193 @@ export class PaymentsService {
       replayed: created.replayed || undefined,
       checkout,
     };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  CUSTOMER — CANCEL AN ABANDONED TOP-UP
+  // ══════════════════════════════════════════════════════════════════
+
+  /**
+   * Cancels an online wallet top-up the customer abandoned before paying, and
+   * releases the one-PENDING-per-wallet slot immediately so they can start a
+   * fresh top-up without waiting for the 30-minute expiry sweep.
+   *
+   * Safety: the live payment is NEVER cancelled on the customer's word alone.
+   * We first ask the provider for the authoritative status:
+   *   - SUCCESS   -> the money was actually taken; we settle it (credit) and
+   *                  refuse the cancel.
+   *   - PROCESSING-> a capture is in flight; we refuse the cancel and let the
+   *                  normal callback/verify path resolve it.
+   *   - FAILED    -> already failed at the provider; applying it releases the
+   *                  slot, which is exactly what the customer wanted.
+   *   - no record -> the customer never paid; we cancel locally and release
+   *                  the slot.
+   * If the provider cannot be queried at all we refuse rather than risk
+   * discarding a payment the provider may yet report as SUCCESS; the expiry
+   * sweep remains the backstop.
+   *
+   * Idempotent: a payment that is already terminal is returned as-is.
+   */
+  async cancelPendingTopUp(userId: string, transactionId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { transactionId },
+    });
+
+    if (!payment || payment.userId !== userId) {
+      // Same response for "not yours" and "does not exist" so the endpoint
+      // cannot be used to probe for other customers' transaction ids.
+      throw new NotFoundException({
+        error: 'PAYMENT_NOT_FOUND',
+        message: 'Payment not found',
+      });
+    }
+
+    if (payment.purpose !== PaymentPurpose.WALLET_TOPUP) {
+      throw new ConflictException({
+        error: 'PAYMENT_NOT_CANCELLABLE',
+        message: 'Only a wallet top-up payment can be cancelled this way',
+      });
+    }
+
+    // Already terminal: nothing to do. Return the current state so a repeated
+    // tap from the app is a no-op rather than an error.
+    if (
+      PAYMENT_TERMINAL_STATUSES.includes(
+        payment.status as PaymentTransactionStatus,
+      )
+    ) {
+      return {
+        payment: this.formatCustomerPayment(payment),
+        cancelled: false,
+        alreadyFinal: true,
+      };
+    }
+
+    // Live (PENDING / PROCESSING): confirm with the provider before touching it.
+    const providerWithStatus = this.provider as IPaymentProvider & {
+      fetchAuthoritativeStatus?: (transactionId: string) => Promise<{
+        status: PaymentTransactionStatus | null;
+        rawStatus: string | null;
+        providerPaymentId: string | null;
+        amountPaise: number | null;
+      }>;
+    };
+
+    if (typeof providerWithStatus.fetchAuthoritativeStatus !== 'function') {
+      throw new ConflictException({
+        error: 'PAYMENT_CANNOT_BE_VERIFIED',
+        message:
+          'This payment cannot be cancelled right now. It will expire automatically if it is not completed.',
+      });
+    }
+
+    const authoritative = await providerWithStatus.fetchAuthoritativeStatus(
+      payment.transactionId,
+    );
+
+    if (authoritative.status) {
+      // The provider knows about this transaction. Apply its real outcome
+      // through the single verified-message path, then decide.
+      const applied = await this.applyVerifiedOutcome(
+        {
+          signatureValid: true,
+          transactionId: payment.transactionId,
+          providerPaymentId: authoritative.providerPaymentId,
+          amountPaise: authoritative.amountPaise,
+          status: authoritative.status,
+          rawStatus: authoritative.rawStatus,
+          failureCode: null,
+          failureMessage: null,
+          sanitisedPayload: {
+            source: 'cancel_payment',
+            status: authoritative.rawStatus,
+          },
+        },
+        'VERIFY_ENDPOINT',
+      );
+
+      if (applied.status === PaymentTransactionStatus.SUCCESS) {
+        throw new ConflictException({
+          error: 'PAYMENT_ALREADY_SUCCESSFUL',
+          message:
+            'This payment already succeeded and your wallet is being credited. It cannot be cancelled.',
+        });
+      }
+
+      if (applied.status === PaymentTransactionStatus.PROCESSING) {
+        throw new ConflictException({
+          error: 'PAYMENT_IN_PROGRESS',
+          message:
+            'This payment is still being processed by the gateway. Please wait a moment before cancelling.',
+        });
+      }
+
+      // FAILED / EXPIRED etc.: applyVerifiedOutcome already released the slot.
+      const fresh = await this.prisma.payment.findUniqueOrThrow({
+        where: { id: payment.id },
+      });
+      return {
+        payment: this.formatCustomerPayment(fresh),
+        cancelled: true,
+        alreadyFinal: false,
+      };
+    }
+
+    // The provider has no record of this transaction: the customer genuinely
+    // never paid. Cancel locally and release the slot in one transaction.
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: {
+            in: [
+              PaymentTransactionStatus.PENDING,
+              PaymentTransactionStatus.PROCESSING,
+            ],
+          },
+        },
+        data: {
+          status: PaymentTransactionStatus.CANCELLED,
+          failureCode: 'USER_CANCELLED',
+          failureMessage: 'Top-up cancelled by customer before payment',
+        },
+      });
+
+      const fresh = await tx.payment.findUniqueOrThrow({
+        where: { id: payment.id },
+      });
+
+      // Raced with a callback/webhook/sweep between our checks and this write.
+      // Report the current state instead of forcing a cancel.
+      if (updated.count === 0) {
+        return {
+          payment: this.formatCustomerPayment(fresh),
+          cancelled: false,
+          alreadyFinal: PAYMENT_TERMINAL_STATUSES.includes(
+            fresh.status as PaymentTransactionStatus,
+          ),
+        };
+      }
+
+      if (fresh.walletCreditRequestId) {
+        await this.walletService.cancelCreditRequest(
+          tx,
+          fresh.walletCreditRequestId,
+          'Top-up cancelled by customer',
+        );
+      }
+
+      this.logger.log(
+        `Top-up cancelled by customer paymentId=${fresh.id} ` +
+          `transactionId=${fresh.transactionId} userId=${userId}`,
+      );
+
+      return {
+        payment: this.formatCustomerPayment(fresh),
+        cancelled: true,
+        alreadyFinal: false,
+      };
+    });
   }
 
   // ══════════════════════════════════════════════════════════════════

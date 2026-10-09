@@ -1560,6 +1560,95 @@ describe('PaymentsService', () => {
     });
   });
 
+  describe('cancelPendingTopUp', () => {
+    it("404s for another customer's transaction", async () => {
+      const payment = seedPayment({ userId: 'someone-else' });
+      await expect(
+        service.cancelPendingTopUp(USER_ID, payment.transactionId),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('is a no-op for an already-terminal payment', async () => {
+      const payment = seedPayment({
+        status: PaymentTransactionStatus.CANCELLED,
+      });
+      const result = await service.cancelPendingTopUp(
+        USER_ID,
+        payment.transactionId,
+      );
+      expect(result.cancelled).toBe(false);
+      expect(result.alreadyFinal).toBe(true);
+      expect(provider.fetchAuthoritativeStatus).not.toHaveBeenCalled();
+      expect(wallet.cancelCreditRequest).not.toHaveBeenCalled();
+    });
+
+    it('cancels locally and releases the slot when the provider has no record', async () => {
+      const cr = seedCreditRequest();
+      const payment = seedPayment({ walletCreditRequestId: cr.id });
+      provider.fetchAuthoritativeStatus.mockResolvedValue({
+        status: null,
+        rawStatus: null,
+        providerPaymentId: null,
+        amountPaise: null,
+      });
+
+      const result = await service.cancelPendingTopUp(
+        USER_ID,
+        payment.transactionId,
+      );
+
+      expect(result.cancelled).toBe(true);
+      expect(result.payment.status).toBe(PaymentTransactionStatus.CANCELLED);
+      expect(wallet.cancelCreditRequest).toHaveBeenCalledWith(
+        expect.anything(),
+        cr.id,
+        expect.any(String),
+      );
+    });
+
+    it('refuses to cancel and settles when the provider reports success', async () => {
+      const cr = seedCreditRequest();
+      const payment = seedPayment({ walletCreditRequestId: cr.id });
+      provider.fetchAuthoritativeStatus.mockResolvedValue({
+        status: PaymentTransactionStatus.SUCCESS,
+        rawStatus: 'success',
+        providerPaymentId: 'PAYU1',
+        amountPaise: payment.amountPaise,
+      });
+
+      await expect(
+        service.cancelPendingTopUp(USER_ID, payment.transactionId),
+      ).rejects.toThrow(ConflictException);
+      // The verified success must have been settled, not discarded.
+      expect(wallet.settleAfterVerifiedPayment).toHaveBeenCalledTimes(1);
+      expect(wallet.cancelCreditRequest).not.toHaveBeenCalled();
+    });
+
+    it('releases the slot when the provider reports a failure', async () => {
+      const cr = seedCreditRequest();
+      const payment = seedPayment({ walletCreditRequestId: cr.id });
+      provider.fetchAuthoritativeStatus.mockResolvedValue({
+        status: PaymentTransactionStatus.FAILED,
+        rawStatus: 'failure',
+        providerPaymentId: null,
+        amountPaise: payment.amountPaise,
+      });
+
+      const result = await service.cancelPendingTopUp(
+        USER_ID,
+        payment.transactionId,
+      );
+
+      expect(result.cancelled).toBe(true);
+      expect(result.payment.status).toBe(PaymentTransactionStatus.FAILED);
+      expect(wallet.cancelCreditRequest).toHaveBeenCalledWith(
+        expect.anything(),
+        cr.id,
+        expect.any(String),
+      );
+    });
+  });
+
   // ══════════════════════════════════════════════════════════════════
   //  CASH CONFIRMATION / CANCELLATION
   // ══════════════════════════════════════════════════════════════════
