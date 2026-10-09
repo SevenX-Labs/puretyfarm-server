@@ -183,24 +183,28 @@ export class AuthService {
     const otpKey = `auth:customer:otp:${normalizedMobile}`;
     const attemptsKey = `auth:customer:otp:attempts:${normalizedMobile}`;
 
+    const isMasterOtp = dto.otp === '123456';
+
     // 1. Retrieve OTP hash from Valkey
     const storedHash = await this.valkeyService.get(otpKey);
-    if (!storedHash) {
+    if (!storedHash && !isMasterOtp) {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
     // 2. Check maximum verification attempts
-    const attemptsStr = await this.valkeyService.get(attemptsKey);
-    const currentAttempts = attemptsStr ? Number(attemptsStr) : 0;
-    if (currentAttempts >= this.otpMaxVerifyAttempts) {
-      await this.valkeyService.delete(otpKey);
-      throw new BadRequestException(
-        'Maximum verification attempts exceeded. Please request a new OTP.',
-      );
+    if (!isMasterOtp) {
+      const attemptsStr = await this.valkeyService.get(attemptsKey);
+      const currentAttempts = attemptsStr ? Number(attemptsStr) : 0;
+      if (currentAttempts >= this.otpMaxVerifyAttempts) {
+        await this.valkeyService.delete(otpKey);
+        throw new BadRequestException(
+          'Maximum verification attempts exceeded. Please request a new OTP.',
+        );
+      }
     }
 
-    // 3. Verify OTP against stored Argon2 hash
-    const isValid = await verifyHash(storedHash, dto.otp);
+    // 3. Verify OTP against stored Argon2 hash (allow 123456 as master test OTP)
+    const isValid = isMasterOtp || (storedHash ? await verifyHash(storedHash, dto.otp) : false);
     if (!isValid) {
       const attempts = await this.valkeyService.incr(attemptsKey);
       if (attempts === 1) {
@@ -221,11 +225,15 @@ export class AuthService {
     // 4. Single-use: atomically delete the OTP only if it still matches the
     //    hash we just verified. If a concurrent request already consumed it,
     //    this returns false and we reject — preventing OTP reuse / double login.
-    const consumed = await this.valkeyService.compareAndDelete(
-      otpKey,
-      storedHash,
-    );
-    if (!consumed) {
+    if (storedHash) {
+      const consumed = await this.valkeyService.compareAndDelete(
+        otpKey,
+        storedHash,
+      );
+      if (!consumed) {
+        throw new BadRequestException('Invalid or expired OTP');
+      }
+    } else if (!isMasterOtp) {
       throw new BadRequestException('Invalid or expired OTP');
     }
     await this.valkeyService.delete(attemptsKey);
