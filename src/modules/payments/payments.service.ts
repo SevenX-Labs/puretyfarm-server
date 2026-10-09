@@ -2182,9 +2182,7 @@ export class PaymentsService {
         });
       });
     } catch (error) {
-      if (error instanceof BadRequestException ||
-          error instanceof NotFoundException ||
-          error instanceof ConflictException) {
+      if (error instanceof HttpException) {
         throw error;
       }
       if (error instanceof Prisma.PrismaClientKnownRequestError) {
