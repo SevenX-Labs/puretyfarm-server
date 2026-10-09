@@ -77,7 +77,7 @@ describe("WalletService", () => {
 
   describe("getWallet", () => {
     it("lazily creates wallet and returns balance", async () => {
-      prisma.wallet.upsert.mockResolvedValue({
+      prisma.wallet.findUnique.mockResolvedValue({
         id: "w-1",
         userId: "u-1",
         balancePaise: 0,
@@ -87,10 +87,8 @@ describe("WalletService", () => {
       const result = await service.getWallet("u-1");
       expect(result.balancePaise).toBe(0);
       expect(result.currency).toBe("INR");
-      expect(prisma.wallet.upsert).toHaveBeenCalledWith({
+      expect(prisma.wallet.findUnique).toHaveBeenCalledWith({
         where: { userId: "u-1" },
-        create: { userId: "u-1" },
-        update: {},
       });
     });
   });
@@ -451,12 +449,93 @@ describe("WalletService", () => {
   });
 
   // ────────────────────────────────────────────
+  //  creditWalletWithin
+  // ────────────────────────────────────────────
+
+  describe("creditWalletWithin", () => {
+    it("credits successfully, writes transaction, and flips autoCreditEnabled", async () => {
+      const mockTx = {
+        wallet: {
+          upsert: jest.fn().mockResolvedValue({ id: "w-1", userId: "u-1" }),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+        walletTransaction: {
+          create: jest.fn().mockResolvedValue({ id: "txn-credit-1" }),
+        },
+        $queryRaw: jest.fn().mockResolvedValue([{ balance_paise: 5000 }]),
+      };
+
+      const result = await service.creditWalletWithin(
+        mockTx as any,
+        "u-1",
+        5000,
+        WalletTransactionReferenceType.CASH_COLLECTION,
+        "col-1",
+        "Cash collection confirmed",
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.walletId).toBe("w-1");
+      expect(result.balanceAfterPaise).toBe(5000);
+      expect(result.transactionId).toBe("txn-credit-1");
+      expect(mockTx.wallet.updateMany).toHaveBeenCalledWith({
+        where: { id: "w-1", autoCreditEnabled: false },
+        data: { autoCreditEnabled: true },
+      });
+      expect(mockTx.walletTransaction.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          walletId: "w-1",
+          type: WalletTransactionType.CREDIT,
+          amountPaise: 5000,
+          balanceAfterPaise: 5000,
+          referenceType: WalletTransactionReferenceType.CASH_COLLECTION,
+          referenceId: "col-1",
+          description: "Cash collection confirmed",
+        }),
+      });
+    });
+
+    it("rejects non-positive or non-integer credit amounts", async () => {
+      const mockTx: any = {};
+      await expect(
+        service.creditWalletWithin(
+          mockTx,
+          "u-1",
+          0,
+          WalletTransactionReferenceType.CASH_COLLECTION,
+          "col-1",
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      await expect(
+        service.creditWalletWithin(
+          mockTx,
+          "u-1",
+          -500,
+          WalletTransactionReferenceType.CASH_COLLECTION,
+          "col-1",
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      await expect(
+        service.creditWalletWithin(
+          mockTx,
+          "u-1",
+          50.5,
+          WalletTransactionReferenceType.CASH_COLLECTION,
+          "col-1",
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ────────────────────────────────────────────
   //  getTransactions
   // ────────────────────────────────────────────
 
   describe("getTransactions", () => {
     it("returns paginated transactions", async () => {
-      prisma.wallet.upsert.mockResolvedValue({ id: "w-1" });
+      prisma.wallet.findUnique.mockResolvedValue({ id: "w-1" });
       prisma.walletTransaction.findMany.mockResolvedValue([
         {
           id: "txn-1",
@@ -483,7 +562,7 @@ describe("WalletService", () => {
 
   describe("getCreditRequests (customer)", () => {
     it("returns requests without internal fields", async () => {
-      prisma.wallet.upsert.mockResolvedValue({ id: "w-1" });
+      prisma.wallet.findUnique.mockResolvedValue({ id: "w-1" });
       prisma.walletCreditRequest.findMany.mockResolvedValue([
         {
           id: "req-1",
@@ -505,7 +584,7 @@ describe("WalletService", () => {
     });
 
     it("hides adminNote and refundStatus on non-rejected requests", async () => {
-      prisma.wallet.upsert.mockResolvedValue({ id: "w-1" });
+      prisma.wallet.findUnique.mockResolvedValue({ id: "w-1" });
       prisma.walletCreditRequest.findMany.mockResolvedValue([
         {
           id: "req-1",

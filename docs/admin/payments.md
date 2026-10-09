@@ -243,7 +243,7 @@ Confirms physical cash was received. Behaviour depends on the cash collection's 
 | Purpose | Trigger | Side effects on confirm |
 |---------|---------|------------------------|
 | **Wallet top-up** | `POST /customer/payments/create` with `paymentMethod: "CASH"` | Wallet credited, `WalletTransaction` written, `autoCreditEnabled` flipped if first credit |
-| **Plan payment** | `POST /customer/plans/confirm` with `paymentMethod: "CASH"` | Plan activated (`CONFIRMED`), quote confirmed, deliveries materialised |
+| **Plan payment** | `POST /customer/plans/confirm` with `paymentMethod: "CASH"` | Wallet credited (`CASH_COLLECTION`), wallet debited (`PLAN_SELECTION`), `autoCreditEnabled` flipped if first credit, plan activated (`CONFIRMED`), quote confirmed, deliveries materialised |
 
 The admin does not need to distinguish — the system routes automatically based on which FK is set (`walletCreditRequestId` or `planSelectionId`).
 

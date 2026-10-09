@@ -861,6 +861,54 @@ export class WalletService {
     };
   }
 
+  /**
+   * Credits the wallet within an existing transaction client.
+   *
+   * Mirrors debitWalletWithin: validates amount, resolves the wallet (lazy-creating
+   * if not yet present), and invokes applyBalanceChange with type CREDIT.
+   * Also ensures autoCreditEnabled is flipped to true for this customer upon verified credit.
+   */
+  async creditWalletWithin(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    amountPaise: number,
+    referenceType: WalletTransactionReferenceType,
+    referenceId: string,
+    description?: string,
+  ) {
+    if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
+      throw new BadRequestException({
+        error: "INVALID_CREDIT_AMOUNT",
+        message: "Credit amount must be a positive integer",
+      });
+    }
+
+    const wallet = await this.getOrCreateWallet(userId, tx);
+
+    const result = await this.applyBalanceChange(
+      tx,
+      wallet.id,
+      WalletTransactionType.CREDIT,
+      amountPaise,
+      referenceType,
+      referenceId,
+      undefined,
+      description,
+    );
+
+    await tx.wallet.updateMany({
+      where: { id: wallet.id, autoCreditEnabled: false },
+      data: { autoCreditEnabled: true },
+    });
+
+    return {
+      success: true,
+      walletId: wallet.id,
+      balanceAfterPaise: result.balanceAfterPaise,
+      transactionId: result.transactionId,
+    };
+  }
+
   // ══════════════════════════════════════════════════════════════════
   //  PAYMENT-BACKED CREDIT REQUESTS (consumed by the Payment module)
   //

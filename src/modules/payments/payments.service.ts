@@ -1964,6 +1964,7 @@ export class PaymentsService {
         await this.plansService.confirmPlanAfterCashPayment(
           tx,
           collection.planSelectionId,
+          { id: collection.id, amountPaise: collection.amountPaise },
         );
 
         this.logger.log(

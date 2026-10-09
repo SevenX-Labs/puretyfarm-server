@@ -286,6 +286,9 @@ describe('PaymentsService', () => {
     refundPayment: jest.Mock;
     fetchAuthoritativeStatus: jest.Mock;
   };
+  let plansServiceMock: {
+    confirmPlanAfterCashPayment: jest.Mock;
+  };
 
   /** Seeds a PENDING credit request and returns it. */
   function seedCreditRequest(overrides: Row = {}) {
@@ -440,11 +443,13 @@ describe('PaymentsService', () => {
       fetchAuthoritativeStatus: jest.fn(),
     };
 
+    plansServiceMock = { confirmPlanAfterCashPayment: jest.fn() };
+
     service = new PaymentsService(
       prisma,
       { get: () => undefined } as any,
       wallet as any,
-      { confirmPlanAfterCashPayment: jest.fn() } as any,
+      plansServiceMock as any,
       provider,
     );
   });
@@ -1666,6 +1671,36 @@ describe('PaymentsService', () => {
       await expect(
         service.cancelCashCollection(cash.id, 'admin-1', { note: 'too late' }),
       ).rejects.toThrow(ConflictException);
+    });
+
+    it('confirms a plan payment cash collection and delegates to confirmPlanAfterCashPayment with cash details', async () => {
+      const planRow = {
+        id: 'cash-plan-1',
+        userId: 'u-1',
+        walletCreditRequestId: null,
+        planSelectionId: 'sel-plan-1',
+        amountPaise: 25000,
+        status: CashCollectionStatus.PENDING,
+        collectedAt: null,
+        confirmedAt: null,
+        confirmedByAdminId: null,
+        adminNote: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      db.cashCollections.push(planRow);
+
+      const result = await service.confirmCashCollection(planRow.id, 'admin-1', { note: 'reconciled' });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('Cash confirmed and plan activated.');
+      expect(result.cashCollection.status).toBe(CashCollectionStatus.CONFIRMED);
+      expect(plansServiceMock.confirmPlanAfterCashPayment).toHaveBeenCalledWith(
+        expect.anything(),
+        'sel-plan-1',
+        { id: planRow.id, amountPaise: 25000 },
+      );
+      expect(wallet.creditConfirmedCashRequest).not.toHaveBeenCalled();
     });
   });
 

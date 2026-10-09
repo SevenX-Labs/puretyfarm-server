@@ -26,6 +26,7 @@ import {
   TRIAL_DURATION_DAYS,
 } from "./plans.constants";
 import { PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
+import { WalletTransactionReferenceType } from "../wallet/wallet.constants";
 import { WalletService } from "../wallet/wallet.service";
 
 describe("PlansService", () => {
@@ -56,6 +57,7 @@ describe("PlansService", () => {
 
   const mockWalletService: any = {
     debitWalletWithin: jest.fn().mockResolvedValue(undefined),
+    creditWalletWithin: jest.fn().mockResolvedValue(undefined),
   };
 
   const USER = "user-1";
@@ -1140,7 +1142,24 @@ describe("PlansService", () => {
         planDelivery: { createMany: jest.fn() },
       };
 
-      await service.confirmPlanAfterCashPayment(mockTx, "sel-1");
+      await service.confirmPlanAfterCashPayment(mockTx, "sel-1", { id: "cash-1", amountPaise: 500 });
+
+      expect(mockWalletService.creditWalletWithin).toHaveBeenCalledWith(
+        mockTx,
+        USER,
+        500,
+        WalletTransactionReferenceType.CASH_COLLECTION,
+        "cash-1",
+        "Cash collection confirmed (plan payment)",
+      );
+      expect(mockWalletService.debitWalletWithin).toHaveBeenCalledWith(
+        mockTx,
+        USER,
+        500,
+        WalletTransactionReferenceType.PLAN_SELECTION,
+        "sel-1",
+        "Plan payment (BUY_ONCE)",
+      );
 
       expect(mockTx.planSelection.update).toHaveBeenCalledWith(
         expect.objectContaining({

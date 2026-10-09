@@ -590,6 +590,7 @@ enum WalletTransactionReferenceType {
   CREDIT_REQUEST
   ORDER
   PLAN_SELECTION
+  CASH_COLLECTION
 }
 
 model Wallet {

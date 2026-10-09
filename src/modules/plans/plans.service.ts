@@ -878,6 +878,7 @@ export class PlansService {
   async confirmPlanAfterCashPayment(
     tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
     planSelectionId: string,
+    cashCollection?: { id: string; amountPaise: number },
   ): Promise<void> {
     const selection = await (tx as any).planSelection.findUnique({
       where: { id: planSelectionId },
@@ -891,6 +892,34 @@ export class PlansService {
     if (selection.status !== PlanSelectionStatus.PENDING_PAYMENT) {
       throw new BadRequestException(
         `Plan selection is not pending payment (status: ${selection.status})`,
+      );
+    }
+
+    const collection =
+      cashCollection ||
+      (await (tx as any).cashCollection?.findFirst?.({
+        where: { planSelectionId },
+      }));
+
+    if (collection) {
+      // 1. CREDIT the wallet by the collected cash amount
+      await this.walletService.creditWalletWithin(
+        tx as any,
+        selection.userId,
+        collection.amountPaise,
+        WalletTransactionReferenceType.CASH_COLLECTION,
+        collection.id,
+        "Cash collection confirmed (plan payment)",
+      );
+
+      // 2. DEBIT the wallet for the plan total (reusing exact scheme as wallet-paid plan)
+      await this.walletService.debitWalletWithin(
+        tx as any,
+        selection.userId,
+        selection.quote.totalSellingAmount,
+        WalletTransactionReferenceType.PLAN_SELECTION,
+        planSelectionId,
+        `Plan payment (${selection.quote.planType})`,
       );
     }
 
