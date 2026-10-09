@@ -1417,12 +1417,12 @@ export class PlansService {
                 select: {
                   firstName: true,
                   lastName: true,
-                  profileImageUrl: true,
+                  profileImagePath: true,
                 },
               },
               addresses: {
                 take: 1,
-                orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+                orderBy: { createdAt: "desc" },
                 select: {
                   fullName: true,
                   houseNumber: true,
