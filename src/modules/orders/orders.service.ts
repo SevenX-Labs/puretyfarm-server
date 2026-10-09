@@ -11,9 +11,11 @@ import {
   PaymentStatus,
   ALLOWED_STATUS_TRANSITIONS,
   REORDER_ELIGIBLE_STATUSES,
-  ORDER_NUMBER_PREFIX,
-  INVOICE_NUMBER_PREFIX,
 } from "./orders.constants";
+import {
+  generateOrderNumber,
+  generateInvoiceNumber,
+} from "./order-number.util";
 import {
   PlanType,
   DeliveryStatus,
@@ -37,14 +39,12 @@ export class OrdersService {
   //  ORDER NUMBER GENERATION
   // ══════════════════════════════════════════════════════════════════
 
-  private async generateOrderNumber(): Promise<string> {
-    const count = await this.prisma.order.count();
-    return `${ORDER_NUMBER_PREFIX}${(10001 + count).toString()}`;
+  private generateOrderNumber(): Promise<string> {
+    return generateOrderNumber(this.prisma);
   }
 
-  private async generateInvoiceNumber(): Promise<string> {
-    const count = await this.prisma.invoice.count();
-    return `${INVOICE_NUMBER_PREFIX}${(10001 + count).toString()}`;
+  private generateInvoiceNumber(): Promise<string> {
+    return generateInvoiceNumber(this.prisma);
   }
 
   // ══════════════════════════════════════════════════════════════════

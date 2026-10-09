@@ -25,6 +25,10 @@ import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
 import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
 import { ConfirmPlanDto, PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
 import { parseUpdateAdminPlanDto } from "./dto/admin/update-admin-plan.dto";
+import {
+  generateOrderNumber,
+  generateInvoiceNumber,
+} from "../orders/order-number.util";
 
 // ─── Response interfaces ────────────────────────────────────────────
 
@@ -954,10 +958,8 @@ export class PlansService {
       });
       if (existingOrder) continue;
 
-      const orderCount = await (tx as any).order.count();
-      const orderNumber = `PF${10001 + orderCount}`;
-      const invCount = await (tx as any).invoice.count();
-      const invoiceNumber = `INV-${10001 + invCount}`;
+      const orderNumber = await generateOrderNumber(tx as any);
+      const invoiceNumber = await generateInvoiceNumber(tx as any);
 
       const qty = d.quantityLitres || 1;
       const unitPrice = config.sellingPricePerLitre;
