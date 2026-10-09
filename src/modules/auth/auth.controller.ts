@@ -89,6 +89,12 @@ export class AuthController {
     return this.authService.adminLogin(dto);
   }
 
+  @Post('admin/refresh')
+  @HttpCode(HttpStatus.OK)
+  async adminRefresh(@Body() dto: CustomerRefreshTokenDto) {
+    return this.authService.customerRefreshToken(dto);
+  }
+
   @Post('admin/change-password')
   @UseGuards(JwtAuthGuard)
   @Roles('ADMIN')
