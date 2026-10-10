@@ -22,6 +22,7 @@ import {
   quantityForOccurrence,
 } from "../plans/plans.service";
 import { toIsoDateString } from "../../common/utils/ist-date.util";
+import { OrderStatus } from "../orders/orders.constants";
 import { PlansService } from "../plans/plans.service";
 import type { OrderPriceSnapshot } from "../plans/plans.service";
 import { SkipDeliveryDto } from "./dto/customer/skip-delivery.dto";
@@ -64,7 +65,7 @@ export interface ManageDeliveryResponse {
   upcomingDeliveries: UpcomingDeliveryView[];
 }
 
-const ACTIVE_STATUSES: string[] = [
+const ACTIVE_STATUSES: PlanSelectionStatus[] = [
   PlanSelectionStatus.CONFIRMED,
   PlanSelectionStatus.ACTIVE,
 ];
@@ -73,7 +74,7 @@ const ACTIVE_STATUSES: string[] = [
  * Statuses whose plan the customer may still *see* on Manage Delivery.
  * Broader than ACTIVE_STATUSES, which gates mutations.
  */
-const VIEWABLE_STATUSES: string[] = [
+const VIEWABLE_STATUSES: PlanSelectionStatus[] = [
   ...ACTIVE_STATUSES,
   PlanSelectionStatus.PAUSED,
 ];
@@ -82,7 +83,10 @@ const VIEWABLE_STATUSES: string[] = [
  * Order statuses that have not left the warehouse, so may still be stood down
  * when a schedule changes. Anything beyond these is a fulfilment record.
  */
-const REPLACEABLE_ORDER_STATUSES: string[] = ["PENDING", "CONFIRMED"];
+const REPLACEABLE_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.PENDING,
+  OrderStatus.CONFIRMED,
+];
 
 // ─── Service ────────────────────────────────────────────────────────
 
@@ -959,7 +963,10 @@ export class ManageDeliveryService {
       }
 
       const orderStatus: string | undefined = delivery.order?.status;
-      if (orderStatus && !REPLACEABLE_ORDER_STATUSES.includes(orderStatus)) {
+      if (
+        orderStatus &&
+        !REPLACEABLE_ORDER_STATUSES.includes(orderStatus as OrderStatus)
+      ) {
         keptDates.add(dateKey);
         this.logger.warn(
           `Cadence reconcile kept out-of-window delivery because its order has ` +
