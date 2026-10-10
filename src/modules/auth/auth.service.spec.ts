@@ -1,3 +1,4 @@
+import { Fast2SmsService } from "../sms/fast2sms.service";
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -148,6 +149,7 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: mockJwtService },
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: UsersService, useValue: mockUsersService },
+        { provide: Fast2SmsService, useValue: { sendOtp: jest.fn().mockResolvedValue({ success: true, messageId: "test-id" }) } },
         { provide: ValkeyService, useValue: mockValkeyService },
       ],
     }).compile();

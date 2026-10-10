@@ -1,3 +1,4 @@
+import { Fast2SmsService } from "../sms/fast2sms.service";
 import { randomUUID } from 'crypto';
 import {
   Injectable,
@@ -42,6 +43,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly usersService: UsersService,
     private readonly valkeyService: ValkeyService,
+    private readonly fast2SmsService: Fast2SmsService,
   ) {}
 
   private get otpExpirySeconds(): number {
@@ -164,7 +166,10 @@ export class AuthService {
       `auth:customer:otp:attempts:${normalizedMobile}`,
     );
 
-    // 4. Development log only
+    // 4. Send SMS via Fast2SMS
+    await this.fast2SmsService.sendOtp(normalizedMobile, otp);
+
+    // Development log only
     if (process.env.NODE_ENV !== 'production') {
       this.logger.log(
         `[AUTH][DEV] Customer OTP Mobile: ${normalizedMobile} OTP: ${otp} Expires: 5 minutes`,
