@@ -206,6 +206,7 @@ describe("ProfileService", () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
         profileImagePath: null,
+      whatsappNumber: "+919876543210",
       });
 
       const result = await service.getCustomerProfile("user-123");
@@ -369,6 +370,7 @@ describe("ProfileService", () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
         profileImagePath: null,
+      whatsappNumber: "+919876543210",
       });
       mockStorageService.uploadAvatar.mockResolvedValue(NEW_PATH);
       mockPrismaService.customerProfile.update.mockResolvedValue({
@@ -485,6 +487,7 @@ describe("ProfileService", () => {
       mockPrismaService.customerProfile.update.mockResolvedValue({
         ...mockProfile,
         profileImagePath: null,
+      whatsappNumber: "+919876543210",
       });
 
       const result = await service.removeCustomerAvatar("user-123");
@@ -502,6 +505,7 @@ describe("ProfileService", () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,
         profileImagePath: null,
+      whatsappNumber: "+919876543210",
       });
 
       const result = await service.removeCustomerAvatar("user-123");

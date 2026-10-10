@@ -361,18 +361,10 @@ export class PaymentsService {
       });
     }
 
-    if (!user.email) {
-      throw new BadRequestException({
-        error: 'CUSTOMER_EMAIL_REQUIRED',
-        message:
-          'Add and verify an email address on your profile before paying online',
-      });
-    }
-
     return {
       mobile: user.mobile,
-      email: user.email,
-      firstName: user.customerProfile?.firstName || 'Customer',
+      email: user.email || "",
+      firstName: user.customerProfile?.firstName || "Customer",
     };
   }
 

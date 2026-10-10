@@ -30,4 +30,10 @@ export class CustomerCreateProfileDto {
   )
   @IsNotEmpty({ message: "dateOfBirth is required" })
   dateOfBirth: string;
+
+  @IsString()
+  @IsNotEmpty({ message: "whatsappNumber is required" })
+  @MaxLength(20)
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  whatsappNumber: string;
 }

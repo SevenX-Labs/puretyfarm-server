@@ -564,12 +564,21 @@ describe('PaymentsService', () => {
       ).rejects.toThrow(ConflictException);
     });
 
-    it('requires an email before sending the customer to checkout', async () => {
+    it('allows customer to proceed to checkout when email is not present', async () => {
       db.users[0].email = null;
-      await expect(
-        service.createWalletTopUp(USER_ID, dto, 'idem-1'),
-      ).rejects.toThrow(BadRequestException);
-      expect(db.payments).toHaveLength(0);
+
+      const result = await service.createWalletTopUp(
+        USER_ID,
+        { amount: 100_000, paymentMethod: PaymentMethod.ONLINE },
+        'idem-no-email',
+      );
+
+      expect(result.checkout).toBeDefined();
+      expect(provider.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customerEmail: "",
+        }),
+      );
     });
 
     it('404s for an unknown customer', async () => {

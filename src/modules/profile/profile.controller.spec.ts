@@ -191,6 +191,7 @@ describe("ProfileController", () => {
         lastName: "Hode",
         gender: Gender.MALE,
         dateOfBirth: "2000-01-01",
+        whatsappNumber: "+919876543210",
       };
       const dto = plainToInstance(CustomerCreateProfileDto, obj);
       const errors = await validate(dto);

@@ -18,7 +18,7 @@ export interface CreateProviderPaymentInput {
   /** Short description of what is being paid for. Never customer-supplied. */
   productInfo: string;
   customerFirstName: string;
-  customerEmail: string;
+  customerEmail?: string;
   customerPhone: string;
 }
 

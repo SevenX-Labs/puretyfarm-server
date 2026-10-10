@@ -32,4 +32,11 @@ export class CustomerUpdateProfileDto {
     },
   )
   dateOfBirth?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty({ message: "whatsappNumber cannot be empty" })
+  @MaxLength(20)
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  whatsappNumber?: string;
 }

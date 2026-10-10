@@ -16,6 +16,7 @@ export interface CustomerProfileSummary {
   gender: string;
   dateOfBirth: string;
   profileImageUrl: string | null;
+  whatsappNumber?: string | null;
 }
 
 export interface CustomerProfileDetail extends CustomerProfileSummary {
@@ -189,6 +190,7 @@ export class CustomersService {
             gender: user.customerProfile.gender,
             dateOfBirth: this.formatDate(user.customerProfile.dateOfBirth),
             profileImageUrl,
+            whatsappNumber: user.customerProfile.whatsappNumber ?? null,
           };
         }
 
@@ -259,6 +261,7 @@ export class CustomersService {
           gender: user.customerProfile.gender,
           dateOfBirth: this.formatDate(user.customerProfile.dateOfBirth),
           profileImageUrl,
+          whatsappNumber: user.customerProfile.whatsappNumber ?? null,
           createdAt: user.customerProfile.createdAt,
           updatedAt: user.customerProfile.updatedAt,
         }

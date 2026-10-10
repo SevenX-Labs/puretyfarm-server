@@ -128,7 +128,7 @@ export class PayuService implements IPaymentProvider {
 
     const firstname = sanitise(input.customerFirstName);
     const productinfo = sanitise(input.productInfo);
-    const email = sanitise(input.customerEmail);
+    const email = sanitise(input.customerEmail || "");
 
     const hash = this.hashService.generateRequestHash({
       key,

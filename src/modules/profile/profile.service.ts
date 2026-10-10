@@ -26,6 +26,7 @@ export interface CombinedCustomerProfileResponse {
   // Temporary signed URL (or null). Derived from the stored profileImagePath
   // at read time — NEVER persisted.
   profileImageUrl: string | null;
+  whatsappNumber: string | null;
   mobile: string;
   email: string | null;
   emailVerified: boolean;
@@ -75,6 +76,7 @@ export class ProfileService {
           lastName: dto.lastName,
           gender: dto.gender,
           dateOfBirth: dob,
+          whatsappNumber: dto.whatsappNumber,
         },
       });
 
@@ -133,6 +135,9 @@ export class ProfileService {
     if (dto.gender !== undefined) updateData.gender = dto.gender;
     if (dto.dateOfBirth !== undefined) {
       updateData.dateOfBirth = this.validateAndParseDate(dto.dateOfBirth);
+    }
+    if (dto.whatsappNumber !== undefined) {
+      updateData.whatsappNumber = dto.whatsappNumber;
     }
 
     const updated = await this.prisma.customerProfile.update({
@@ -291,6 +296,7 @@ export class ProfileService {
       gender: profile.gender,
       dateOfBirth: profile.dateOfBirth.toISOString().split("T")[0],
       profileImageUrl,
+      whatsappNumber: profile.whatsappNumber ?? null,
       mobile: user.mobile,
       email: user.email,
       emailVerified: user.emailVerified,

@@ -286,6 +286,7 @@ describe('CustomersService', () => {
         gender: Gender.MALE,
         dateOfBirth: '1995-05-15',
         profileImageUrl: `https://signed.example/avatars/customers/cust-uuid-1-123.jpg?expires=${SIGNED_URL_EXPIRY_SECONDS}`,
+        whatsappNumber: null,
       });
     });
 
@@ -305,6 +306,7 @@ describe('CustomersService', () => {
         gender: Gender.MALE,
         dateOfBirth: '1995-05-15',
         profileImageUrl: `https://signed.example/avatars/customers/cust-uuid-1-123.jpg?expires=${SIGNED_URL_EXPIRY_SECONDS}`,
+        whatsappNumber: null,
         createdAt: mockDate,
         updatedAt: mockDate,
       });
