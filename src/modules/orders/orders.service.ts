@@ -452,6 +452,8 @@ export class OrdersService {
     if (query.planType) where.planType = query.planType;
     if (query.orderNumber)
       where.orderNumber = { contains: query.orderNumber, mode: 'insensitive' };
+    if (query.deliveryDate)
+      where.deliveryDate = new Date(query.deliveryDate);
     if (query.startDate || query.endDate) {
       where.createdAt = {};
       if (query.startDate) where.createdAt.gte = new Date(query.startDate);

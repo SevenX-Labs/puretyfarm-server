@@ -50,6 +50,10 @@ export class AdminListOrdersQueryDto {
   endDate?: string;
 
   @IsOptional()
+  @IsDateString({}, { message: 'deliveryDate must be YYYY-MM-DD' })
+  deliveryDate?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
