@@ -19,6 +19,8 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
 import { AdminListCreditRequestsQueryDto } from "./dto/admin/list-credit-requests-query.dto";
 import { RejectCreditRequestDto } from "./dto/admin/reject-credit-request.dto";
+import { AdminManualWalletAdjustmentDto } from "./dto/admin/manual-wallet-adjustment.dto";
+import { Headers } from "@nestjs/common";
 
 @Controller(["api/v1/admin/wallet", "admin/wallet"])
 @UseGuards(JwtAuthGuard)
@@ -84,4 +86,27 @@ export class AdminWalletController {
   async getCustomerWallet(@Param("userId") userId: string) {
     return this.walletService.getAdminCustomerWallet(userId);
   }
+
+  @Post("customers/:userId/credit")
+  @HttpCode(HttpStatus.OK)
+  async manualCredit(
+    @CurrentUser() admin: JwtPayload,
+    @Param("userId") userId: string,
+    @Body() dto: AdminManualWalletAdjustmentDto,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.walletService.adminManualCredit(userId, admin.sub, dto, idempotencyKey);
+  }
+
+  @Post("customers/:userId/debit")
+  @HttpCode(HttpStatus.OK)
+  async manualDebit(
+    @CurrentUser() admin: JwtPayload,
+    @Param("userId") userId: string,
+    @Body() dto: AdminManualWalletAdjustmentDto,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.walletService.adminManualDebit(userId, admin.sub, dto, idempotencyKey);
+  }
+
 }

@@ -43,7 +43,14 @@ function makeMockPrisma() {
       updateMany: jest.fn(),
       count: jest.fn(),
     },
+    user: {
+      findUnique: jest.fn(),
+    },
+    admin: {
+      findUnique: jest.fn(),
+    },
     walletTransaction: {
+      findUnique: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
       create: jest.fn(),
@@ -676,4 +683,110 @@ describe("WalletService", () => {
       ).rejects.toThrow(BadRequestException);
     });
   });
+
+  // ────────────────────────────────────────────
+  //  Admin — Manual Credit & Debit
+  // ────────────────────────────────────────────
+
+  describe("adminManualCredit & adminManualDebit", () => {
+    let tx: ReturnType<typeof makeMockPrisma>;
+
+    beforeEach(() => {
+      tx = makeMockPrisma();
+      prisma.$transaction.mockImplementation((cb: any) => cb(tx));
+    });
+
+    it("adminManualCredit rejects zero or negative amount", async () => {
+      await expect(
+        service.adminManualCredit("u-1", "admin-1", { amountPaise: 0, remark: "Test" })
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("adminManualCredit rejects empty remark", async () => {
+      await expect(
+        service.adminManualCredit("u-1", "admin-1", { amountPaise: 1000, remark: "  " })
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("adminManualCredit throws 404 if customer user not found", async () => {
+      prisma.user.findUnique.mockResolvedValueOnce(null);
+      await expect(
+        service.adminManualCredit("nonexistent", "admin-1", { amountPaise: 1000, remark: "Good" })
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it("adminManualCredit credits wallet and writes ledger transaction", async () => {
+      prisma.user.findUnique.mockResolvedValueOnce({ id: "u-1", mobile: "9999999999" });
+      prisma.admin.findUnique.mockResolvedValueOnce({ id: "admin-1", email: "admin@puretyfarm.com" });
+      tx.walletTransaction.findUnique.mockResolvedValueOnce(null);
+      tx.wallet.upsert.mockResolvedValueOnce({ id: "w-1", userId: "u-1", balancePaise: 50000 });
+      tx.$queryRaw.mockResolvedValueOnce([{ balance_paise: 70000 }]);
+      tx.walletTransaction.create.mockResolvedValueOnce({ id: "txn-credit-1" });
+      tx.wallet.updateMany.mockResolvedValueOnce({ count: 1 });
+
+      const res = await service.adminManualCredit("u-1", "admin-1", {
+        amountPaise: 20000,
+        remark: "Approved manual wallet adjustment",
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.balancePaise).toBe(70000);
+      expect(res.transactionId).toBe("txn-credit-1");
+      expect(tx.walletTransaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            walletId: "w-1",
+            type: WalletTransactionType.CREDIT,
+            amountPaise: 20000,
+            balanceAfterPaise: 70000,
+            referenceType: WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
+            description: "[Admin: admin@puretyfarm.com] Approved manual wallet adjustment",
+          }),
+        })
+      );
+    });
+
+    it("adminManualDebit rejects insufficient wallet balance", async () => {
+      prisma.user.findUnique.mockResolvedValueOnce({ id: "u-1", mobile: "9999999999" });
+      prisma.admin.findUnique.mockResolvedValueOnce({ id: "admin-1", email: "admin@puretyfarm.com" });
+      tx.walletTransaction.findUnique.mockResolvedValueOnce(null);
+      tx.wallet.findUnique.mockResolvedValueOnce({ id: "w-1", userId: "u-1", balancePaise: 1000 });
+      tx.$queryRaw.mockResolvedValueOnce([]); // WHERE balancePaise - 5000 >= 0 returns 0 rows
+
+      await expect(
+        service.adminManualDebit("u-1", "admin-1", { amountPaise: 5000, remark: "Debit over balance" })
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("adminManualDebit debits wallet and writes ledger transaction", async () => {
+      prisma.user.findUnique.mockResolvedValueOnce({ id: "u-1", mobile: "9999999999" });
+      prisma.admin.findUnique.mockResolvedValueOnce({ id: "admin-1", email: "admin@puretyfarm.com" });
+      tx.walletTransaction.findUnique.mockResolvedValueOnce(null);
+      tx.wallet.findUnique.mockResolvedValueOnce({ id: "w-1", userId: "u-1", balancePaise: 70000 });
+      tx.$queryRaw.mockResolvedValueOnce([{ balance_paise: 60000 }]);
+      tx.walletTransaction.create.mockResolvedValueOnce({ id: "txn-debit-1" });
+
+      const res = await service.adminManualDebit("u-1", "admin-1", {
+        amountPaise: 10000,
+        remark: "Correction for duplicate wallet credit",
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.balancePaise).toBe(60000);
+      expect(res.transactionId).toBe("txn-debit-1");
+      expect(tx.walletTransaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            walletId: "w-1",
+            type: WalletTransactionType.DEBIT,
+            amountPaise: 10000,
+            balanceAfterPaise: 60000,
+            referenceType: WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
+            description: "[Admin: admin@puretyfarm.com] Correction for duplicate wallet credit",
+          }),
+        })
+      );
+    });
+  });
+
 });

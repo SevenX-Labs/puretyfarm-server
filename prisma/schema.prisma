@@ -599,6 +599,7 @@ enum WalletTransactionReferenceType {
   ORDER
   PLAN_SELECTION
   CASH_COLLECTION
+  ADMIN_ADJUSTMENT
 }
 
 model Wallet {

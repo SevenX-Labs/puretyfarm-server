@@ -15,6 +15,7 @@ import { validate } from "class-validator";
 import { plainToInstance } from "class-transformer";
 import { RejectCreditRequestDto } from "./dto/admin/reject-credit-request.dto";
 import { AdminListCreditRequestsQueryDto } from "./dto/admin/list-credit-requests-query.dto";
+import { AdminManualWalletAdjustmentDto } from "./dto/admin/manual-wallet-adjustment.dto";
 
 describe("AdminWalletController", () => {
   let controller: AdminWalletController;
@@ -25,6 +26,8 @@ describe("AdminWalletController", () => {
     approveCreditRequest: jest.fn().mockResolvedValue({ success: true }),
     rejectCreditRequest: jest.fn().mockResolvedValue({ success: true }),
     getAdminCustomerWallet: jest.fn().mockResolvedValue({}),
+    adminManualCredit: jest.fn().mockResolvedValue({ success: true, balancePaise: 70000 }),
+    adminManualDebit: jest.fn().mockResolvedValue({ success: true, balancePaise: 60000 }),
   };
 
   // PaymentsService stub for the auto-refund orchestration the admin reject
@@ -177,4 +180,63 @@ describe("AdminWalletController", () => {
       ).toHaveLength(0);
     });
   });
+
+  describe("manualCredit", () => {
+    it("delegates to walletService.adminManualCredit with admin.sub", async () => {
+      const dto = { amountPaise: 20000, remark: "Approved manual wallet adjustment" };
+      const res = await controller.manualCredit(adminJwt, "user-1", dto, "key-123");
+      expect(mockService.adminManualCredit).toHaveBeenCalledWith(
+        "user-1",
+        "admin-1",
+        dto,
+        "key-123"
+      );
+      expect(res).toEqual({ success: true, balancePaise: 70000 });
+    });
+  });
+
+  describe("manualDebit", () => {
+    it("delegates to walletService.adminManualDebit with admin.sub", async () => {
+      const dto = { amountPaise: 10000, remark: "Correction for duplicate credit" };
+      const res = await controller.manualDebit(adminJwt, "user-1", dto, "key-456");
+      expect(mockService.adminManualDebit).toHaveBeenCalledWith(
+        "user-1",
+        "admin-1",
+        dto,
+        "key-456"
+      );
+      expect(res).toEqual({ success: true, balancePaise: 60000 });
+    });
+  });
+
+  describe("AdminManualWalletAdjustmentDto validation", () => {
+    async function errorsFor(cls: any, payload: any) {
+      return validate(plainToInstance(cls, payload));
+    }
+
+    it("rejects when amount is missing and amountPaise is missing", async () => {
+      expect((await errorsFor(AdminManualWalletAdjustmentDto, { remark: "Valid remark" })).length).toBe(0);
+    });
+
+    it("rejects non-integer amountPaise", async () => {
+      expect((await errorsFor(AdminManualWalletAdjustmentDto, { amountPaise: 10.5, remark: "Valid" })).length).toBeGreaterThan(0);
+    });
+
+    it("rejects amountPaise less than 100", async () => {
+      expect((await errorsFor(AdminManualWalletAdjustmentDto, { amountPaise: 50, remark: "Valid" })).length).toBeGreaterThan(0);
+    });
+
+    it("rejects empty remark", async () => {
+      expect((await errorsFor(AdminManualWalletAdjustmentDto, { amountPaise: 5000, remark: "" })).length).toBeGreaterThan(0);
+    });
+
+    it("rejects short remark (< 3 chars)", async () => {
+      expect((await errorsFor(AdminManualWalletAdjustmentDto, { amountPaise: 5000, remark: "ab" })).length).toBeGreaterThan(0);
+    });
+
+    it("accepts valid manual adjustment payload", async () => {
+      expect(await errorsFor(AdminManualWalletAdjustmentDto, { amountPaise: 20000, remark: "Approved manual wallet adjustment" })).toHaveLength(0);
+    });
+  });
+
 });

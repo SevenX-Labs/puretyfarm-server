@@ -22,6 +22,7 @@ import { ListTransactionsQueryDto } from './dto/customer/list-transactions-query
 import { ListCreditRequestsQueryDto } from './dto/customer/list-credit-requests-query.dto';
 import { AdminListCreditRequestsQueryDto } from './dto/admin/list-credit-requests-query.dto';
 import { RejectCreditRequestDto } from './dto/admin/reject-credit-request.dto';
+import { AdminManualWalletAdjustmentDto } from './dto/admin/manual-wallet-adjustment.dto';
 
 @Injectable()
 export class WalletService {
@@ -1250,4 +1251,189 @@ export class WalletService {
 
     return result;
   }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ADMIN — MANUAL WALLET ADJUSTMENTS (CREDIT / DEBIT)
+  // ══════════════════════════════════════════════════════════════════
+
+  async adminManualCredit(
+    userId: string,
+    adminId: string,
+    dto: AdminManualWalletAdjustmentDto,
+    idempotencyKey?: string,
+  ) {
+    const amountPaise = dto.amountPaise ?? dto.amount;
+    if (!amountPaise || !Number.isInteger(amountPaise) || amountPaise <= 0) {
+      throw new BadRequestException({
+        error: "INVALID_CREDIT_AMOUNT",
+        message: "Credit amount must be a positive integer in paise",
+      });
+    }
+
+    const remark = dto.remark?.trim();
+    if (!remark || remark.length < 3) {
+      throw new BadRequestException({
+        error: "INVALID_REMARK",
+        message: "Remark must be at least 3 characters",
+      });
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, mobile: true, email: true },
+    });
+    if (!user) {
+      throw new NotFoundException({
+        error: "CUSTOMER_NOT_FOUND",
+        message: "Customer user not found",
+      });
+    }
+
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { id: true, email: true },
+    });
+    const adminTag = admin?.email || adminId;
+    const description = `[Admin: ${adminTag}] ${remark}`;
+    const referenceId = idempotencyKey?.trim() || crypto.randomUUID();
+
+    return this.prisma.$transaction(async (tx) => {
+      // Idempotency check
+      const existing = await tx.walletTransaction.findUnique({
+        where: {
+          type_referenceType_referenceId: {
+            type: WalletTransactionType.CREDIT,
+            referenceType: WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
+            referenceId,
+          },
+        },
+      });
+
+      if (existing) {
+        return {
+          success: true,
+          replayed: true,
+          message: "Manual credit replayed successfully",
+          walletId: existing.walletId,
+          balancePaise: existing.balanceAfterPaise,
+          transaction: {
+            id: existing.id,
+            type: existing.type,
+            amountPaise: existing.amountPaise,
+            balanceAfterPaise: existing.balanceAfterPaise,
+            createdAt: existing.createdAt,
+            description: existing.description,
+          },
+        };
+      }
+
+      const result = await this.creditWalletWithin(
+        tx,
+        userId,
+        amountPaise,
+        WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
+        referenceId,
+        description,
+      );
+
+      return {
+        success: true,
+        message: "Wallet credited successfully",
+        walletId: result.walletId,
+        balancePaise: result.balanceAfterPaise,
+        transactionId: result.transactionId,
+      };
+    });
+  }
+
+  async adminManualDebit(
+    userId: string,
+    adminId: string,
+    dto: AdminManualWalletAdjustmentDto,
+    idempotencyKey?: string,
+  ) {
+    const amountPaise = dto.amountPaise ?? dto.amount;
+    if (!amountPaise || !Number.isInteger(amountPaise) || amountPaise <= 0) {
+      throw new BadRequestException({
+        error: "INVALID_DEBIT_AMOUNT",
+        message: "Debit amount must be a positive integer in paise",
+      });
+    }
+
+    const remark = dto.remark?.trim();
+    if (!remark || remark.length < 3) {
+      throw new BadRequestException({
+        error: "INVALID_REMARK",
+        message: "Remark must be at least 3 characters",
+      });
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, mobile: true, email: true },
+    });
+    if (!user) {
+      throw new NotFoundException({
+        error: "CUSTOMER_NOT_FOUND",
+        message: "Customer user not found",
+      });
+    }
+
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { id: true, email: true },
+    });
+    const adminTag = admin?.email || adminId;
+    const description = `[Admin: ${adminTag}] ${remark}`;
+    const referenceId = idempotencyKey?.trim() || crypto.randomUUID();
+
+    return this.prisma.$transaction(async (tx) => {
+      // Idempotency check
+      const existing = await tx.walletTransaction.findUnique({
+        where: {
+          type_referenceType_referenceId: {
+            type: WalletTransactionType.DEBIT,
+            referenceType: WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
+            referenceId,
+          },
+        },
+      });
+
+      if (existing) {
+        return {
+          success: true,
+          replayed: true,
+          message: "Manual debit replayed successfully",
+          walletId: existing.walletId,
+          balancePaise: existing.balanceAfterPaise,
+          transaction: {
+            id: existing.id,
+            type: existing.type,
+            amountPaise: existing.amountPaise,
+            balanceAfterPaise: existing.balanceAfterPaise,
+            createdAt: existing.createdAt,
+            description: existing.description,
+          },
+        };
+      }
+
+      const result = await this.debitWalletWithin(
+        tx,
+        userId,
+        amountPaise,
+        WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
+        referenceId,
+        description,
+      );
+
+      return {
+        success: true,
+        message: "Wallet debited successfully",
+        walletId: result.walletId,
+        balancePaise: result.balanceAfterPaise,
+        transactionId: result.transactionId,
+      };
+    });
+  }
+
 }
