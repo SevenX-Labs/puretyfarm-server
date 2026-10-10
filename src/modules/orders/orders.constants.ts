@@ -24,8 +24,13 @@ export const ALLOWED_STATUS_TRANSITIONS: Record<string, string[]> = {
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
   ],
-  [OrderStatus.CONFIRMED]: [OrderStatus.PROCESSING, OrderStatus.CANCELLED],
+  [OrderStatus.CONFIRMED]: [
+    OrderStatus.DELIVERED,
+    OrderStatus.PROCESSING,
+    OrderStatus.CANCELLED,
+  ],
   [OrderStatus.PROCESSING]: [
+    OrderStatus.DELIVERED,
     OrderStatus.OUT_FOR_DELIVERY,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,

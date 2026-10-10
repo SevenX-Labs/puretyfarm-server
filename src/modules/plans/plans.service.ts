@@ -1327,6 +1327,21 @@ export class PlansService {
       return;
     }
 
+    // Idempotency is still per-delivery (an order already references the
+    // delivery => skip it), but resolved with ONE query instead of a
+    // findUnique per delivery. Inside an interactive transaction every extra
+    // round-trip counts against the timeout, and a monthly window is dozens of
+    // deliveries; pre-loading the set that already has orders keeps the write
+    // loop as short as it can be.
+    const deliveryIds = deliveries.map((d: any) => d.id);
+    const existingOrders = await (tx as any).order.findMany({
+      where: { planDeliveryId: { in: deliveryIds } },
+      select: { planDeliveryId: true },
+    });
+    const deliveryIdsWithOrder = new Set<string>(
+      existingOrders.map((o: any) => o.planDeliveryId),
+    );
+
     const address = await (tx as any).customerAddress.findFirst({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -1357,10 +1372,7 @@ export class PlansService {
         };
 
     for (const d of deliveries) {
-      const existingOrder = await (tx as any).order.findUnique({
-        where: { planDeliveryId: d.id },
-      });
-      if (existingOrder) continue;
+      if (deliveryIdsWithOrder.has(d.id)) continue;
 
       const orderNumber = await generateOrderNumber(tx);
       const invoiceNumber = await generateInvoiceNumber(tx);
