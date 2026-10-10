@@ -23,6 +23,7 @@ describe("AdminPlansController", () => {
     getAdminPlans: jest.fn().mockResolvedValue({ plans: [], unconfigured: [] }),
     getAdminPlan: jest.fn().mockResolvedValue({ type: PlanType.BUY_ONCE }),
     updateAdminPlan: jest.fn().mockResolvedValue({ type: PlanType.BUY_ONCE }),
+    adminApproveSubscription: jest.fn().mockResolvedValue({ success: true }),
   };
 
   beforeEach(async () => {
@@ -69,7 +70,7 @@ describe("AdminPlansController", () => {
   it("exposes no create or delete route (plan types are fixed)", () => {
     const methods = Object.getOwnPropertyNames(AdminPlansController.prototype);
     expect(methods.sort()).toEqual(
-      ["constructor", "getPlan", "getPlans", "getSubscriptions", "updatePlan"].sort(),
+      ["constructor", "getPlan", "getPlans", "getSubscriptions", "updatePlan", "approveSubscription", "updateSubscriptionStartDate"].sort(),
     );
   });
 
@@ -119,4 +120,19 @@ describe("AdminPlansController", () => {
       },
     );
   });
+
+  it("approveSubscription delegates with admin sub, subscription id, and dto", async () => {
+    const dto = { firstDeliveryDate: "2026-10-15", note: "Approved" };
+    const admin = { sub: "admin-1", mobile: "9876543210", role: "ADMIN" } as any;
+    await controller.approveSubscription(admin, "sub-1", dto);
+    expect(mockService.adminApproveSubscription).toHaveBeenCalledWith("admin-1", "sub-1", dto);
+  });
+
+  it("updateSubscriptionStartDate delegates with admin sub, subscription id, and dto", async () => {
+    const dto = { firstDeliveryDate: "2026-10-16" };
+    const admin = { sub: "admin-1", mobile: "9876543210", role: "ADMIN" } as any;
+    await controller.updateSubscriptionStartDate(admin, "sub-2", dto);
+    expect(mockService.adminApproveSubscription).toHaveBeenCalledWith("admin-1", "sub-2", dto);
+  });
+
 });

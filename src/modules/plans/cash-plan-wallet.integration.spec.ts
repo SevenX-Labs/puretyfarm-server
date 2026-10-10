@@ -370,11 +370,21 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(result.success).toBe(true);
     expect(result.cashCollection.status).toBe(CashCollectionStatus.CONFIRMED);
 
-    // 1. Verify Plan is CONFIRMED and deliveries materialized
+    // 1. Verify Plan is marked PAID, but deliveries are NOT materialized during payment approval
     const sel = db.planSelections.find((s) => s.id === selectionId);
-    expect(sel?.status).toBe(PlanSelectionStatus.CONFIRMED);
     expect(sel?.paidAt).toBeInstanceOf(Date);
     expect(sel?.paidAmountPaise).toBe(25000);
+    expect(db.planDeliveries.length).toBe(0);
+    expect(db.orders.length).toBe(0);
+
+    // 1b. Now Admin approves the subscription in the Subscriptions tab with first delivery date
+    const approveRes = await plansService.adminApproveSubscription(
+      ADMIN_ID,
+      selectionId,
+      { firstDeliveryDate: '2026-10-15' },
+    );
+    expect(approveRes.success).toBe(true);
+    expect(sel?.status).toBe(PlanSelectionStatus.CONFIRMED);
     expect(db.planDeliveries.length).toBe(7);
 
     // Orders materialised with the CORRECT plan type and configured price —
@@ -511,16 +521,19 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(col?.status).toBe(CashCollectionStatus.PENDING);
   });
 
-  it("Missing plan configuration: fails safely (PLAN_CONFIG_MISSING) and rolls back the whole confirmation", async () => {
+  it("Missing plan configuration during subscription approval: fails safely (PLAN_CONFIG_MISSING) and rolls back schedule generation", async () => {
     const { selectionId, collectionId } = seedCashPlan(25000, 25000);
-    // Simulate the plan's configuration being absent: without it, orders cannot
-    // be priced. We must NOT silently create wrongly-priced (₹80 / Buy Once)
-    // records — we fail and roll back instead.
+    await paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {});
+
+    // Simulate the plan's configuration being absent at subscription approval time:
+    // without it, orders cannot be priced. We fail and roll back instead.
     db.planConfigs = [];
 
     let caught: any;
     try {
-      await paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {});
+      await plansService.adminApproveSubscription(ADMIN_ID, selectionId, {
+        firstDeliveryDate: '2026-10-15',
+      });
     } catch (err) {
       caught = err;
     }
@@ -528,18 +541,9 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(caught).toBeInstanceOf(BadRequestException);
     expect(caught.getResponse().error).toBe("PLAN_CONFIG_MISSING");
 
-    // Nothing was partially committed: no wallet movement, plan still pending,
-    // no deliveries and no orders created.
-    expect(db.transactions).toHaveLength(0);
-    const sel = db.planSelections.find((s) => s.id === selectionId);
-    expect(sel?.status).toBe(PlanSelectionStatus.PENDING_PAYMENT);
-    expect(sel?.paidAt == null).toBe(true);
+    // Deliveries and orders were not created
     expect(db.planDeliveries).toHaveLength(0);
     expect(db.orders).toHaveLength(0);
     expect(db.invoices).toHaveLength(0);
-    const wallet = db.wallets.find((w) => w.userId === USER_ID);
-    expect(wallet?.balancePaise ?? 0).toBe(0);
-    const col = db.cashCollections.find((c) => c.id === collectionId);
-    expect(col?.status).toBe(CashCollectionStatus.PENDING);
   });
 });

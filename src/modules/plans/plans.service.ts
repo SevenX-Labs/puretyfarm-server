@@ -39,6 +39,7 @@ import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
 import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
 import { ConfirmPlanDto, PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
 import { parseUpdateAdminPlanDto } from "./dto/admin/update-admin-plan.dto";
+import { ApproveSubscriptionPlanDto } from "./dto/admin/approve-subscription.dto";
 import {
   generateOrderNumber,
   generateInvoiceNumber,
@@ -996,6 +997,26 @@ export class PlansService {
       return;
     }
 
+    // Reconcile existing records: If there are unfulfilled scheduled deliveries
+    // for this selection, clean them up along with their uncompleted orders first
+    // so approving / updating start dates is idempotent and does not produce duplicate records.
+    const existingDeliveries = await (tx as any).planDelivery.findMany({
+      where: { selectionId, status: DeliveryStatus.SCHEDULED },
+      select: { id: true },
+    });
+    if (existingDeliveries && existingDeliveries.length > 0) {
+      const deliveryIds = existingDeliveries.map((d: any) => d.id);
+      await (tx as any).order.deleteMany({
+        where: {
+          planDeliveryId: { in: deliveryIds },
+          status: "CONFIRMED",
+        },
+      });
+      await (tx as any).planDelivery.deleteMany({
+        where: { id: { in: deliveryIds } },
+      });
+    }
+
     await (tx as any).planDelivery.createMany({
       data: dates.map((date, i) => ({
         selectionId,
@@ -1169,12 +1190,6 @@ export class PlansService {
       }));
 
     if (collection) {
-      // Cash collected for a plan is set to the plan total at quote-confirm
-      // time (see confirmPlan CASH branch) and cannot be mutated afterwards.
-      // Guard anyway: if less was somehow recorded, surface a specific error
-      // instead of letting the plan debit fail with INSUFFICIENT_WALLET_BALANCE,
-      // which hides the real cause. Overpayment is allowed as surplus
-      // (unchanged behavior).
       if (collection.amountPaise < selection.quote.totalSellingAmount) {
         throw new BadRequestException({
           error: "CASH_SHORT_FOR_PLAN",
@@ -1211,33 +1226,80 @@ export class PlansService {
 
     const now = new Date();
 
-    // The cut-off is re-evaluated here, not reused from quote-confirm time: a
-    // cash plan is activated by the admin, possibly a day later, and the
-    // customer's first delivery must be a date that is still in the future.
-    // For MONTHLY this also triggers the stale-quote policy in
-    // resolveMonthlyWindow rather than booking days that have passed.
-    const schedule = this.resolveScheduleFromQuote(selection.quote);
-
+    // Mark plan as paid, but DO NOT activate subscription schedule or materialize delivery rows.
+    // The subscription schedule is activated only when the admin explicitly approves and sets the
+    // first delivery date via the Subscription tab.
     await (tx as any).planSelection.update({
       where: { id: planSelectionId },
       data: {
-        status: PlanSelectionStatus.CONFIRMED,
         paidAt: now,
         paidAmountPaise: selection.quote.totalSellingAmount,
-        // Keep the live schedule window in step with the deliveries actually
-        // materialised below, so Manage Delivery does not show a start date
-        // the customer has no delivery on.
-        startDate: schedule.start,
-        endDate: schedule.end,
       },
     });
+  }
 
-    await (tx as any).planQuote.updateMany({
-      where: { id: selection.quoteId, status: PlanQuoteStatus.PENDING },
-      data: { status: PlanQuoteStatus.CONFIRMED },
+  async adminApproveSubscription(
+    adminId: string,
+    subscriptionId: string,
+    dto: ApproveSubscriptionPlanDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const selection = await (tx as any).planSelection.findUnique({
+        where: { id: subscriptionId },
+        include: { quote: true, cashCollection: true },
+      });
+
+      if (!selection) {
+        throw new NotFoundException("Subscription not found");
+      }
+
+      // Validate payment status before approving subscription
+      if (!selection.paidAt && selection.paymentMethod === "CASH" && selection.cashCollection?.status !== "CONFIRMED") {
+        throw new BadRequestException("Physical cash receipt has not been confirmed yet. Please confirm payment in Payments/Wallets first.");
+      }
+
+      if (!selection) {
+        throw new NotFoundException("Subscription not found");
+      }
+
+      const now = new Date();
+      const schedule = this.resolveScheduleFromQuote(
+        selection.quote,
+        now,
+        dto.firstDeliveryDate,
+      );
+
+      await (tx as any).planSelection.update({
+        where: { id: subscriptionId },
+        data: {
+          status: PlanSelectionStatus.CONFIRMED,
+          startDate: schedule.start,
+          endDate: schedule.end,
+          ...(selection.paidAt ? {} : { paidAt: now }),
+        },
+      });
+
+      await (tx as any).planQuote.updateMany({
+        where: { id: selection.quoteId, status: PlanQuoteStatus.PENDING },
+        data: { status: PlanQuoteStatus.CONFIRMED },
+      });
+
+      await this.materializeDeliveries(
+        tx,
+        subscriptionId,
+        selection.userId,
+        schedule,
+        selection.planType as PlanType,
+      );
+
+      return {
+        success: true,
+        message: "Subscription approved and delivery schedule generated successfully",
+        subscriptionId,
+        startDate: toIsoDateString(schedule.start),
+        endDate: toIsoDateString(schedule.end),
+      };
     });
-
-    await this.materializeDeliveries(tx, planSelectionId, selection.userId, schedule, selection.planType);
   }
 
   // ── Admin: Plan Configuration ───────────────────────────────────
@@ -1455,6 +1517,7 @@ export class PlansService {
      * explicit about "now".
      */
     now: Date = new Date(),
+    explicitStartDate?: Date | string | null,
   ): {
     frequency: DeliveryFrequency;
     quantityMode: QuantityMode;
@@ -1464,6 +1527,72 @@ export class PlansService {
     start: Date;
     end: Date;
   } {
+    if (explicitStartDate) {
+      let parsedDate: Date;
+      if (explicitStartDate instanceof Date) {
+        if (isNaN(explicitStartDate.getTime())) {
+          throw new BadRequestException("Invalid first delivery date");
+        }
+        parsedDate = toIstDateOnly(explicitStartDate);
+      } else if (typeof explicitStartDate === "string") {
+        const trimmed = explicitStartDate.trim();
+        if (!/^d{4}-d{2}-d{2}$/.test(trimmed) && isNaN(Date.parse(trimmed))) {
+          throw new BadRequestException("Invalid first delivery date");
+        }
+        if (/^d{4}-d{2}-d{2}$/.test(trimmed)) {
+          parsedDate = new Date(`${trimmed}T00:00:00.000Z`);
+        } else {
+          parsedDate = toIstDateOnly(new Date(trimmed));
+        }
+      } else {
+        throw new BadRequestException("Invalid first delivery date");
+      }
+
+      if (isNaN(parsedDate.getTime())) {
+        throw new BadRequestException("Invalid first delivery date");
+      }
+
+      const start = parsedDate;
+      const today = toIstDateOnly(now);
+      if (start.getTime() < today.getTime()) {
+        throw new BadRequestException("First delivery date cannot be in the past");
+      }
+
+      if (quote.planType === PlanType.MONTHLY) {
+        const frequency =
+          (quote.frequency as DeliveryFrequency | null) ?? DeliveryFrequency.DAILY;
+        const occurrences = Math.max(1, quote.deliveryOccurrences);
+        const step = frequency === DeliveryFrequency.ALTERNATE_DAYS ? 2 : 1;
+        const end = addDays(start, (occurrences - 1) * step);
+
+        return {
+          frequency,
+          quantityMode:
+            (quote.quantityMode as QuantityMode | null) ?? QuantityMode.FIXED,
+          quantity: quote.quantity,
+          quantityA: quote.quantityA,
+          quantityB: quote.quantityB,
+          start,
+          end,
+        };
+      }
+
+      const occurrences =
+        quote.planType === PlanType.SEVEN_DAY_TRIAL
+          ? Math.max(1, quote.deliveryOccurrences)
+          : 1;
+      const end = addDays(start, occurrences - 1);
+      return {
+        frequency: DeliveryFrequency.DAILY,
+        quantityMode: QuantityMode.FIXED,
+        quantity: quote.quantity,
+        quantityA: null,
+        quantityB: null,
+        start,
+        end,
+      };
+    }
+
     if (quote.planType === PlanType.MONTHLY) {
       const frequency =
         (quote.frequency as DeliveryFrequency | null) ?? DeliveryFrequency.DAILY;

@@ -8,10 +8,14 @@ import {
   Param,
   ParseEnumPipe,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from "@nestjs/common";
 import { PlansService } from "./plans.service";
+import { ApproveSubscriptionPlanDto } from "./dto/admin/approve-subscription.dto";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
 import { PlanType } from "./plans.constants";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -54,6 +58,26 @@ export class AdminPlansController {
       planType,
       search,
     });
+  }
+
+  @Post("subscriptions/:id/approve")
+  @HttpCode(HttpStatus.OK)
+  async approveSubscription(
+    @CurrentUser() admin: JwtPayload,
+    @Param("id") id: string,
+    @Body() dto: ApproveSubscriptionPlanDto,
+  ) {
+    return this.plansService.adminApproveSubscription(admin.sub, id, dto);
+  }
+
+  @Post("subscriptions/:id/start-date")
+  @HttpCode(HttpStatus.OK)
+  async updateSubscriptionStartDate(
+    @CurrentUser() admin: JwtPayload,
+    @Param("id") id: string,
+    @Body() dto: ApproveSubscriptionPlanDto,
+  ) {
+    return this.plansService.adminApproveSubscription(admin.sub, id, dto);
   }
 
   @Get()

@@ -1598,7 +1598,7 @@ describe("PlansService", () => {
   });
 
   describe("confirmPlanAfterCashPayment", () => {
-    it("confirms a PENDING_PAYMENT selection, sets paidAt, and materialises deliveries", async () => {
+    it("confirms a PENDING_PAYMENT selection, sets paidAt, but does NOT materialize deliveries", async () => {
       const mockTx: any = {
         planSelection: {
           findUnique: jest.fn().mockResolvedValue({
@@ -1654,13 +1654,11 @@ describe("PlansService", () => {
         expect.objectContaining({
           where: { id: "sel-1" },
           data: expect.objectContaining({
-            status: PlanSelectionStatus.CONFIRMED,
             paidAmountPaise: 500,
           }),
         }),
       );
-      expect(mockTx.planQuote.updateMany).toHaveBeenCalled();
-      expect(mockTx.planDelivery.createMany).toHaveBeenCalled();
+      expect(mockTx.planDelivery.createMany).not.toHaveBeenCalled();
     });
 
     it("throws if selection is not PENDING_PAYMENT", async () => {
@@ -1686,6 +1684,88 @@ describe("PlansService", () => {
       ).rejects.toThrow(NotFoundException);
     });
   });
+
+
+    describe("adminApproveSubscription", () => {
+      it("approves a paid plan, sets start/end date, and materializes deliveries", async () => {
+        const selectionRow = {
+          id: "sub-100",
+          userId: USER,
+          planType: PlanType.BUY_ONCE,
+          status: PlanSelectionStatus.PENDING_PAYMENT,
+          paidAt: new Date(),
+          quoteId: "quote-100",
+          quote: {
+            id: "quote-100",
+            planType: PlanType.BUY_ONCE,
+            totalSellingAmount: 10000,
+            deliveryOccurrences: 1,
+            quantity: 1,
+            quantityMode: QuantityMode.FIXED,
+            quantityA: null,
+            quantityB: null,
+            frequency: null,
+            billingPeriodStart: null,
+            billingPeriodEnd: null,
+            status: PlanQuoteStatus.PENDING,
+          },
+        };
+
+        mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+          const tx = {
+            planSelection: {
+              findUnique: jest.fn().mockResolvedValue(selectionRow),
+              update: jest.fn().mockResolvedValue(selectionRow),
+            },
+            planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+            planDelivery: { createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+            order: { deleteMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]), create: jest.fn() },
+            planConfig: { findUnique: jest.fn().mockResolvedValue(buyOnceConfig) },
+            customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
+          };
+          return cb(tx);
+        });
+
+        const res = await service.adminApproveSubscription("admin-1", "sub-100", {
+          firstDeliveryDate: "2026-10-15",
+        });
+
+        expect(res.success).toBe(true);
+        expect(res.startDate).toBe("2026-10-15");
+      });
+
+      it("rejects approving an unpaid CASH plan whose cash collection is not confirmed", async () => {
+        const unpaidSelectionRow = {
+          id: "sub-unpaid",
+          userId: USER,
+          planType: PlanType.MONTHLY,
+          paymentMethod: "CASH",
+          paidAt: null,
+          cashCollection: { status: "PENDING" },
+          quote: {
+            planType: PlanType.MONTHLY,
+            deliveryOccurrences: 30,
+            quantity: 1,
+            frequency: DeliveryFrequency.DAILY,
+          },
+        };
+
+        mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+          const tx = {
+            planSelection: {
+              findUnique: jest.fn().mockResolvedValue(unpaidSelectionRow),
+            },
+          };
+          return cb(tx);
+        });
+
+        await expect(
+          service.adminApproveSubscription("admin-1", "sub-unpaid", {
+            firstDeliveryDate: "2026-10-15",
+          }),
+        ).rejects.toThrow("Physical cash receipt has not been confirmed yet");
+      });
+    });
 
   // ── Admin: plan configuration ─────────────────────────────────────
 
@@ -2240,4 +2320,106 @@ describe("PlansService", () => {
       });
     });
   });
+
+    describe("Admin explicit firstDeliveryDate selection", () => {
+      it("anchors BUY_ONCE on the admin-selected date regardless of order cut-off", () => {
+        const quote = {
+          planType: PlanType.BUY_ONCE,
+          frequency: null,
+          quantityMode: null,
+          quantity: 1,
+          quantityA: null,
+          quantityB: null,
+          deliveryOccurrences: 1,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+        };
+        const now = new Date("2026-10-10T12:00:00.000Z"); // 17:30 IST
+        const explicitDate = "2026-10-15";
+        const schedule = service.resolveScheduleFromQuote(quote, now, explicitDate);
+
+        expect(schedule.start).toEqual(new Date("2026-10-15T00:00:00.000Z"));
+        expect(schedule.end).toEqual(new Date("2026-10-15T00:00:00.000Z"));
+        expect(schedule.frequency).toBe(DeliveryFrequency.DAILY);
+      });
+
+      it("anchors SEVEN_DAY_TRIAL on the admin-selected date and preserves 7-day duration", () => {
+        const quote = {
+          planType: PlanType.SEVEN_DAY_TRIAL,
+          frequency: null,
+          quantityMode: null,
+          quantity: 1,
+          quantityA: null,
+          quantityB: null,
+          deliveryOccurrences: 7,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+        };
+        const now = new Date("2026-10-10T12:00:00.000Z");
+        const explicitDate = "2026-10-14";
+        const schedule = service.resolveScheduleFromQuote(quote, now, explicitDate);
+
+        expect(schedule.start).toEqual(new Date("2026-10-14T00:00:00.000Z"));
+        expect(schedule.end).toEqual(new Date("2026-10-20T00:00:00.000Z"));
+        expect(schedule.frequency).toBe(DeliveryFrequency.DAILY);
+      });
+
+      it("anchors MONTHLY on the admin-selected date with ALTERNATE_DAYS cadence", () => {
+        const quote = {
+          planType: PlanType.MONTHLY,
+          frequency: DeliveryFrequency.ALTERNATE_DAYS,
+          quantityMode: QuantityMode.FIXED,
+          quantity: 2,
+          quantityA: null,
+          quantityB: null,
+          deliveryOccurrences: 15,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+        };
+        const now = new Date("2026-10-10T12:00:00.000Z");
+        const explicitDate = "2026-10-12";
+        const schedule = service.resolveScheduleFromQuote(quote, now, explicitDate);
+
+        expect(schedule.start).toEqual(new Date("2026-10-12T00:00:00.000Z"));
+        // (15 - 1) * 2 = 28 days -> 12 Oct + 28 days = 09 Nov
+        expect(schedule.end).toEqual(new Date("2026-11-09T00:00:00.000Z"));
+        expect(schedule.frequency).toBe(DeliveryFrequency.ALTERNATE_DAYS);
+      });
+
+      it("rejects an invalid date format", () => {
+        const quote = {
+          planType: PlanType.BUY_ONCE,
+          frequency: null,
+          quantityMode: null,
+          quantity: 1,
+          quantityA: null,
+          quantityB: null,
+          deliveryOccurrences: 1,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+        };
+        expect(() =>
+          service.resolveScheduleFromQuote(quote, new Date(), "invalid-date"),
+        ).toThrow(BadRequestException);
+      });
+
+      it("rejects a past date relative to current IST date", () => {
+        const quote = {
+          planType: PlanType.BUY_ONCE,
+          frequency: null,
+          quantityMode: null,
+          quantity: 1,
+          quantityA: null,
+          quantityB: null,
+          deliveryOccurrences: 1,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+        };
+        const now = new Date("2026-10-10T12:00:00.000Z"); // 10 Oct in IST
+        expect(() =>
+          service.resolveScheduleFromQuote(quote, now, "2026-10-09"),
+        ).toThrow("First delivery date cannot be in the past");
+      });
+    });
+
 });

@@ -2181,7 +2181,7 @@ export class PaymentsService {
 
             return {
               success: true,
-              message: 'Cash confirmed and plan activated.',
+              message: 'Cash payment confirmed.',
               cashCollection: {
                 id: collection.id,
                 status: CashCollectionStatus.CONFIRMED,

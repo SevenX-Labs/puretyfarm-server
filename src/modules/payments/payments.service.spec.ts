@@ -1793,7 +1793,7 @@ describe('PaymentsService', () => {
       const result = await service.confirmCashCollection(planRow.id, 'admin-1', { note: 'reconciled' });
 
       expect(result.success).toBe(true);
-      expect(result.message).toBe('Cash confirmed and plan activated.');
+      expect(result.message).toBe('Cash payment confirmed.');
       expect(result.cashCollection.status).toBe(CashCollectionStatus.CONFIRMED);
       expect(plansServiceMock.confirmPlanAfterCashPayment).toHaveBeenCalledWith(
         expect.anything(),
