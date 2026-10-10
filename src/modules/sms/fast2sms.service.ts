@@ -17,11 +17,23 @@ export class Fast2SmsService {
   }
 
   /**
-   * Sends an OTP via Fast2SMS Bulk V2 OTP API.
+   * Sends an OTP via Fast2SMS Bulk V2 OTP API and mirrors it to the server console.
    * Method: POST https://www.fast2sms.com/dev/bulkV2
    */
   async sendOtp(phone: string, otp: string): Promise<SendOtpSmsResult> {
     const apiKey = this.apiKey || process.env.FAST2SMS_OTP_API_KEY;
+    const cleanPhone = phone.replace(/\D/g, "").slice(-10);
+
+    // Always log clean OTP banner to server console for developer convenience
+    console.log(
+      `\n========================================\n` +
+      `[PuretyFarm Auth] 🥛 OTP DISPATCH\n` +
+      `Recipient : ${cleanPhone} (${phone})\n` +
+      `Code      : ${otp}\n` +
+      `Provider  : Fast2SMS (POST https://www.fast2sms.com/dev/bulkV2)\n` +
+      `Expires   : 5 Minutes\n` +
+      `========================================\n`
+    );
 
     if (!apiKey) {
       this.logger.warn(
@@ -34,9 +46,6 @@ export class Fast2SmsService {
     }
 
     try {
-      // 10-digit Indian mobile number
-      const cleanPhone = phone.replace(/\D/g, "").slice(-10);
-
       const response = await fetch("https://www.fast2sms.com/dev/bulkV2", {
         method: "POST",
         headers: {
@@ -52,13 +61,13 @@ export class Fast2SmsService {
 
       const data = await response.json().catch(() => null);
 
-      if (!response.ok || (data && data.return === false)) {
+      if (!response.ok || (data && (data.return === false || data.status_code === 996))) {
         const errorMsg =
           data && Array.isArray(data.message)
             ? data.message.join(", ")
             : (data && data.message) || `Fast2SMS error HTTP ${response.status}`;
-        this.logger.error(
-          `Fast2SMS OTP delivery failed for ${cleanPhone}: ${errorMsg}`,
+        this.logger.warn(
+          `Fast2SMS OTP delivery notice for ${cleanPhone}: ${errorMsg}`,
         );
         return {
           success: false,
