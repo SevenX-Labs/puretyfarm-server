@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   ConflictException,
+  NotImplementedException,
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -22,6 +23,7 @@ import {
 } from "../plans/plans.service";
 import { toIsoDateString } from "../../common/utils/ist-date.util";
 import { PlansService } from "../plans/plans.service";
+import type { OrderPriceSnapshot } from "../plans/plans.service";
 import { SkipDeliveryDto } from "./dto/customer/skip-delivery.dto";
 import { ChangeQuantityDto } from "./dto/customer/change-quantity.dto";
 import { ChangeFrequencyDto } from "./dto/customer/change-frequency.dto";
@@ -81,13 +83,6 @@ const VIEWABLE_STATUSES: string[] = [
  * when a schedule changes. Anything beyond these is a fulfilment record.
  */
 const REPLACEABLE_ORDER_STATUSES: string[] = ["PENDING", "CONFIRMED"];
-
-/**
- * Orders still in the warehouse, so still relevant when an approved quantity
- * change leaves their snapshot stale. Their money is never rewritten — see
- * `applyQuantityChange`.
- */
-const REPRICEABLE_ORDER_STATUSES: string[] = ["PENDING", "CONFIRMED"];
 
 // ─── Service ────────────────────────────────────────────────────────
 
@@ -796,12 +791,12 @@ export class ManageDeliveryService {
 
     switch (request.requestType) {
       case ChangeRequestType.CHANGE_QUANTITY:
-        return this.applyQuantityChange(tx, selection, requested);
+        return this.blockQuantityChangeApproval();
       case ChangeRequestType.CHANGE_FREQUENCY:
         await this.applyFrequencyChange(tx, selection, requested);
         return [];
       case ChangeRequestType.CHANGE_PLAN:
-        return this.applyPlanChange(tx, selection, requested);
+        return this.blockPlanChangeApproval();
       case ChangeRequestType.PAUSE:
         await this.applyPause(tx, selection, requested, request.id);
         return [];
@@ -815,101 +810,39 @@ export class ManageDeliveryService {
     }
   }
 
-  private async applyQuantityChange(
-    tx: any,
-    selection: any,
-    requested: Record<string, any>,
-  ): Promise<string[]> {
-    const today = toDateOnly(new Date());
-    const quantity = requested.quantity;
-
-    // Revalidate against the CURRENT configuration, not the snapshot taken when
-    // the customer submitted. An admin may have tightened quantityMin/Max in
-    // the meantime, and approval must not write a now-illegal quantity.
-    const config = await tx.planConfig.findUnique({
-      where: { planType: selection.planType },
-    });
-    if (!config || !config.isActive) {
-      throw new ConflictException(
-        `The ${selection.planType} plan is no longer available, so this request cannot be approved.`,
-      );
-    }
-    if (
-      typeof quantity !== "number" ||
-      !Number.isInteger(quantity) ||
-      quantity < config.quantityMin ||
-      quantity > config.quantityMax
-    ) {
-      throw new ConflictException(
-        `The requested quantity (${quantity}L) is outside the plan's current ` +
-          `limits of ${config.quantityMin}-${config.quantityMax}L. Ask the customer to resubmit.`,
-      );
-    }
-
-    // Future, unfulfilled deliveries only — strictly after today in IST.
-    const futureDeliveries = await tx.planDelivery.findMany({
-      where: {
-        selectionId: selection.id,
-        userId: selection.userId,
-        deliveryDate: { gt: today },
-        status: DeliveryStatus.SCHEDULED,
-      },
-      include: { order: { select: { id: true, status: true } } },
-    });
-
-    const deliveryIds = futureDeliveries.map((d: any) => d.id);
-    if (deliveryIds.length > 0) {
-      await tx.planDelivery.updateMany({
-        where: { id: { in: deliveryIds }, status: DeliveryStatus.SCHEDULED },
-        data: { quantityLitres: quantity },
-      });
-    }
-
-    // The dispatch orders behind those deliveries are deliberately NOT
-    // repriced.
-    //
-    // A plan order is created PAID with an immutable price snapshot and an
-    // Invoice, and the money actually collected lives at plan level
-    // (`PlanSelection.paidAmountPaise`, which is what the dashboard aggregates
-    // as sales). Rewriting an order's `totalPaise` would therefore leave it
-    // disagreeing with its own invoice and with the amount the customer paid,
-    // and reconciling that difference — extra charge, refund or wallet
-    // adjustment — is a settlement rule this codebase does not define.
-    //
-    // So: the delivery quantity (what is physically dispatched) is updated, and
-    // every financial snapshot is left exactly as it was. The resulting
-    // mismatch is surfaced to the admin rather than silently resolved.
-    const staleOrders = futureDeliveries
-      .filter((d: any) => d.order && REPRICEABLE_ORDER_STATUSES.includes(d.order.status))
-      .map((d: any) => d.order.id);
-
-    if (staleOrders.length > 0) {
-      this.logger.warn(
-        `Approved quantity change left ${staleOrders.length} prepaid dispatch ` +
-          `order(s) at their original quantity and price: selectionId=${selection.id} ` +
-          `newQuantityLitres=${quantity} orderIds=${staleOrders.join(",")}. ` +
-          `Financial snapshots and invoices are intact; settling the difference ` +
-          `needs a business rule that does not exist yet.`,
-      );
-    }
-
-    await tx.planSelection.update({
-      where: { id: selection.id },
-      data: {
-        quantityMode: requested.quantityMode ?? QuantityMode.FIXED,
-        quantity,
-        quantityA: null,
-        quantityB: null,
-      },
-    });
-
-    return staleOrders.length > 0
-      ? [
-          `${staleOrders.length} already-paid dispatch order(s) still show the ` +
-            `previous quantity and amount. Their invoices and payment records ` +
-            `were left untouched — settle the difference manually if required.`,
-        ]
-      : [];
+  /**
+   * TEMPORARILY DISABLED — approving a CHANGE_QUANTITY request is blocked until
+   * a prepaid-plan billing / refund / settlement policy exists.
+   *
+   * A plan's upcoming deliveries are each backed by an order created PAID with
+   * an immutable price snapshot and an Invoice, and the money actually
+   * collected lives at plan level (`PlanSelection.paidAmountPaise`, what the
+   * dashboard aggregates as sales). Changing the active quantity changes what is
+   * physically dispatched and therefore what is owed, but there is no defined,
+   * consistently implemented rule for reconciling the difference — extra
+   * charge, refund, or wallet adjustment — against those immutable financial
+   * snapshots. Applying the change anyway would leave deliveries, orders,
+   * invoices and collected amounts disagreeing with each other.
+   *
+   * This throws (rather than returns) on purpose. It runs inside the approval
+   * transaction, AFTER the request row was optimistically flipped to APPROVED,
+   * so throwing rolls the whole transaction back: the request stays PENDING and
+   * reviewable, and the active quantity — along with every delivery, order and
+   * invoice — is left exactly as it was. The admin sees the explanation below.
+   *
+   * Re-enable once a prepaid-plan quantity-change billing/refund/settlement
+   * policy is defined and implemented.
+   */
+  private blockQuantityChangeApproval(): Promise<string[]> {
+    throw new NotImplementedException(
+      "Approving quantity changes is temporarily disabled. A prepaid plan's " +
+        "upcoming deliveries are already paid against fixed price snapshots and " +
+        "invoices, and there is no billing, refund or settlement rule for the " +
+        "difference a new quantity would create. The request has been kept " +
+        "PENDING and the active quantity is unchanged — reject it, or re-enable " +
+        "approval once a prepaid-plan quantity-change billing/refund/settlement " +
+        "policy is in place.",
+    );
   }
 
   private async applyFrequencyChange(
@@ -946,11 +879,19 @@ export class ManageDeliveryService {
     // Give the newly created deliveries their dispatch orders. Reconciliation
     // cancelled the orders of any date that dropped out of the cadence, so
     // without this the new cadence had deliveries and no orders.
+    //
+    // These are new orders for an EXISTING subscription, so they must reuse the
+    // price the customer already locked in — not the current PlanConfig, which
+    // an admin may have edited since purchase. Resolve the frozen snapshot from
+    // the subscription's own orders; if none can be established, the operation
+    // is blocked rather than silently repriced (see `requirePriceSnapshot`).
+    const freqPriceSnapshot = await this.requirePriceSnapshot(tx, selection.id);
     await this.plansService.materializeOrdersForSchedule(
       tx,
       selection.id,
       selection.userId,
       selection.planType,
+      freqPriceSnapshot,
     );
 
     await tx.planSelection.update({
@@ -1245,69 +1186,115 @@ export class ManageDeliveryService {
     // Step 3 — give every revived or newly created delivery a dispatch order.
     // The pause CANCELLED the originals (kept for audit), so without this the
     // plan would resume with deliveries and no orders.
+    //
+    // A resume must never silently reprice: the subscription was paid for at a
+    // fixed price, so the top-up orders are materialised at the snapshot read
+    // back from the subscription's own (cancelled) orders, not at the current
+    // PlanConfig. If that snapshot cannot be established the resume is blocked
+    // instead of guessing a price (see `requirePriceSnapshot`).
+    const resumePriceSnapshot = await this.requirePriceSnapshot(
+      tx,
+      selection.id,
+    );
     await this.plansService.materializeOrdersForSchedule(
       tx,
       selection.id,
       selection.userId,
       selection.planType,
+      resumePriceSnapshot,
     );
   }
 
   /**
-   * Switches the selection's `planType` and nothing else.
+   * TEMPORARILY DISABLED — approving a CHANGE_PLAN request is blocked until a
+   * complete, consistently implemented plan-type-change policy exists.
    *
-   * Deliberately narrow. A plan change does NOT re-quote, re-price, re-derive
-   * the billing duration, re-validate the current quantity against the new
-   * plan's `quantityMin`/`quantityMax`, or touch any existing order or invoice
-   * snapshot — all of which would be commercial decisions this codebase has no
-   * rule for. The returned warnings make that explicit so the admin UI cannot
-   * imply the dependent changes were applied.
+   * Switching a selection's `planType` is never just a type swap. A correct
+   * change must also define and apply, consistently: the new plan's pricing;
+   * its billing duration; the resulting plan end date; the new plan's
+   * `quantityMin`/`quantityMax` limits for the current quantity; regeneration
+   * of the delivery schedule under the new plan's cadence rules; and how the
+   * existing order and invoice financial snapshots are reconciled. None of
+   * those rules are defined here yet, and applying a bare type swap would leave
+   * the plan priced, dated, quantity-bounded and dispatched as if it were still
+   * the old plan.
+   *
+   * This throws (rather than returns) on purpose — see
+   * `blockQuantityChangeApproval` for why: it rolls the approval transaction
+   * back so the request stays PENDING and the plan is left completely
+   * unchanged. The admin sees the explanation below.
+   *
+   * Re-enable once pricing, duration, end-date, quantity-limit, delivery and
+   * financial-snapshot rules for a plan-type change are defined and
+   * implemented.
    */
-  private async applyPlanChange(
-    tx: any,
-    selection: any,
-    requested: Record<string, any>,
-  ): Promise<string[]> {
-    const targetType = requested.planType;
-    await tx.planSelection.update({
-      where: { id: selection.id },
-      data: { planType: targetType },
-    });
-
-    const warnings = [
-      `Only the plan type was changed (${selection.planType} -> ${targetType}). ` +
-        `Pricing, billing duration, the plan end date and existing order and ` +
-        `invoice snapshots were NOT recalculated.`,
-    ];
-
-    // Surface a quantity that the new plan would not itself permit, rather than
-    // silently clamping it.
-    const targetConfig = await tx.planConfig.findUnique({
-      where: { planType: targetType },
-    });
-    if (!targetConfig) {
-      warnings.push(
-        `${targetType} has no saved Plan Configuration, so new deliveries for ` +
-          `this plan cannot be priced until one is created.`,
-      );
-    } else if (
-      selection.quantity != null &&
-      (selection.quantity < targetConfig.quantityMin ||
-        selection.quantity > targetConfig.quantityMax)
-    ) {
-      warnings.push(
-        `The current quantity (${selection.quantity}L) is outside ${targetType}'s ` +
-          `limits of ${targetConfig.quantityMin}-${targetConfig.quantityMax}L. ` +
-          `It was left unchanged — ask the customer to submit a quantity change.`,
-      );
-    }
-
-    return warnings;
+  private blockPlanChangeApproval(): Promise<string[]> {
+    throw new NotImplementedException(
+      "Approving plan-type changes is temporarily disabled. Changing the plan " +
+        "type also requires defined rules for pricing, billing duration, the " +
+        "plan end date, the new plan's quantity limits, delivery regeneration " +
+        "and reconciling existing order/invoice snapshots — none of which are " +
+        "implemented yet. The request has been kept PENDING and the plan is " +
+        "unchanged — reject it, or re-enable approval once those rules are in " +
+        "place.",
+    );
   }
 
   // ══════════════════════════════════════════════════════════════════
   //  Private — helpers
   // ══════════════════════════════════════════════════════════════════
+
+  /**
+   * Reads back the price a subscription has already locked in, from the most
+   * recent of its own orders that carries a per-litre price snapshot (orders
+   * cancelled by a pause or cadence change still carry theirs, so a resume can
+   * recover it). The snapshot — selling/actual per-litre price, delivery fee
+   * and delivery window — is what new top-up orders must be billed at so an
+   * admin PlanConfig edit made since purchase cannot silently reprice a prepaid
+   * plan.
+   *
+   * Throws when no such snapshot exists: without an established price we cannot
+   * safely create new orders for the subscription, so the affected operation is
+   * blocked (rolling the transaction back and leaving the change request
+   * PENDING) rather than inventing a price from the current configuration.
+   */
+  private async requirePriceSnapshot(
+    tx: any,
+    selectionId: string,
+  ): Promise<OrderPriceSnapshot> {
+    const order = await tx.order.findFirst({
+      where: {
+        planSelectionId: selectionId,
+        sellingPricePerLitrePaise: { not: null },
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        sellingPricePerLitrePaise: true,
+        actualPricePerLitrePaise: true,
+        deliveryFeePaise: true,
+        deliveryStartTime: true,
+        deliveryEndTime: true,
+      },
+    });
+
+    if (!order || order.sellingPricePerLitrePaise == null) {
+      throw new ConflictException(
+        "This subscription has no established price from an existing order, so " +
+          "new deliveries cannot be scheduled without silently applying the " +
+          "current (possibly changed) plan pricing. The operation was blocked " +
+          "and no new orders were created — resolve the subscription's pricing " +
+          "before retrying.",
+      );
+    }
+
+    return {
+      sellingPricePerLitrePaise: order.sellingPricePerLitrePaise,
+      actualPricePerLitrePaise: order.actualPricePerLitrePaise ?? null,
+      deliveryFeePaise: order.deliveryFeePaise ?? 0,
+      deliveryStartTime: order.deliveryStartTime ?? null,
+      deliveryEndTime: order.deliveryEndTime ?? null,
+    };
+  }
 
   private async requireActiveSelection(userId: string) {
     const selection = await this.prisma.planSelection.findFirst({

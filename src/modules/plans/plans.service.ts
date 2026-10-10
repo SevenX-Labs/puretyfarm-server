@@ -111,6 +111,22 @@ export interface MonthlyInfoResponse {
   sellingPricePerLitre: number;
 }
 
+/**
+ * A frozen per-litre price (and delivery window) already locked in for a
+ * subscription, read back from one of its existing orders. Passed to
+ * `materializeOrdersForSchedule` so top-up orders created after a resume or a
+ * cadence change reuse the exact pricing the customer already paid, instead of
+ * silently adopting whatever the current PlanConfig happens to be. All money is
+ * INTEGER PAISE.
+ */
+export interface OrderPriceSnapshot {
+  sellingPricePerLitrePaise: number;
+  actualPricePerLitrePaise: number | null;
+  deliveryFeePaise: number;
+  deliveryStartTime: string | null;
+  deliveryEndTime: string | null;
+}
+
 // Admin view of one PlanConfig row. Prices are INTEGER PAISE. Only fields that
 // apply to the plan type are included.
 export interface AdminPlanConfigResponse {
@@ -1199,21 +1215,53 @@ export class PlansService {
     selectionId: string,
     userId: string,
     planType: PlanType,
+    priceSnapshot?: OrderPriceSnapshot,
   ): Promise<void> {
-    // The authoritative plan configuration prices these orders. A valid plan
-    // selection MUST have a configuration; without it we cannot price the order
-    // correctly. We fail safely (rolling back the whole transaction) rather
-    // than silently materialising a wrongly-priced order
-    // (e.g. a Trial/Monthly plan priced as Buy Once at the ₹80/L fallback).
-    const config: PlanConfig | null = await (tx as any).planConfig.findUnique({
-      where: { planType },
-    });
-    if (!config) {
-      throw new BadRequestException({
-        error: "PLAN_CONFIG_MISSING",
-        message: `Plan configuration for ${planType} is missing; cannot materialise priced orders`,
-        planType,
+    // Pricing source, in priority order:
+    //
+    //  1. An explicit `priceSnapshot`. Supplied by Manage Delivery when it tops
+    //     up orders for an EXISTING subscription (a resume or cadence change).
+    //     Those new deliveries must be billed at the price the customer already
+    //     locked in, never at the current PlanConfig — otherwise an admin price
+    //     edit between purchase and resume would silently reprice a prepaid
+    //     plan. When a snapshot is given we price from it and do NOT require a
+    //     live PlanConfig, because the snapshot already carries everything
+    //     (price, delivery fee and window) frozen at purchase time.
+    //
+    //  2. The authoritative PlanConfig. Used for the INITIAL materialisation of
+    //     a freshly purchased plan, where the current config IS the correct
+    //     price. A valid selection MUST have a configuration; without it we
+    //     cannot price the order and fail safely (rolling back the whole
+    //     transaction) rather than materialising a wrongly-priced order
+    //     (e.g. a Trial/Monthly plan priced as Buy Once at the ₹80/L fallback).
+    let unitPrice: number;
+    let actualPrice: number | null;
+    let deliveryFee: number;
+    let deliveryStartTime: string | null;
+    let deliveryEndTime: string | null;
+
+    if (priceSnapshot) {
+      unitPrice = priceSnapshot.sellingPricePerLitrePaise;
+      actualPrice = priceSnapshot.actualPricePerLitrePaise;
+      deliveryFee = priceSnapshot.deliveryFeePaise ?? 0;
+      deliveryStartTime = priceSnapshot.deliveryStartTime;
+      deliveryEndTime = priceSnapshot.deliveryEndTime;
+    } else {
+      const config: PlanConfig | null = await (tx as any).planConfig.findUnique({
+        where: { planType },
       });
+      if (!config) {
+        throw new BadRequestException({
+          error: "PLAN_CONFIG_MISSING",
+          message: `Plan configuration for ${planType} is missing; cannot materialise priced orders`,
+          planType,
+        });
+      }
+      unitPrice = config.sellingPricePerLitre;
+      actualPrice = config.actualPricePerLitre;
+      deliveryFee = config.deliveryFeePaise ?? 0;
+      deliveryStartTime = config.deliveryStartTime;
+      deliveryEndTime = config.deliveryEndTime;
     }
 
     // Materialize orders for dispatch visibility. Any failure here propagates
@@ -1270,10 +1318,7 @@ export class PlansService {
       const invoiceNumber = await generateInvoiceNumber(tx as any);
 
       const qty = d.quantityLitres || 1;
-      const unitPrice = config.sellingPricePerLitre;
-      const actualPrice = config.actualPricePerLitre;
       const itemTotal = unitPrice * qty;
-      const deliveryFee = config.deliveryFeePaise ?? 0;
       const total = itemTotal + deliveryFee;
 
       await (tx as any).order.create({
@@ -1295,8 +1340,8 @@ export class PlansService {
           // stores null, which every client renders as "not available" —
           // fabricating a plausible window here would promise a delivery time
           // the business never set.
-          deliveryStartTime: config.deliveryStartTime,
-          deliveryEndTime: config.deliveryEndTime,
+          deliveryStartTime,
+          deliveryEndTime,
           addressSnapshot,
           actualPricePerLitrePaise: actualPrice,
           sellingPricePerLitrePaise: unitPrice,

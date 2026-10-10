@@ -4,11 +4,13 @@ jest.mock("@nestjs/config", () => ({
 
 import { Test, TestingModule } from "@nestjs/testing";
 import { ManageDeliveryService } from "./manage-delivery.service";
+import { PlansService } from "../plans/plans.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   BadRequestException,
   NotFoundException,
   ConflictException,
+  NotImplementedException,
 } from "@nestjs/common";
 import {
   PlanType,
@@ -47,15 +49,36 @@ describe("ManageDeliveryService", () => {
       deleteMany: jest.fn(),
     },
     planConfig: { findUnique: jest.fn() },
+    order: { findFirst: jest.fn(), updateMany: jest.fn() },
     manageDeliveryChangeRequest: {
       create: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
       updateMany: jest.fn(),
+      update: jest.fn(),
       count: jest.fn(),
     },
     $transaction: jest.fn(),
+  };
+
+  // PlansService is a collaborator of ManageDeliveryService: its
+  // `materializeOrdersForSchedule` is the single source of dispatch-order
+  // pricing used by resume and cadence-change reconciliation. Mocked so these
+  // unit tests do not reach into real pricing logic.
+  const mockPlansService: any = {
+    materializeOrdersForSchedule: jest.fn().mockResolvedValue(undefined),
+  };
+
+  // A price snapshot read back from an existing order of the subscription.
+  // Resume / cadence-change reconciliation requires one before it will create
+  // new orders, so top-ups reuse the locked-in price instead of current config.
+  const ESTABLISHED_SNAPSHOT = {
+    sellingPricePerLitrePaise: 8000,
+    actualPricePerLitrePaise: 9000,
+    deliveryFeePaise: 0,
+    deliveryStartTime: "06:00",
+    deliveryEndTime: "09:00",
   };
 
   const monthlySelection = {
@@ -90,10 +113,16 @@ describe("ManageDeliveryService", () => {
     mockPrisma.planDelivery.deleteMany.mockResolvedValue({ count: 0 });
     mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue(null);
     mockPrisma.manageDeliveryChangeRequest.count.mockResolvedValue(0);
+    mockPrisma.manageDeliveryChangeRequest.update.mockResolvedValue({});
+    mockPrisma.order.findFirst.mockResolvedValue(ESTABLISHED_SNAPSHOT);
+    mockPrisma.order.updateMany.mockResolvedValue({ count: 0 });
+    mockPlansService.materializeOrdersForSchedule.mockResolvedValue(undefined);
     mockPrisma.$transaction.mockImplementation(async (fn: any) =>
       fn({
         planSelection: mockPrisma.planSelection,
         planDelivery: mockPrisma.planDelivery,
+        planConfig: mockPrisma.planConfig,
+        order: mockPrisma.order,
         manageDeliveryChangeRequest: mockPrisma.manageDeliveryChangeRequest,
       }),
     );
@@ -102,6 +131,7 @@ describe("ManageDeliveryService", () => {
       providers: [
         ManageDeliveryService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: PlansService, useValue: mockPlansService },
       ],
     }).compile();
     service = module.get(ManageDeliveryService);
@@ -530,17 +560,39 @@ describe("ManageDeliveryService", () => {
       reviewedAt: expect.any(Date),
     };
 
-    it("approves and applies the quantity change", async () => {
+    it("blocks CHANGE_QUANTITY approval and leaves the plan untouched", async () => {
+      // Quantity-change approval is temporarily disabled pending a prepaid-plan
+      // billing/refund/settlement policy. Approval must throw (rolling the
+      // transaction back so the request stays PENDING) and apply nothing.
       mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
       mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(pendingRequest);
 
-      const res = await service.approveRequest(ADMIN, "req-1");
+      await expect(service.approveRequest(ADMIN, "req-1")).rejects.toThrow(
+        NotImplementedException,
+      );
 
-      expect(res.success).toBe(true);
-      expect(res.request.status).toBe(ChangeRequestStatus.APPROVED);
-      // Verify the quantity change was applied.
-      expect(mockPrisma.planDelivery.updateMany).toHaveBeenCalled();
-      expect(mockPrisma.planSelection.update).toHaveBeenCalled();
+      // The active quantity and the delivery schedule are left exactly as they
+      // were — nothing was written.
+      expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
+      expect(mockPrisma.planDelivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("blocks CHANGE_PLAN approval and leaves the plan untouched", async () => {
+      // Plan-type changes are temporarily disabled until pricing, duration,
+      // end-date, quantity-limit, delivery and financial-snapshot rules exist.
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue({
+        ...pendingRequest,
+        requestType: ChangeRequestType.CHANGE_PLAN,
+        currentConfiguration: { planType: PlanType.MONTHLY },
+        requestedConfiguration: { planType: PlanType.BUY_ONCE },
+      });
+
+      await expect(service.approveRequest(ADMIN, "req-1")).rejects.toThrow(
+        NotImplementedException,
+      );
+
+      expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
     });
 
     it("performs atomic PENDING→APPROVED transition (race-safe)", async () => {
@@ -602,6 +654,62 @@ describe("ManageDeliveryService", () => {
           data: expect.objectContaining({ adminId: "admin-specific-id" }),
         }),
       );
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  //  RESUME — price-snapshot reconciliation (no silent repricing)
+  // ══════════════════════════════════════════════════════════════
+
+  describe("approveRequest — RESUME price snapshot", () => {
+    const pausedSelection = {
+      ...monthlySelection,
+      status: PlanSelectionStatus.PAUSED,
+      endDate: plusDays(5),
+    };
+
+    const resumeRequest = {
+      id: "req-resume",
+      userId: USER,
+      planSelectionId: "sel-1",
+      requestType: ChangeRequestType.RESUME,
+      status: ChangeRequestStatus.APPROVED,
+      currentConfiguration: {},
+      requestedConfiguration: {},
+    };
+
+    beforeEach(() => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(resumeRequest);
+      mockPrisma.planSelection.findUnique.mockResolvedValue(pausedSelection);
+    });
+
+    it("materialises top-up orders at the subscription's locked-in price", async () => {
+      mockPrisma.order.findFirst.mockResolvedValue(ESTABLISHED_SNAPSHOT);
+
+      await service.approveRequest(ADMIN, "req-resume");
+
+      // The established snapshot — not the current PlanConfig — is passed to
+      // the single pricing path, so an admin price edit cannot reprice a
+      // prepaid subscription on resume.
+      expect(mockPlansService.materializeOrdersForSchedule).toHaveBeenCalledWith(
+        expect.anything(),
+        "sel-1",
+        USER,
+        PlanType.MONTHLY,
+        ESTABLISHED_SNAPSHOT,
+      );
+    });
+
+    it("blocks the resume when no price snapshot can be established", async () => {
+      // No prior order carries a price snapshot: the subscription's locked-in
+      // price is unknown, so the resume is blocked instead of guessing a price.
+      mockPrisma.order.findFirst.mockResolvedValue(null);
+
+      await expect(service.approveRequest(ADMIN, "req-resume")).rejects.toThrow(
+        ConflictException,
+      );
+      expect(mockPlansService.materializeOrdersForSchedule).not.toHaveBeenCalled();
     });
   });
 
