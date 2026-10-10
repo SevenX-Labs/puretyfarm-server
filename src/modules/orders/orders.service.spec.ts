@@ -1,3 +1,7 @@
+jest.mock('@nestjs/config', () => ({
+  ConfigService: jest.fn().mockImplementation(() => ({ get: jest.fn() })),
+}));
+
 import { Test, TestingModule } from "@nestjs/testing";
 import { OrdersService } from "./orders.service";
 import { PrismaService } from "../../prisma/prisma.service";

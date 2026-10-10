@@ -20,26 +20,7 @@ import { OrderPaymentsController } from './order-payments.controller';
  * One shared Payment module: customer APIs, admin APIs, the public PhonePe
  * browser return handler and the single PhonePe webhook.
  *
- * `WalletModule` is imported to reuse the existing `WalletService` — the
- * wallet balance and ledger are never reimplemented here.
- *
- * `PAYMENT_PROVIDER` is bound to `PhonePeService` so `PaymentsService` depends
- * only on the `IPaymentProvider` abstraction. Swapping gateways means changing
- * this one binding.
- *
- * PayU DEPRECATION
- * ----------------
- * The PayU provider, hash service, client, callback controller and webhook
- * remain on disk under `providers/payu/` and `webhook/payu-webhook.*` but are
- * NO LONGER REGISTERED here. They are therefore completely inert: the
- * `/payments/payu/*` and `/payments/webhooks/payu` routes no longer exist, and
- * nothing in the active payment path can reach PayU code.
- *
- * They are kept, along with the PAYU_KEY / PAYU_SALT configuration, so the
- * cutover can be rolled back by re-registering the four PayU classes and
- * re-binding PAYMENT_PROVIDER — no code has to be rewritten. Delete them once
- * PhonePe has been validated in production. Historical PayU Payment rows are
- * untouched and still readable through the admin APIs.
+ * PhonePe is the active and sole online payment provider.
  */
 @Module({
   imports: [PrismaModule, AuthModule, forwardRef(() => WalletModule), OrdersModule, forwardRef(() => PlansModule)],

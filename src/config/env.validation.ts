@@ -80,13 +80,7 @@ export function validateEnv(
     }
   }
 
-  // PayU merchant credentials. PayU is DEPRECATED and no longer on the active
-  // payment path, but these stay required until the PhonePe cutover has been
-  // validated in production, so a rollback needs only a module rebinding and
-  // not a credential hunt. Remove these two lines, and the PayU provider
-  // files, once PhonePe is confirmed live.
-  requireNonEmpty('PAYU_KEY');
-  requireNonEmpty('PAYU_SALT');
+  // PayU removed - PhonePe is the single active online payment gateway.
 
   // Public base URL of THIS API. Used to build the gateway's browser return
   // URL server-side (PhonePe `redirectUrl`, formerly PayU `surl`/`furl`) so a

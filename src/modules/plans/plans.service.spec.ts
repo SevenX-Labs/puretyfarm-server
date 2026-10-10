@@ -2040,6 +2040,8 @@ describe("PlansService", () => {
         type: PlanType.MONTHLY,
         available: false,
         blockedReason: "PLAN_NOT_CONFIGURED",
+        deliveryStartTime: null,
+        deliveryEndTime: null,
       });
     });
 

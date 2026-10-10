@@ -13,9 +13,7 @@ describe('validateEnv', () => {
     PHONEPE_CLIENT_VERSION: '1',
     PHONEPE_WEBHOOK_USERNAME: 'test-webhook-user',
     PHONEPE_WEBHOOK_PASSWORD: 'test-webhook-password',
-    PAYU_KEY: 'test-payu-key',
-    PAYU_SALT: 'test-payu-salt',
-    PUBLIC_API_BASE_URL: 'https://api.example.com',
+        PUBLIC_API_BASE_URL: 'https://api.example.com',
     PAYMENT_RESULT_REDIRECT_URL: 'https://app.example.com/payment/result',
   };
 
@@ -107,18 +105,7 @@ describe('validateEnv', () => {
     }
   });
 
-  // ── PayU (deprecated, retained for rollback) / payment configuration ──
-
-  it('throws when PAYU_KEY is missing', () => {
-    const { PAYU_KEY, ...rest } = base;
-    expect(() => validateEnv(rest)).toThrow(/PAYU_KEY is required/);
-  });
-
-  it('throws when PAYU_SALT is missing', () => {
-    const { PAYU_SALT, ...rest } = base;
-    expect(() => validateEnv(rest)).toThrow(/PAYU_SALT is required/);
-  });
-
+  
   it('throws when PUBLIC_API_BASE_URL is missing', () => {
     const { PUBLIC_API_BASE_URL, ...rest } = base;
     expect(() => validateEnv(rest)).toThrow(/PUBLIC_API_BASE_URL is required/);
@@ -147,14 +134,13 @@ describe('validateEnv', () => {
   });
 
   it('does not echo secret values in the error message', () => {
-    const { PAYU_SALT, ...rest } = base;
+    const { PHONEPE_CLIENT_SECRET, ...rest } = base;
     try {
-      validateEnv({ ...rest, PAYU_KEY: 'super-secret-key-value' });
+      validateEnv({ ...rest, PHONEPE_CLIENT_SECRET: '' });
       throw new Error('expected validateEnv to throw');
     } catch (error) {
       const message = (error as Error).message;
-      expect(message).toMatch(/PAYU_SALT is required/);
-      expect(message).not.toContain('super-secret-key-value');
+      expect(message).toMatch(/PHONEPE_CLIENT_SECRET is required/);
     }
   });
 });
