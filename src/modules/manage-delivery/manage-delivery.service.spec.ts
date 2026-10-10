@@ -197,29 +197,33 @@ describe("ManageDeliveryService", () => {
   //  2. PAUSE — applies immediately
   // ══════════════════════════════════════════════════════════════
 
-  describe("pauseDelivery", () => {
-    it("pauses all future deliveries immediately (no approval)", async () => {
-      const res = await service.pauseDelivery(USER, {});
-      expect(res.success).toBe(true);
-      expect(res.message).toBe("Your deliveries have been paused successfully.");
-      expect(mockPrisma.planDelivery.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            selectionId: "sel-1",
-            userId: USER,
-            status: DeliveryStatus.SCHEDULED,
-          }),
-          data: { status: DeliveryStatus.SKIPPED },
-        }),
+  describe("pauseDelivery (approval-gated request)", () => {
+    beforeEach(() => {
+      mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue(null);
+      mockPrisma.manageDeliveryChangeRequest.create.mockImplementation(
+        ({ data }: any) => ({ id: "req-pause", createdAt: new Date(), ...data }),
       );
     });
 
-    it("limits pause to before resumeDate if provided", async () => {
-      await service.pauseDelivery(USER, {
-        resumeDate: plusDays(3).toISOString().slice(0, 10),
-      });
-      const call = mockPrisma.planDelivery.updateMany.mock.calls[0][0];
-      expect(call.where.deliveryDate.lt).toBeDefined();
+    it("creates a PENDING PAUSE request and changes nothing live", async () => {
+      const res = await service.pauseDelivery(USER, {});
+
+      expect(res.success).toBe(true);
+      const call = mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
+      expect(call.data.requestType).toBe(ChangeRequestType.PAUSE);
+      expect(call.data.status).toBe(ChangeRequestStatus.PENDING);
+
+      // The whole point: the live plan and its deliveries are untouched.
+      expect(mockPrisma.planDelivery.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.planDelivery.deleteMany).not.toHaveBeenCalled();
+      expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
+    });
+
+    it("persists a validated resumeDate on the request", async () => {
+      const resumeDate = plusDays(3).toISOString().slice(0, 10);
+      await service.pauseDelivery(USER, { resumeDate });
+      const call = mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
+      expect(call.data.requestedConfiguration.resumeDate).toBe(resumeDate);
     });
 
     it("rejects a past resumeDate", async () => {
@@ -228,12 +232,48 @@ describe("ManageDeliveryService", () => {
           resumeDate: plusDays(-1).toISOString().slice(0, 10),
         }),
       ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.manageDeliveryChangeRequest.create).not.toHaveBeenCalled();
     });
 
-    it("reports when there are no deliveries to pause", async () => {
-      mockPrisma.planDelivery.updateMany.mockResolvedValueOnce({ count: 0 });
-      const res = await service.pauseDelivery(USER, {});
-      expect(res.message).toBe("No upcoming deliveries to pause.");
+    it("refuses a second pause request while one is pending", async () => {
+      mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue({
+        id: "req-existing",
+        status: ChangeRequestStatus.PENDING,
+      });
+      await expect(service.pauseDelivery(USER, {})).rejects.toThrow(
+        ConflictException,
+      );
+    });
+  });
+
+  describe("resumeDelivery (approval-gated request)", () => {
+    beforeEach(() => {
+      mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue(null);
+      mockPrisma.manageDeliveryChangeRequest.create.mockImplementation(
+        ({ data }: any) => ({ id: "req-resume", createdAt: new Date(), ...data }),
+      );
+    });
+
+    it("creates a PENDING RESUME request for a PAUSED plan", async () => {
+      mockPrisma.planSelection.findFirst.mockResolvedValue({
+        ...selection,
+        status: PlanSelectionStatus.PAUSED,
+      });
+
+      const res = await service.resumeDelivery(USER);
+      expect(res.success).toBe(true);
+      const call = mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
+      expect(call.data.requestType).toBe(ChangeRequestType.RESUME);
+      expect(call.data.status).toBe(ChangeRequestStatus.PENDING);
+      // Status stays PAUSED until an admin approves.
+      expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a resume when no paused plan exists", async () => {
+      mockPrisma.planSelection.findFirst.mockResolvedValue(null);
+      await expect(service.resumeDelivery(USER)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 

@@ -223,6 +223,10 @@ enum PlanSelectionStatus {
   CONFIRMED
   PENDING_PAYMENT
   ACTIVE
+  /// Admin-approved suspension. Deliveries already materialised inside the
+  /// pause window are SKIPPED, and no new ones are generated until a RESUME
+  /// request is approved. Distinct from CANCELLED, which is terminal.
+  PAUSED
   COMPLETED
   CANCELLED
 }
@@ -341,6 +345,15 @@ model PlanSelection {
   /// Last delivery date of the current schedule window (date-only).
   endDate      DateTime?
 
+  // ── Admin scheduling audit ───────────────────────────────────────
+  /// Admin who approved the delivery schedule, and when. Separate from payment:
+  /// approving a schedule never touches paidAt / paidAmountPaise.
+  approvedByAdminId String?
+  approvedAt        DateTime?
+  /// Free-text note the admin entered when approving the schedule. The admin UI
+  /// has always collected this; it previously had nowhere to go.
+  approvalNote      String?
+
   // ── Payment tracking ─────────────────────────────────────────────
   /// How the plan was paid: WALLET or CASH. Null for legacy free activations.
   paymentMethod  String?
@@ -405,6 +418,11 @@ enum ChangeRequestType {
   CHANGE_QUANTITY
   CHANGE_FREQUENCY
   CHANGE_PLAN
+  /// Customer asks to suspend deliveries. Approval-gated: submitting the
+  /// request must not change the live plan.
+  PAUSE
+  /// Customer asks to resume a PAUSED plan. Also approval-gated.
+  RESUME
 }
 
 enum ChangeRequestStatus {

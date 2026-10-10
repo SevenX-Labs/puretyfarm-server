@@ -35,6 +35,8 @@ export enum PlanSelectionStatus {
   CONFIRMED = "CONFIRMED",
   PENDING_PAYMENT = "PENDING_PAYMENT",
   ACTIVE = "ACTIVE",
+  /** Admin-approved suspension. Non-terminal; a RESUME approval reactivates. */
+  PAUSED = "PAUSED",
   COMPLETED = "COMPLETED",
   CANCELLED = "CANCELLED",
 }
@@ -110,6 +112,8 @@ export enum ChangeRequestType {
   CHANGE_QUANTITY = "CHANGE_QUANTITY",
   CHANGE_FREQUENCY = "CHANGE_FREQUENCY",
   CHANGE_PLAN = "CHANGE_PLAN",
+  PAUSE = "PAUSE",
+  RESUME = "RESUME",
 }
 
 /** Lifecycle of an admin-approval request. */

@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
   Logger,
 } from "@nestjs/common";
 import type { PlanConfig } from "@prisma/client";
@@ -349,6 +350,22 @@ export function enabledQuantityModes(config: PlanConfig): QuantityMode[] {
 }
 
 /** Column defaults from the PlanConfig model, used to validate a new row. */
+/**
+ * Selection statuses from which an admin may approve a delivery schedule.
+ *
+ * PENDING_PAYMENT is included because a cash plan sits there until the admin
+ * confirms the collection; the separate `paidAt` check above is what actually
+ * enforces payment. CONFIRMED is included so re-setting the first delivery
+ * date on an approved subscription stays possible. PAUSED, COMPLETED and
+ * CANCELLED are excluded: scheduling those would resurrect or contradict a
+ * decided lifecycle.
+ */
+const APPROVABLE_SELECTION_STATUSES: string[] = [
+  PlanSelectionStatus.PENDING_PAYMENT,
+  PlanSelectionStatus.CONFIRMED,
+  PlanSelectionStatus.ACTIVE,
+];
+
 const PLAN_CONFIG_DEFAULTS = {
   quantityMin: 1,
   quantityMax: 5,
@@ -978,6 +995,145 @@ export class PlansService {
   }
 
   /**
+   * Statuses whose order has not yet left the warehouse. Only these may be
+   * stood down when a schedule is regenerated.
+   */
+  private static readonly REPLACEABLE_ORDER_STATUSES = ["PENDING", "CONFIRMED"];
+
+  /**
+   * Makes an existing schedule match `targetDates` without destroying history.
+   *
+   * Rules, in order of precedence:
+   *   1. A delivery that is not SCHEDULED (DELIVERED / SKIPPED) is never
+   *      touched — it is a record of what happened.
+   *   2. A SCHEDULED delivery whose date is still wanted is KEPT, together with
+   *      its order. This is what makes re-approval idempotent and stops a
+   *      second paid order appearing for a date that already has one.
+   *   3. A SCHEDULED delivery whose date is no longer wanted, and whose order
+   *      has already advanced past CONFIRMED (or has been completed), is also
+   *      kept: the goods are in flight or delivered, so the schedule yields to
+   *      reality rather than the reverse.
+   *   4. Only a SCHEDULED delivery that is unwanted AND whose order is still
+   *      PENDING/CONFIRMED (or absent) is stood down. Its order is CANCELLED,
+   *      never deleted, so the order number, invoice and payment linkage
+   *      survive as an auditable record; the delivery row itself is marked
+   *      SKIPPED rather than removed, preserving the (selectionId, deliveryDate)
+   *      history and the unique constraint.
+   *
+   * Returns the dates still needing a new PlanDelivery row.
+   */
+  private async reconcileScheduleWindow(
+    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    selectionId: string,
+    targetDates: Date[],
+    /** Litres for the 1-based occurrence index within `targetDates`. */
+    quantityForOccurrenceIndex: (occurrence: number) => number,
+  ): Promise<void> {
+    const wanted = new Set(targetDates.map((d) => d.getTime()));
+
+    const existing = await (tx as any).planDelivery.findMany({
+      where: { selectionId },
+      include: { order: { select: { id: true, status: true } } },
+    });
+
+    const keptDates = new Set<number>();
+    const standDownDeliveryIds: string[] = [];
+    const cancelOrderIds: string[] = [];
+
+    for (const delivery of existing) {
+      const dateKey = new Date(delivery.deliveryDate).getTime();
+
+      // Rule 1: fulfilment history is immutable.
+      if (delivery.status !== DeliveryStatus.SCHEDULED) {
+        keptDates.add(dateKey);
+        continue;
+      }
+
+      // Rule 2: already on the target schedule — keep it and its order.
+      if (wanted.has(dateKey)) {
+        keptDates.add(dateKey);
+        continue;
+      }
+
+      // Rule 3: the order has moved on; reality wins.
+      const orderStatus: string | undefined = delivery.order?.status;
+      if (
+        orderStatus &&
+        !PlansService.REPLACEABLE_ORDER_STATUSES.includes(orderStatus)
+      ) {
+        keptDates.add(dateKey);
+        this.logger.warn(
+          `Schedule reconcile kept out-of-window delivery because its order ` +
+            `has advanced: selectionId=${selectionId} ` +
+            `deliveryDate=${toIsoDateString(new Date(delivery.deliveryDate))} ` +
+            `orderStatus=${orderStatus}`,
+        );
+        continue;
+      }
+
+      // Rule 4: safe to stand down.
+      standDownDeliveryIds.push(delivery.id);
+      if (delivery.order) cancelOrderIds.push(delivery.order.id);
+    }
+
+    if (cancelOrderIds.length > 0) {
+      // Cancelled, not deleted: the invoice, order number and any payment
+      // linkage stay intact and auditable. CANCELLED is also excluded from the
+      // dashboard's revenue aggregates, so the money stops counting.
+      await (tx as any).order.updateMany({
+        where: {
+          id: { in: cancelOrderIds },
+          status: { in: PlansService.REPLACEABLE_ORDER_STATUSES },
+        },
+        data: { status: "CANCELLED" },
+      });
+    }
+
+    if (standDownDeliveryIds.length > 0) {
+      await (tx as any).planDelivery.updateMany({
+        where: {
+          id: { in: standDownDeliveryIds },
+          status: DeliveryStatus.SCHEDULED,
+        },
+        data: { status: DeliveryStatus.SKIPPED },
+      });
+    }
+
+    // Create only the genuinely new dates. `skipDuplicates` plus the
+    // (selectionId, deliveryDate) unique constraint make a concurrent retry a
+    // no-op instead of a constraint violation.
+    const newDates = targetDates.filter((d) => !keptDates.has(d.getTime()));
+    if (newDates.length === 0) return;
+
+    const selection = await (tx as any).planSelection.findUnique({
+      where: { id: selectionId },
+      select: { userId: true },
+    });
+    if (!selection) {
+      throw new NotFoundException("Subscription not found");
+    }
+
+    await (tx as any).planDelivery.createMany({
+      data: newDates.map((date) => {
+        // 1-based position within the full target window, so the ALTERNATING
+        // pattern stays aligned with the schedule rather than with insertion
+        // order.
+        const occurrence =
+          targetDates.findIndex((d) => d.getTime() === date.getTime()) + 1;
+        return {
+          selectionId,
+          userId: selection.userId,
+          deliveryDate: date,
+          occurrence,
+          quantityLitres: quantityForOccurrenceIndex(occurrence),
+          status: DeliveryStatus.SCHEDULED,
+        };
+      }),
+      skipDuplicates: true,
+    });
+  }
+
+  /**
    * Materialises PlanDelivery rows from a schedule. Extracted so it can be
    * called both from wallet payment (inline) and cash confirmation (admin).
    */
@@ -997,47 +1153,57 @@ export class PlansService {
       return;
     }
 
-    // Reconcile existing records: If there are unfulfilled scheduled deliveries
-    // for this selection, clean them up along with their uncompleted orders first
-    // so approving / updating start dates is idempotent and does not produce duplicate records.
-    const existingDeliveries = await (tx as any).planDelivery.findMany({
-      where: { selectionId, status: DeliveryStatus.SCHEDULED },
-      select: { id: true },
-    });
-    if (existingDeliveries && existingDeliveries.length > 0) {
-      const deliveryIds = existingDeliveries.map((d: any) => d.id);
-      await (tx as any).order.deleteMany({
-        where: {
-          planDeliveryId: { in: deliveryIds },
-          status: "CONFIRMED",
-        },
-      });
-      await (tx as any).planDelivery.deleteMany({
-        where: { id: { in: deliveryIds } },
-      });
-    }
+    // Reconcile the existing schedule WITHOUT deleting anything that carries
+    // fulfilment or financial history.
+    //
+    // This used to `order.deleteMany({ status: CONFIRMED })` followed by
+    // `planDelivery.deleteMany(...)`. Those orders are created below as
+    // CONFIRMED + PAID with a nested Invoice, and Invoice cascades on order
+    // delete, so re-approving a subscription destroyed paid orders and burned
+    // their invoice numbers out of a non-transactional Postgres sequence —
+    // leaving unexplained gaps with no void or credit-note trail. Worse, the
+    // delete filtered orders on CONFIRMED but deleted deliveries regardless, so
+    // a delivery whose order had advanced (OUT_FOR_DELIVERY / DELIVERED /
+    // COMPLETED) lost its delivery row, had `planDeliveryId` nulled by the
+    // optional relation's SetNull, and then got a SECOND paid, invoiced order
+    // for the same date — double-counted in revenue.
+    //
+    // The strategy now: cancel-and-replace only what is genuinely untouched,
+    // and leave everything else exactly where it is.
+    await this.reconcileScheduleWindow(tx, selectionId, dates, (occurrence) =>
+      quantityForOccurrence(
+        schedule.quantityMode,
+        occurrence,
+        schedule.quantity,
+        schedule.quantityA,
+        schedule.quantityB,
+      ),
+    );
 
-    await (tx as any).planDelivery.createMany({
-      data: dates.map((date, i) => ({
-        selectionId,
-        userId,
-        deliveryDate: date,
-        occurrence: i + 1,
-        quantityLitres: quantityForOccurrence(
-          schedule.quantityMode,
-          i + 1,
-          schedule.quantity,
-          schedule.quantityA,
-          schedule.quantityB,
-        ),
-        status: DeliveryStatus.SCHEDULED,
-      })),
-    });
+    await this.materializeOrdersForSchedule(tx, selectionId, userId, planType);
+  }
 
-    // Load the authoritative plan configuration for pricing the materialised
-    // orders. A valid plan selection MUST have a configuration; without it we
-    // cannot price the order correctly. We fail safely (rolling back the whole
-    // transaction) rather than silently materialising a wrongly-priced order
+  /**
+   * Creates the dispatch Order (and Invoice) for every SCHEDULED delivery of a
+   * selection that does not already have one.
+   *
+   * Idempotent by construction: each delivery is skipped when an order already
+   * references it, so retries, concurrent approvals and post-reconciliation
+   * top-ups all converge on exactly one order per delivery. Extracted from
+   * `materializeDeliveries` so Manage Delivery can top up orders after a
+   * cadence change or a resume without duplicating pricing rules — previously
+   * those paths created deliveries with no dispatch order at all.
+   */
+  async materializeOrdersForSchedule(
+    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    selectionId: string,
+    userId: string,
+    planType: PlanType,
+  ): Promise<void> {
+    // The authoritative plan configuration prices these orders. A valid plan
+    // selection MUST have a configuration; without it we cannot price the order
+    // correctly. We fail safely (rolling back the whole transaction) rather
+    // than silently materialising a wrongly-priced order
     // (e.g. a Trial/Monthly plan priced as Buy Once at the ₹80/L fallback).
     const config: PlanConfig | null = await (tx as any).planConfig.findUnique({
       where: { planType },
@@ -1053,8 +1219,11 @@ export class PlansService {
     // Materialize orders for dispatch visibility. Any failure here propagates
     // and rolls back the transaction — a paid plan must never be confirmed
     // with missing or mis-priced orders.
+    // SCHEDULED only. Reconciliation marks stood-down deliveries SKIPPED
+    // rather than deleting them, so an unfiltered query would mint a fresh
+    // dispatch order for a delivery that is no longer happening.
     const deliveries = await (tx as any).planDelivery.findMany({
-      where: { selectionId },
+      where: { selectionId, status: DeliveryStatus.SCHEDULED },
       orderBy: { deliveryDate: "asc" },
     });
 
@@ -1253,13 +1422,43 @@ export class PlansService {
         throw new NotFoundException("Subscription not found");
       }
 
-      // Validate payment status before approving subscription
-      if (!selection.paidAt && selection.paymentMethod === "CASH" && selection.cashCollection?.status !== "CONFIRMED") {
-        throw new BadRequestException("Physical cash receipt has not been confirmed yet. Please confirm payment in Payments/Wallets first.");
+      // ── Payment eligibility ──────────────────────────────────────
+      //
+      // `paidAt` is the authoritative persisted proof of payment: the WALLET
+      // path sets it in the same transaction as the wallet debit, and the CASH
+      // path only once an admin confirms the collection. Scheduling approval
+      // therefore requires it, full stop.
+      //
+      // The previous guard was an AND-chain gated on
+      // `paymentMethod === "CASH"`, so it protected only the cash path — any
+      // other (or null, legacy) payment method passed straight through with
+      // `paidAt` null. Inverting it makes payment the precondition and the
+      // cash wording merely a more helpful message.
+      if (!selection.paidAt) {
+        if (
+          selection.paymentMethod === PlanPaymentMethod.CASH &&
+          selection.cashCollection?.status !== "CONFIRMED"
+        ) {
+          throw new BadRequestException({
+            error: "CASH_NOT_CONFIRMED",
+            message:
+              "Physical cash receipt has not been confirmed yet. Please confirm payment in Payments/Wallets first.",
+          });
+        }
+        throw new BadRequestException({
+          error: "SUBSCRIPTION_NOT_PAID",
+          message:
+            "This subscription has no confirmed payment. Verify the payment before approving a delivery schedule.",
+        });
       }
 
-      if (!selection) {
-        throw new NotFoundException("Subscription not found");
+      // ── Lifecycle eligibility ────────────────────────────────────
+      if (!APPROVABLE_SELECTION_STATUSES.includes(selection.status)) {
+        throw new BadRequestException({
+          error: "SUBSCRIPTION_NOT_APPROVABLE",
+          message: `A ${selection.status} subscription cannot be scheduled.`,
+          status: selection.status,
+        });
       }
 
       const now = new Date();
@@ -1269,15 +1468,34 @@ export class PlansService {
         dto.firstDeliveryDate,
       );
 
-      await (tx as any).planSelection.update({
-        where: { id: subscriptionId },
+      // Conditional update: a concurrent approval that already moved this row
+      // out of an approvable status loses the race rather than overwriting the
+      // winner's schedule.
+      //
+      // `paidAt` and `paidAmountPaise` are deliberately NOT written here.
+      // Scheduling approval is not a payment event; the old
+      // `...(selection.paidAt ? {} : { paidAt: now })` fabricated a payment
+      // timestamp that the admin dashboard then aggregated as revenue.
+      const claimed = await (tx as any).planSelection.updateMany({
+        where: { id: subscriptionId, status: { in: APPROVABLE_SELECTION_STATUSES } },
         data: {
           status: PlanSelectionStatus.CONFIRMED,
           startDate: schedule.start,
           endDate: schedule.end,
-          ...(selection.paidAt ? {} : { paidAt: now }),
+          // Audit only. `adminId` used to be accepted and discarded, and the
+          // note the admin UI collects was validated then dropped.
+          approvedByAdminId: adminId,
+          approvedAt: now,
+          ...(dto.note ? { approvalNote: dto.note } : {}),
         },
       });
+      if (claimed.count === 0) {
+        throw new ConflictException({
+          error: "SUBSCRIPTION_APPROVAL_CONFLICT",
+          message:
+            "This subscription was updated by another request. Reload it and try again.",
+        });
+      }
 
       await (tx as any).planQuote.updateMany({
         where: { id: selection.quoteId, status: PlanQuoteStatus.PENDING },
@@ -1298,6 +1516,8 @@ export class PlansService {
         subscriptionId,
         startDate: toIsoDateString(schedule.start),
         endDate: toIsoDateString(schedule.end),
+        approvedAt: now.toISOString(),
+        approvalNote: dto.note ?? null,
       };
     });
   }
@@ -1834,6 +2054,12 @@ export class PlansService {
       this.prisma.planSelection.count({ where }),
     ]);
 
+    // The admin scheduling modal needs each subscription's delivery window and
+    // quantity bounds, and must be able to tell "not configured" from a real
+    // window. Join PlanConfig once per plan type rather than per row.
+    const configs = await this.prisma.planConfig.findMany();
+    const configByType = new Map(configs.map((c) => [c.planType as string, c]));
+
     return {
       data: selections.map((s: any) => ({
         id: s.id,
@@ -1848,8 +2074,34 @@ export class PlansService {
         paymentMethod: s.paymentMethod,
         paidAmountPaise: s.paidAmountPaise,
         paidAt: s.paidAt,
+        approvedByAdminId: s.approvedByAdminId ?? null,
+        approvedAt: s.approvedAt ?? null,
+        approvalNote: s.approvalNote ?? null,
         createdAt: s.createdAt,
         deliveriesCount: s.deliveries?.length || 0,
+        /**
+         * Authoritative Plan Configuration for this subscription's plan type.
+         * `deliveryStartTime`/`deliveryEndTime` are null when the admin has not
+         * configured a window — the scheduling modal must surface that and
+         * block approval rather than substituting a default.
+         */
+        planConfig: (() => {
+          const c = configByType.get(s.planType);
+          if (!c) return null;
+          return {
+            planType: c.planType,
+            isActive: c.isActive,
+            deliveryStartTime: c.deliveryStartTime,
+            deliveryEndTime: c.deliveryEndTime,
+            quantityMin: c.quantityMin,
+            quantityMax: c.quantityMax,
+            sellingPricePerLitre: c.sellingPricePerLitre,
+            deliveryFeePaise: c.deliveryFeePaise,
+          };
+        })(),
+        cashCollection: s.cashCollection
+          ? { id: s.cashCollection.id, status: s.cashCollection.status, amountPaise: s.cashCollection.amountPaise }
+          : null,
         customer: {
           id: s.user?.id,
           mobile: s.user?.mobile,

@@ -540,16 +540,69 @@ export class OrdersService {
         );
       }
 
-      const updated = await tx.order.update({
-        where: { id: orderId },
+      // Conditional update so a double-click or concurrent request cannot
+      // apply the same transition twice.
+      const claimed = await tx.order.updateMany({
+        where: { id: orderId, status: order.status },
         data: { status: dto.status },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          "This order changed while it was being updated. Reload it and try again.",
+        );
+      }
+
+      // DELIVERED is the one order status that asserts a physical event, so it
+      // is the only one that propagates to the delivery schedule. Without this
+      // `PlanDelivery.status` never left SCHEDULED, which left the dispatch
+      // schedule, the delivery metrics and the customer's calendar all
+      // disagreeing with the orders that had actually been delivered.
+      //
+      // COMPLETED deliberately does NOT propagate: it is the administrative
+      // close that happens *after* delivery (see `completeOrder`), and treating
+      // it as proof of delivery would let one click fabricate a delivery
+      // record.
+      let deliverySynced = false;
+      if (dto.status === OrderStatus.DELIVERED && order.planDeliveryId) {
+        // Scoped to this order's own delivery, and guarded on SCHEDULED so a
+        // delivery the customer already SKIPPED is never rewritten as
+        // DELIVERED, and a repeat call is a no-op. `updatedAt` moves; nothing
+        // historical is overwritten.
+        const synced = await tx.planDelivery.updateMany({
+          where: {
+            id: order.planDeliveryId,
+            status: DeliveryStatus.SCHEDULED,
+          },
+          data: { status: DeliveryStatus.DELIVERED },
+        });
+        deliverySynced = synced.count > 0;
+
+        if (!deliverySynced) {
+          const delivery = await tx.planDelivery.findUnique({
+            where: { id: order.planDeliveryId },
+            select: { status: true },
+          });
+          // Only worth a line in the log when the states genuinely disagree.
+          if (delivery && delivery.status !== DeliveryStatus.DELIVERED) {
+            this.logger.warn(
+              `Order marked DELIVERED but its delivery was left as ` +
+                `${delivery.status}: orderNumber=${order.orderNumber} ` +
+                `planDeliveryId=${order.planDeliveryId}`,
+            );
+          }
+        }
+      }
+
+      const updated = await tx.order.findUnique({
+        where: { id: orderId },
         include: { items: true, invoice: true },
       });
 
       return {
         success: true,
         message: `Order status updated to ${dto.status}.`,
-        order: this.formatOrderResponse(updated, updated.items, updated.invoice),
+        deliverySynced,
+        order: this.formatOrderResponse(updated, updated!.items, updated!.invoice),
       };
     });
   }

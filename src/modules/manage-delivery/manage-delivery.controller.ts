@@ -48,6 +48,13 @@ export class ManageDeliveryController {
     return this.service.pauseDelivery(user.sub, dto);
   }
 
+  /** Requests a resume for a PAUSED plan. Takes no body. */
+  @Post("resume")
+  @HttpCode(HttpStatus.OK)
+  async resume(@CurrentUser() user: JwtPayload) {
+    return this.service.resumeDelivery(user.sub);
+  }
+
   @Post("change-quantity")
   @HttpCode(HttpStatus.OK)
   async changeQuantity(

@@ -25,6 +25,7 @@ describe("ManageDeliveryController", () => {
     getManageDelivery: jest.fn().mockResolvedValue({ activePlan: {} }),
     skipDelivery: jest.fn().mockResolvedValue({ success: true }),
     pauseDelivery: jest.fn().mockResolvedValue({ success: true }),
+    resumeDelivery: jest.fn().mockResolvedValue({ success: true }),
     changeQuantity: jest.fn().mockResolvedValue({ success: true }),
     changeFrequency: jest.fn().mockResolvedValue({ success: true }),
     changePlan: jest.fn().mockResolvedValue({ success: true }),
@@ -87,6 +88,11 @@ describe("ManageDeliveryController", () => {
     it("pause delegates with user.sub", async () => {
       await controller.pause(customerJwt, {});
       expect(mockService.pauseDelivery).toHaveBeenCalledWith("user-1", {});
+    });
+
+    it("resume delegates with user.sub and takes no body", async () => {
+      await controller.resume(customerJwt);
+      expect(mockService.resumeDelivery).toHaveBeenCalledWith("user-1");
     });
 
     it("change-quantity delegates with user.sub", async () => {

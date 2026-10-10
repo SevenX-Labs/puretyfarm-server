@@ -24,6 +24,7 @@ import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
+  ConflictException,
 } from "@nestjs/common";
 import {
   PlanType,
@@ -1687,39 +1688,52 @@ describe("PlansService", () => {
 
 
     describe("adminApproveSubscription", () => {
-      it("approves a paid plan, sets start/end date, and materializes deliveries", async () => {
-        const selectionRow = {
-          id: "sub-100",
-          userId: USER,
+      /** A paid, schedulable BUY_ONCE subscription. */
+      const selectionRow = {
+        id: "sub-100",
+        userId: USER,
+        planType: PlanType.BUY_ONCE,
+        status: PlanSelectionStatus.PENDING_PAYMENT,
+        paymentMethod: "WALLET",
+        paidAt: new Date(),
+        cashCollection: null,
+        quoteId: "quote-100",
+        quote: {
+          id: "quote-100",
           planType: PlanType.BUY_ONCE,
-          status: PlanSelectionStatus.PENDING_PAYMENT,
-          paidAt: new Date(),
-          quoteId: "quote-100",
-          quote: {
-            id: "quote-100",
-            planType: PlanType.BUY_ONCE,
-            totalSellingAmount: 10000,
-            deliveryOccurrences: 1,
-            quantity: 1,
-            quantityMode: QuantityMode.FIXED,
-            quantityA: null,
-            quantityB: null,
-            frequency: null,
-            billingPeriodStart: null,
-            billingPeriodEnd: null,
-            status: PlanQuoteStatus.PENDING,
-          },
-        };
+          totalSellingAmount: 10000,
+          deliveryOccurrences: 1,
+          quantity: 1,
+          quantityMode: QuantityMode.FIXED,
+          quantityA: null,
+          quantityB: null,
+          frequency: null,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+          status: PlanQuoteStatus.PENDING,
+        },
+      };
 
+      it("approves a paid plan, sets start/end date, and materializes deliveries", async () => {
         mockPrisma.$transaction.mockImplementation(async (cb: any) => {
           const tx = {
             planSelection: {
               findUnique: jest.fn().mockResolvedValue(selectionRow),
               update: jest.fn().mockResolvedValue(selectionRow),
+              updateMany: jest.fn().mockResolvedValue({ count: 1 }),
             },
             planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-            planDelivery: { createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
-            order: { deleteMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]), create: jest.fn() },
+            planDelivery: {
+              createMany: jest.fn(),
+              findMany: jest.fn().mockResolvedValue([]),
+              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+            },
+            order: {
+              findMany: jest.fn().mockResolvedValue([]),
+              findUnique: jest.fn().mockResolvedValue(null),
+              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+              create: jest.fn(),
+            },
             planConfig: { findUnique: jest.fn().mockResolvedValue(buyOnceConfig) },
             customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
           };
@@ -1732,6 +1746,119 @@ describe("PlansService", () => {
 
         expect(res.success).toBe(true);
         expect(res.startDate).toBe("2026-10-15");
+      });
+
+      it("does not write paidAt or paidAmountPaise when scheduling is approved", async () => {
+        const captured: any = { update: null, updateMany: null };
+        mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+          const tx = {
+            planSelection: {
+              findUnique: jest.fn().mockResolvedValue(selectionRow),
+              update: jest.fn().mockImplementation((args: any) => {
+                captured.update = args;
+                return selectionRow;
+              }),
+              updateMany: jest.fn().mockImplementation((args: any) => {
+                captured.updateMany = args;
+                return { count: 1 };
+              }),
+            },
+            planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+            planDelivery: {
+              createMany: jest.fn(),
+              findMany: jest.fn().mockResolvedValue([]),
+              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+            },
+            order: {
+              findMany: jest.fn().mockResolvedValue([]),
+              findUnique: jest.fn().mockResolvedValue(null),
+              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+              create: jest.fn(),
+            },
+            planConfig: { findUnique: jest.fn().mockResolvedValue(buyOnceConfig) },
+            customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
+          };
+          return cb(tx);
+        });
+
+        await service.adminApproveSubscription("admin-1", "sub-100", {
+          firstDeliveryDate: "2026-10-15",
+        });
+
+        // Scheduling approval is not a payment event.
+        const written = captured.updateMany?.data ?? captured.update?.data ?? {};
+        expect(Object.keys(written)).not.toContain("paidAt");
+        expect(Object.keys(written)).not.toContain("paidAmountPaise");
+      });
+
+      it("refuses to approve a subscription with no confirmed payment, whatever the method", async () => {
+        for (const paymentMethod of ["WALLET", null, undefined]) {
+          mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+            cb({
+              planSelection: {
+                findUnique: jest.fn().mockResolvedValue({
+                  id: "sub-x",
+                  userId: USER,
+                  planType: PlanType.MONTHLY,
+                  status: PlanSelectionStatus.PENDING_PAYMENT,
+                  paymentMethod,
+                  paidAt: null,
+                  cashCollection: null,
+                  quote: {
+                    planType: PlanType.MONTHLY,
+                    deliveryOccurrences: 30,
+                    quantity: 1,
+                    frequency: DeliveryFrequency.DAILY,
+                  },
+                }),
+              },
+            }),
+          );
+
+          // The old guard was gated on paymentMethod === "CASH", so every other
+          // method slipped through unpaid.
+          await expect(
+            service.adminApproveSubscription("admin-1", "sub-x", {
+              firstDeliveryDate: "2026-10-15",
+            }),
+          ).rejects.toThrow(BadRequestException);
+        }
+      });
+
+      it("refuses to schedule a CANCELLED subscription", async () => {
+        mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+          cb({
+            planSelection: {
+              findUnique: jest.fn().mockResolvedValue({
+                ...selectionRow,
+                status: PlanSelectionStatus.CANCELLED,
+              }),
+            },
+          }),
+        );
+
+        await expect(
+          service.adminApproveSubscription("admin-1", "sub-100", {
+            firstDeliveryDate: "2026-10-15",
+          }),
+        ).rejects.toThrow(BadRequestException);
+      });
+
+      it("returns a conflict when another request already claimed the subscription", async () => {
+        mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+          cb({
+            planSelection: {
+              findUnique: jest.fn().mockResolvedValue(selectionRow),
+              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+            },
+          }),
+        );
+
+        await expect(
+          service.adminApproveSubscription("admin-1", "sub-100", {
+            firstDeliveryDate: "2026-10-15",
+          }),
+        ).rejects.toThrow(ConflictException);
       });
 
       it("rejects approving an unpaid CASH plan whose cash collection is not confirmed", async () => {
