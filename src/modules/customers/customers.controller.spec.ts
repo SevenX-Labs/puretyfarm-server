@@ -94,7 +94,9 @@ describe('CustomersController', () => {
 
       const result = await controller.getCustomerById(customerId);
 
-      expect(mockCustomersService.getCustomerById).toHaveBeenCalledWith(customerId);
+      expect(mockCustomersService.getCustomerById).toHaveBeenCalledWith(
+        customerId,
+      );
       expect(result).toEqual(expectedResult);
     });
   });

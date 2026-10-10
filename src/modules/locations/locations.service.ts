@@ -5,17 +5,17 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-} from "@nestjs/common";
-import { Prisma } from "@prisma/client";
-import { PrismaService } from "../../prisma/prisma.service";
-import { GeoapifyService, ResolvedLocation } from "./geoapify/geoapify.service";
-import { ValkeyService } from "../../valkey/valkey.service";
-import { CreateStateDto } from "./dto/admin/create-state.dto";
-import { UpdateStateDto } from "./dto/admin/update-state.dto";
-import { CreateCityDto } from "./dto/admin/create-city.dto";
-import { UpdateCityDto } from "./dto/admin/update-city.dto";
-import { CreateAreaDto } from "./dto/admin/create-area.dto";
-import { UpdateAreaDto } from "./dto/admin/update-area.dto";
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { GeoapifyService, ResolvedLocation } from './geoapify/geoapify.service';
+import { ValkeyService } from '../../valkey/valkey.service';
+import { CreateStateDto } from './dto/admin/create-state.dto';
+import { UpdateStateDto } from './dto/admin/update-state.dto';
+import { CreateCityDto } from './dto/admin/create-city.dto';
+import { UpdateCityDto } from './dto/admin/update-city.dto';
+import { CreateAreaDto } from './dto/admin/create-area.dto';
+import { UpdateAreaDto } from './dto/admin/update-area.dto';
 
 export interface StateResponse {
   id: string;
@@ -67,8 +67,7 @@ export interface UnserviceableLocationResponse {
 }
 
 export type DetectLocationResponse =
-  | ServiceableLocationResponse
-  | UnserviceableLocationResponse;
+  ServiceableLocationResponse | UnserviceableLocationResponse;
 
 // Admin-facing catalog shapes. Unlike the customer responses these expose the
 // isActive flag and timestamps so admins can manage the full catalog, but they
@@ -197,8 +196,11 @@ export class LocationsService {
   }
 
   private normalizeName(val: string | null | undefined): string {
-    if (!val) return "";
-    return val.trim().toLowerCase().replace(/[\s\-_]+/g, " ");
+    if (!val) return '';
+    return val
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\-_]+/g, ' ');
   }
 
   private async matchCatalog(
@@ -315,14 +317,14 @@ export class LocationsService {
     } catch {
       // Never surface internal Valkey errors; fail open.
       this.logger.warn(
-        "Location detect rate-limit check failed; allowing request (fail-open)",
+        'Location detect rate-limit check failed; allowing request (fail-open)',
       );
       return;
     }
 
     if (count > DETECT_RATE_LIMIT) {
       throw new HttpException(
-        "Too many location requests. Please try again in a minute.",
+        'Too many location requests. Please try again in a minute.',
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -350,7 +352,7 @@ export class LocationsService {
       }
       return JSON.parse(raw) as ResolvedLocation;
     } catch {
-      this.logger.warn("Location cache read failed; falling back to provider");
+      this.logger.warn('Location cache read failed; falling back to provider');
       return null;
     }
   }
@@ -367,7 +369,7 @@ export class LocationsService {
         REVERSE_GEOCODE_CACHE_TTL_SECONDS,
       );
     } catch {
-      this.logger.warn("Location cache write failed; ignoring");
+      this.logger.warn('Location cache write failed; ignoring');
     }
   }
 
@@ -375,7 +377,7 @@ export class LocationsService {
   async getStates(): Promise<StateResponse[]> {
     const states = await this.prisma.state.findMany({
       where: { isActive: true },
-      orderBy: { name: "asc" },
+      orderBy: { name: 'asc' },
       select: { id: true, name: true },
     });
     return states;
@@ -391,12 +393,12 @@ export class LocationsService {
       select: { id: true },
     });
     if (!state) {
-      throw new NotFoundException("State not found");
+      throw new NotFoundException('State not found');
     }
 
     return this.prisma.city.findMany({
       where: { stateId, isActive: true },
-      orderBy: { name: "asc" },
+      orderBy: { name: 'asc' },
       select: { id: true, name: true, stateId: true },
     });
   }
@@ -411,12 +413,12 @@ export class LocationsService {
       select: { id: true },
     });
     if (!city) {
-      throw new NotFoundException("City not found");
+      throw new NotFoundException('City not found');
     }
 
     return this.prisma.area.findMany({
       where: { cityId, isActive: true },
-      orderBy: { name: "asc" },
+      orderBy: { name: 'asc' },
       select: { id: true, name: true, cityId: true, pincode: true },
     });
   }
@@ -443,7 +445,7 @@ export class LocationsService {
       });
     } catch (error) {
       if (this.isUniqueViolation(error)) {
-        throw new ConflictException("A state with this name already exists");
+        throw new ConflictException('A state with this name already exists');
       }
       throw error;
     }
@@ -452,7 +454,7 @@ export class LocationsService {
   /** Lists ALL states (active + inactive) for admin management. */
   async getAdminStates(): Promise<AdminStateResponse[]> {
     return this.prisma.state.findMany({
-      orderBy: { name: "asc" },
+      orderBy: { name: 'asc' },
       select: ADMIN_STATE_SELECT,
     });
   }
@@ -476,7 +478,7 @@ export class LocationsService {
       });
     } catch (error) {
       if (this.isUniqueViolation(error)) {
-        throw new ConflictException("A state with this name already exists");
+        throw new ConflictException('A state with this name already exists');
       }
       throw error;
     }
@@ -494,7 +496,7 @@ export class LocationsService {
     const cityCount = await this.prisma.city.count({ where: { stateId } });
     if (cityCount > 0) {
       throw new ConflictException(
-        "State has dependent cities and cannot be deleted. Disable it instead.",
+        'State has dependent cities and cannot be deleted. Disable it instead.',
       );
     }
 
@@ -503,7 +505,7 @@ export class LocationsService {
     });
     if (addressCount > 0) {
       throw new ConflictException(
-        "State is referenced by customer addresses and cannot be deleted. Disable it instead.",
+        'State is referenced by customer addresses and cannot be deleted. Disable it instead.',
       );
     }
 
@@ -523,11 +525,11 @@ export class LocationsService {
       select: { id: true, isActive: true },
     });
     if (!state) {
-      throw new NotFoundException("State not found");
+      throw new NotFoundException('State not found');
     }
     if (!state.isActive) {
       throw new ConflictException(
-        "Cannot create a city under an inactive state",
+        'Cannot create a city under an inactive state',
       );
     }
 
@@ -539,7 +541,7 @@ export class LocationsService {
     } catch (error) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException(
-          "A city with this name already exists in this state",
+          'A city with this name already exists in this state',
         );
       }
       throw error;
@@ -555,7 +557,7 @@ export class LocationsService {
 
     return this.prisma.city.findMany({
       where: { stateId },
-      orderBy: { name: "asc" },
+      orderBy: { name: 'asc' },
       select: ADMIN_CITY_SELECT,
     });
   }
@@ -580,7 +582,7 @@ export class LocationsService {
     } catch (error) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException(
-          "A city with this name already exists in this state",
+          'A city with this name already exists in this state',
         );
       }
       throw error;
@@ -597,7 +599,7 @@ export class LocationsService {
     const areaCount = await this.prisma.area.count({ where: { cityId } });
     if (areaCount > 0) {
       throw new ConflictException(
-        "City has dependent areas and cannot be deleted. Disable it instead.",
+        'City has dependent areas and cannot be deleted. Disable it instead.',
       );
     }
 
@@ -606,7 +608,7 @@ export class LocationsService {
     });
     if (addressCount > 0) {
       throw new ConflictException(
-        "City is referenced by customer addresses and cannot be deleted. Disable it instead.",
+        'City is referenced by customer addresses and cannot be deleted. Disable it instead.',
       );
     }
 
@@ -625,10 +627,12 @@ export class LocationsService {
       select: { id: true, isActive: true },
     });
     if (!city) {
-      throw new NotFoundException("City not found");
+      throw new NotFoundException('City not found');
     }
     if (!city.isActive) {
-      throw new ConflictException("Cannot create an area under an inactive city");
+      throw new ConflictException(
+        'Cannot create an area under an inactive city',
+      );
     }
 
     try {
@@ -639,7 +643,7 @@ export class LocationsService {
     } catch (error) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException(
-          "An area with this name already exists in this city",
+          'An area with this name already exists in this city',
         );
       }
       throw error;
@@ -655,7 +659,7 @@ export class LocationsService {
 
     return this.prisma.area.findMany({
       where: { cityId },
-      orderBy: { name: "asc" },
+      orderBy: { name: 'asc' },
       select: ADMIN_AREA_SELECT,
     });
   }
@@ -684,7 +688,7 @@ export class LocationsService {
     } catch (error) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException(
-          "An area with this name already exists in this city",
+          'An area with this name already exists in this city',
         );
       }
       throw error;
@@ -703,7 +707,7 @@ export class LocationsService {
     });
     if (addressCount > 0) {
       throw new ConflictException(
-        "Area is referenced by customer addresses and cannot be deleted. Disable it instead.",
+        'Area is referenced by customer addresses and cannot be deleted. Disable it instead.',
       );
     }
 
@@ -720,7 +724,7 @@ export class LocationsService {
       select: { id: true },
     });
     if (!state) {
-      throw new NotFoundException("State not found");
+      throw new NotFoundException('State not found');
     }
     return state;
   }
@@ -732,7 +736,7 @@ export class LocationsService {
       select: { id: true },
     });
     if (!city) {
-      throw new NotFoundException("City not found");
+      throw new NotFoundException('City not found');
     }
     return city;
   }
@@ -744,7 +748,7 @@ export class LocationsService {
       select: { id: true },
     });
     if (!area) {
-      throw new NotFoundException("Area not found");
+      throw new NotFoundException('Area not found');
     }
     return area;
   }
@@ -753,7 +757,7 @@ export class LocationsService {
   private isUniqueViolation(error: unknown): boolean {
     return (
       error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
+      error.code === 'P2002'
     );
   }
 }

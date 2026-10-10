@@ -2,12 +2,12 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
-} from "@nestjs/common";
-import { PrismaService } from "../../prisma/prisma.service";
-import { CustomerAddress } from "@prisma/client";
-import { CreateAddressDto } from "./dto/customer/create-address.dto";
-import { UpdateAddressDto } from "./dto/customer/update-address.dto";
-import { normalizeMobile } from "../../common/utils/phone.util";
+} from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { CustomerAddress } from '@prisma/client';
+import { CreateAddressDto } from './dto/customer/create-address.dto';
+import { UpdateAddressDto } from './dto/customer/update-address.dto';
+import { normalizeMobile } from '../../common/utils/phone.util';
 
 /** Authoritative, active State -> City -> Area resolved from the catalog. */
 interface ResolvedHierarchy {
@@ -72,7 +72,7 @@ export class AddressService {
   async getAddresses(userId: string): Promise<CustomerAddress[]> {
     return this.prisma.customerAddress.findMany({
       where: { userId },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
@@ -86,7 +86,7 @@ export class AddressService {
       where: { id, userId },
     });
     if (!address) {
-      throw new NotFoundException("Address not found");
+      throw new NotFoundException('Address not found');
     }
     return address;
   }
@@ -183,7 +183,7 @@ export class AddressService {
       !area.city.state.isActive
     ) {
       throw new BadRequestException(
-        "Invalid or inactive State -> City -> Area selection",
+        'Invalid or inactive State -> City -> Area selection',
       );
     }
 

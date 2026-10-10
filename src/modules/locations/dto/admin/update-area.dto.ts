@@ -4,11 +4,11 @@ import {
   IsOptional,
   IsString,
   Matches,
-} from "class-validator";
-import { Transform } from "class-transformer";
+} from 'class-validator';
+import { Transform } from 'class-transformer';
 
 const trim = ({ value }: { value: unknown }) =>
-  typeof value === "string" ? value.trim() : value;
+  typeof value === 'string' ? value.trim() : value;
 
 /**
  * Body for PATCH /admin/locations/areas/:areaId. All fields optional; the same
@@ -20,18 +20,18 @@ const trim = ({ value }: { value: unknown }) =>
 export class UpdateAreaDto {
   @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: "name must not be empty" })
+  @IsNotEmpty({ message: 'name must not be empty' })
   @Transform(trim)
   name?: string;
 
   @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: "pincode must not be empty" })
+  @IsNotEmpty({ message: 'pincode must not be empty' })
   @Transform(trim)
-  @Matches(/^\d{4,10}$/, { message: "pincode must be 4 to 10 digits" })
+  @Matches(/^\d{4,10}$/, { message: 'pincode must be 4 to 10 digits' })
   pincode?: string;
 
   @IsOptional()
-  @IsBoolean({ message: "isActive must be a boolean" })
+  @IsBoolean({ message: 'isActive must be a boolean' })
   isActive?: boolean;
 }

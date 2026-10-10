@@ -1,20 +1,27 @@
-import { IsOptional, IsEnum, IsInt, Min, Max, IsDateString } from "class-validator";
-import { Type } from "class-transformer";
-import { WalletTransactionType } from "../../wallet.constants";
+import {
+  IsOptional,
+  IsEnum,
+  IsInt,
+  Min,
+  Max,
+  IsDateString,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { WalletTransactionType } from '../../wallet.constants';
 
 export class ListTransactionsQueryDto {
   @IsOptional()
   @IsEnum(WalletTransactionType, {
-    message: `type must be one of: ${Object.values(WalletTransactionType).join(", ")}`,
+    message: `type must be one of: ${Object.values(WalletTransactionType).join(', ')}`,
   })
   type?: WalletTransactionType;
 
   @IsOptional()
-  @IsDateString({}, { message: "startDate must be YYYY-MM-DD" })
+  @IsDateString({}, { message: 'startDate must be YYYY-MM-DD' })
   startDate?: string;
 
   @IsOptional()
-  @IsDateString({}, { message: "endDate must be YYYY-MM-DD" })
+  @IsDateString({}, { message: 'endDate must be YYYY-MM-DD' })
   endDate?: string;
 
   @IsOptional()

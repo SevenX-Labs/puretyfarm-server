@@ -1,18 +1,27 @@
-import { IsOptional, IsEnum, IsInt, Min, Max, IsDateString, IsString, MaxLength } from "class-validator";
-import { Type } from "class-transformer";
-import { WalletCreditRequestStatus } from "../../wallet.constants";
-import { PaymentMethod } from "../../../payments/payments.constants";
+import {
+  IsOptional,
+  IsEnum,
+  IsInt,
+  Min,
+  Max,
+  IsDateString,
+  IsString,
+  MaxLength,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { WalletCreditRequestStatus } from '../../wallet.constants';
+import { PaymentMethod } from '../../../payments/payments.constants';
 
 export class AdminListCreditRequestsQueryDto {
   @IsOptional()
   @IsEnum(WalletCreditRequestStatus, {
-    message: `status must be one of: ${Object.values(WalletCreditRequestStatus).join(", ")}`,
+    message: `status must be one of: ${Object.values(WalletCreditRequestStatus).join(', ')}`,
   })
   status?: WalletCreditRequestStatus;
 
   @IsOptional()
   @IsEnum(PaymentMethod, {
-    message: `source must be one of: ${Object.values(PaymentMethod).join(", ")}`,
+    message: `source must be one of: ${Object.values(PaymentMethod).join(', ')}`,
   })
   source?: PaymentMethod;
 
@@ -22,11 +31,11 @@ export class AdminListCreditRequestsQueryDto {
   customerSearch?: string;
 
   @IsOptional()
-  @IsDateString({}, { message: "startDate must be YYYY-MM-DD" })
+  @IsDateString({}, { message: 'startDate must be YYYY-MM-DD' })
   startDate?: string;
 
   @IsOptional()
-  @IsDateString({}, { message: "endDate must be YYYY-MM-DD" })
+  @IsDateString({}, { message: 'endDate must be YYYY-MM-DD' })
   endDate?: string;
 
   @IsOptional()

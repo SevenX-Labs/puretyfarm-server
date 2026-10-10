@@ -355,12 +355,8 @@ export class PhonePeService implements IPaymentProvider {
    * credential is logged by NAME only.
    */
   verifyWebhookAuthorization(headerValue: string | undefined): boolean {
-    const username = this.configService.get<string>(
-      'PHONEPE_WEBHOOK_USERNAME',
-    );
-    const password = this.configService.get<string>(
-      'PHONEPE_WEBHOOK_PASSWORD',
-    );
+    const username = this.configService.get<string>('PHONEPE_WEBHOOK_USERNAME');
+    const password = this.configService.get<string>('PHONEPE_WEBHOOK_PASSWORD');
 
     if (!username?.trim() || !password?.trim()) {
       this.logger.error(
@@ -375,7 +371,10 @@ export class PhonePeService implements IPaymentProvider {
     }
 
     // Accept `<hex>` and `SHA256 <hex>`; reject anything else outright.
-    const received = headerValue.trim().replace(/^sha256\s+/i, '').trim();
+    const received = headerValue
+      .trim()
+      .replace(/^sha256\s+/i, '')
+      .trim();
 
     const expected = createHash('sha256')
       .update(`${username.trim()}:${password.trim()}`, 'utf8')
@@ -397,14 +396,15 @@ export class PhonePeService implements IPaymentProvider {
     transactionId: string | null;
   } {
     const envelope = payload as PhonePeWebhookEvent;
-    const rawEvent = envelope.event ?? (envelope as Record<string, unknown>).type;
-    const event =
-      typeof rawEvent === 'string' ? rawEvent.trim() : null;
+    const rawEvent =
+      envelope.event ?? (envelope as Record<string, unknown>).type;
+    const event = typeof rawEvent === 'string' ? rawEvent.trim() : null;
     const inner = (envelope.payload ?? {}) as Record<string, unknown>;
 
     const orderId =
       (typeof inner.merchantOrderId === 'string' && inner.merchantOrderId) ||
-      (typeof inner.originalMerchantOrderId === 'string' && inner.originalMerchantOrderId) ||
+      (typeof inner.originalMerchantOrderId === 'string' &&
+        inner.originalMerchantOrderId) ||
       (typeof inner.orderId === 'string' && inner.orderId) ||
       null;
 
@@ -422,7 +422,7 @@ export class PhonePeService implements IPaymentProvider {
           event,
           transactionId:
             (typeof inner.originalMerchantOrderId === 'string' &&
-            inner.originalMerchantOrderId) ||
+              inner.originalMerchantOrderId) ||
             orderId,
         };
 

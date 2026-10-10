@@ -789,8 +789,8 @@ export class WalletService {
   ) {
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new BadRequestException({
-        error: "INVALID_CREDIT_AMOUNT",
-        message: "Debit amount must be a positive integer",
+        error: 'INVALID_CREDIT_AMOUNT',
+        message: 'Debit amount must be a positive integer',
       });
     }
 
@@ -882,8 +882,8 @@ export class WalletService {
   ) {
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new BadRequestException({
-        error: "INVALID_CREDIT_AMOUNT",
-        message: "Credit amount must be a positive integer",
+        error: 'INVALID_CREDIT_AMOUNT',
+        message: 'Credit amount must be a positive integer',
       });
     }
 
@@ -1265,16 +1265,16 @@ export class WalletService {
     const amountPaise = dto.amountPaise ?? dto.amount;
     if (!amountPaise || !Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new BadRequestException({
-        error: "INVALID_CREDIT_AMOUNT",
-        message: "Credit amount must be a positive integer in paise",
+        error: 'INVALID_CREDIT_AMOUNT',
+        message: 'Credit amount must be a positive integer in paise',
       });
     }
 
     const remark = dto.remark?.trim();
     if (!remark || remark.length < 3) {
       throw new BadRequestException({
-        error: "INVALID_REMARK",
-        message: "Remark must be at least 3 characters",
+        error: 'INVALID_REMARK',
+        message: 'Remark must be at least 3 characters',
       });
     }
 
@@ -1284,8 +1284,8 @@ export class WalletService {
     });
     if (!user) {
       throw new NotFoundException({
-        error: "CUSTOMER_NOT_FOUND",
-        message: "Customer user not found",
+        error: 'CUSTOMER_NOT_FOUND',
+        message: 'Customer user not found',
       });
     }
 
@@ -1313,7 +1313,7 @@ export class WalletService {
         return {
           success: true,
           replayed: true,
-          message: "Manual credit replayed successfully",
+          message: 'Manual credit replayed successfully',
           walletId: existing.walletId,
           balancePaise: existing.balanceAfterPaise,
           transaction: {
@@ -1338,7 +1338,7 @@ export class WalletService {
 
       return {
         success: true,
-        message: "Wallet credited successfully",
+        message: 'Wallet credited successfully',
         walletId: result.walletId,
         balancePaise: result.balanceAfterPaise,
         transactionId: result.transactionId,
@@ -1355,16 +1355,16 @@ export class WalletService {
     const amountPaise = dto.amountPaise ?? dto.amount;
     if (!amountPaise || !Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new BadRequestException({
-        error: "INVALID_DEBIT_AMOUNT",
-        message: "Debit amount must be a positive integer in paise",
+        error: 'INVALID_DEBIT_AMOUNT',
+        message: 'Debit amount must be a positive integer in paise',
       });
     }
 
     const remark = dto.remark?.trim();
     if (!remark || remark.length < 3) {
       throw new BadRequestException({
-        error: "INVALID_REMARK",
-        message: "Remark must be at least 3 characters",
+        error: 'INVALID_REMARK',
+        message: 'Remark must be at least 3 characters',
       });
     }
 
@@ -1374,8 +1374,8 @@ export class WalletService {
     });
     if (!user) {
       throw new NotFoundException({
-        error: "CUSTOMER_NOT_FOUND",
-        message: "Customer user not found",
+        error: 'CUSTOMER_NOT_FOUND',
+        message: 'Customer user not found',
       });
     }
 
@@ -1403,7 +1403,7 @@ export class WalletService {
         return {
           success: true,
           replayed: true,
-          message: "Manual debit replayed successfully",
+          message: 'Manual debit replayed successfully',
           walletId: existing.walletId,
           balancePaise: existing.balanceAfterPaise,
           transaction: {
@@ -1428,12 +1428,11 @@ export class WalletService {
 
       return {
         success: true,
-        message: "Wallet debited successfully",
+        message: 'Wallet debited successfully',
         walletId: result.walletId,
         balancePaise: result.balanceAfterPaise,
         transactionId: result.transactionId,
       };
     });
   }
-
 }

@@ -10,7 +10,9 @@ export class AppService {
   }
 
   async checkDbConnection() {
-    const result = await this.prisma.$queryRaw<Array<{ status: number; now: Date }>>`SELECT 1 as status, NOW() as now`;
+    const result = await this.prisma.$queryRaw<
+      Array<{ status: number; now: Date }>
+    >`SELECT 1 as status, NOW() as now`;
     return {
       status: 'ok',
       message: 'Database connection is healthy',

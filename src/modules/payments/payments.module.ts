@@ -23,7 +23,13 @@ import { OrderPaymentsController } from './order-payments.controller';
  * PhonePe is the active and sole online payment provider.
  */
 @Module({
-  imports: [PrismaModule, AuthModule, forwardRef(() => WalletModule), OrdersModule, forwardRef(() => PlansModule)],
+  imports: [
+    PrismaModule,
+    AuthModule,
+    forwardRef(() => WalletModule),
+    OrdersModule,
+    forwardRef(() => PlansModule),
+  ],
   controllers: [
     PaymentsController,
     AdminPaymentsController,

@@ -56,9 +56,7 @@ export class PhonePeAuthService {
    * traffic at the sandbox.
    */
   private isSandbox(): boolean {
-    const env = (
-      this.configService.get<string>('PHONEPE_ENV') ?? 'PRODUCTION'
-    )
+    const env = (this.configService.get<string>('PHONEPE_ENV') ?? 'PRODUCTION')
       .trim()
       .toUpperCase();
     return env === 'SANDBOX' || env === 'UAT' || env === 'PREPROD';
@@ -83,10 +81,12 @@ export class PhonePeAuthService {
    */
   private getCredentials(): PhonePeCredentials {
     const clientId = this.configService.get<string>('PHONEPE_CLIENT_ID');
-    const clientSecret =
-      this.configService.get<string>('PHONEPE_CLIENT_SECRET');
-    const clientVersion =
-      this.configService.get<string>('PHONEPE_CLIENT_VERSION');
+    const clientSecret = this.configService.get<string>(
+      'PHONEPE_CLIENT_SECRET',
+    );
+    const clientVersion = this.configService.get<string>(
+      'PHONEPE_CLIENT_VERSION',
+    );
 
     const missing: string[] = [];
     if (!clientId?.trim()) missing.push('PHONEPE_CLIENT_ID');
@@ -173,9 +173,7 @@ export class PhonePeAuthService {
 
       if (!response.ok) {
         // Status code only. The error body can echo request parameters.
-        this.logger.error(
-          `PhonePe OAuth returned HTTP ${response.status}`,
-        );
+        this.logger.error(`PhonePe OAuth returned HTTP ${response.status}`);
         throw new ServiceUnavailableException(
           'Payment provider authentication failed',
         );

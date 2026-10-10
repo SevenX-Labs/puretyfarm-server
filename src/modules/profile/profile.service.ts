@@ -4,13 +4,13 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
-} from "@nestjs/common";
-import { PrismaService } from "../../prisma/prisma.service";
-import { ProfileStorageService } from "./storage/profile-storage.service";
-import { CustomerCreateProfileDto } from "./dto/customer/customer-create-profile.dto";
-import { CustomerUpdateProfileDto } from "./dto/customer/customer-update-profile.dto";
-import { validateAvatarFile } from "./utils/avatar-validator.util";
-import { CustomerProfile, Prisma } from "@prisma/client";
+} from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { ProfileStorageService } from './storage/profile-storage.service';
+import { CustomerCreateProfileDto } from './dto/customer/customer-create-profile.dto';
+import { CustomerUpdateProfileDto } from './dto/customer/customer-update-profile.dto';
+import { validateAvatarFile } from './utils/avatar-validator.util';
+import { CustomerProfile, Prisma } from '@prisma/client';
 
 // Signed URLs for private avatars are short-lived; the DB only ever stores the
 // permanent object path, never this URL.
@@ -55,7 +55,7 @@ export class ProfileService {
     });
 
     if (existing) {
-      throw new ConflictException("Customer profile already exists");
+      throw new ConflictException('Customer profile already exists');
     }
 
     const user = await this.prisma.user.findUnique({
@@ -63,7 +63,7 @@ export class ProfileService {
     });
 
     if (!user) {
-      throw new NotFoundException("User not found");
+      throw new NotFoundException('User not found');
     }
 
     const dob = this.validateAndParseDate(dto.dateOfBirth);
@@ -84,9 +84,9 @@ export class ProfileService {
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002"
+        error.code === 'P2002'
       ) {
-        throw new ConflictException("Customer profile already exists");
+        throw new ConflictException('Customer profile already exists');
       }
       throw error;
     }
@@ -105,7 +105,7 @@ export class ProfileService {
 
     if (!profile) {
       throw new NotFoundException(
-        "Customer profile not found. Please create a profile first.",
+        'Customer profile not found. Please create a profile first.',
       );
     }
 
@@ -125,7 +125,7 @@ export class ProfileService {
     });
 
     if (!profile) {
-      throw new NotFoundException("Customer profile not found");
+      throw new NotFoundException('Customer profile not found');
     }
 
     const updateData: Prisma.CustomerProfileUpdateInput = {};
@@ -173,7 +173,7 @@ export class ProfileService {
     });
 
     if (!profile) {
-      throw new NotFoundException("Customer profile not found");
+      throw new NotFoundException('Customer profile not found');
     }
 
     const oldAvatarPath = profile.profileImagePath;
@@ -227,7 +227,7 @@ export class ProfileService {
     });
 
     if (!profile) {
-      throw new NotFoundException("Customer profile not found");
+      throw new NotFoundException('Customer profile not found');
     }
 
     if (profile.profileImagePath) {
@@ -248,12 +248,12 @@ export class ProfileService {
   private validateAndParseDate(dateStr: string): Date {
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) {
-      throw new BadRequestException("Invalid dateOfBirth");
+      throw new BadRequestException('Invalid dateOfBirth');
     }
 
     const now = new Date();
     if (date >= now) {
-      throw new BadRequestException("dateOfBirth must be in the past");
+      throw new BadRequestException('dateOfBirth must be in the past');
     }
 
     return date;
@@ -294,7 +294,7 @@ export class ProfileService {
       firstName: profile.firstName,
       lastName: profile.lastName,
       gender: profile.gender,
-      dateOfBirth: profile.dateOfBirth.toISOString().split("T")[0],
+      dateOfBirth: profile.dateOfBirth.toISOString().split('T')[0],
       profileImageUrl,
       whatsappNumber: profile.whatsappNumber ?? null,
       mobile: user.mobile,

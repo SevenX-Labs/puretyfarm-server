@@ -1,4 +1,4 @@
-import { IsDateString } from "class-validator";
+import { IsDateString } from 'class-validator';
 
 /**
  * Body for POST /customer/manage-delivery/skip.
@@ -7,7 +7,7 @@ import { IsDateString } from "class-validator";
 export class SkipDeliveryDto {
   @IsDateString(
     {},
-    { message: "deliveryDate must be a valid date (YYYY-MM-DD)" },
+    { message: 'deliveryDate must be a valid date (YYYY-MM-DD)' },
   )
   deliveryDate: string;
 }

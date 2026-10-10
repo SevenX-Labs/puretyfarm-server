@@ -1,5 +1,5 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 export interface SendOtpSmsResult {
   success: boolean;
@@ -13,7 +13,7 @@ export class Fast2SmsService {
   private readonly apiKey: string | undefined;
 
   constructor(private readonly configService: ConfigService) {
-    this.apiKey = this.configService.get<string>("FAST2SMS_OTP_API_KEY");
+    this.apiKey = this.configService.get<string>('FAST2SMS_OTP_API_KEY');
   }
 
   /**
@@ -23,18 +23,18 @@ export class Fast2SmsService {
    */
   async sendOtp(phone: string, otp: string): Promise<SendOtpSmsResult> {
     const apiKey = this.apiKey || process.env.FAST2SMS_OTP_API_KEY;
-    const cleanPhone = phone.replace(/\D/g, "").slice(-10);
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
     // Always log clean OTP banner to server console for developer convenience
     console.log(
       `\n========================================\n` +
-      `[PuretyFarm Auth] 🥛 OTP DISPATCH\n` +
-      `Recipient : ${cleanPhone} (${phone})\n` +
-      `Code      : ${otp}\n` +
-      `Provider  : Fast2SMS (POST https://www.fast2sms.com/dev/bulkV2)\n` +
-      `Route     : Quick SMS ("q") / OTP\n` +
-      `Expires   : 5 Minutes\n` +
-      `========================================\n`
+        `[PuretyFarm Auth] 🥛 OTP DISPATCH\n` +
+        `Recipient : ${cleanPhone} (${phone})\n` +
+        `Code      : ${otp}\n` +
+        `Provider  : Fast2SMS (POST https://www.fast2sms.com/dev/bulkV2)\n` +
+        `Route     : Quick SMS ("q") / OTP\n` +
+        `Expires   : 5 Minutes\n` +
+        `========================================\n`,
     );
 
     if (!apiKey) {
@@ -43,20 +43,20 @@ export class Fast2SmsService {
       );
       return {
         success: true,
-        messageId: "dev_mock_sent",
+        messageId: 'dev_mock_sent',
       };
     }
 
     // Try Quick SMS route ("q") first for instant live delivery without domain verification blocks
     try {
-      const quickResponse = await fetch("https://www.fast2sms.com/dev/bulkV2", {
-        method: "POST",
+      const quickResponse = await fetch('https://www.fast2sms.com/dev/bulkV2', {
+        method: 'POST',
         headers: {
           authorization: apiKey,
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          route: "q",
+          route: 'q',
           message: `Your Purety Farm verification code is ${otp}. Valid for 5 minutes.`,
           numbers: cleanPhone,
         }),
@@ -66,32 +66,32 @@ export class Fast2SmsService {
 
       if (quickResponse.ok && quickData && quickData.return === true) {
         this.logger.log(
-          `[Fast2SMS Quick SMS] Dispatched OTP to ${cleanPhone}. RequestId=${quickData.request_id || "sent"}`,
+          `[Fast2SMS Quick SMS] Dispatched OTP to ${cleanPhone}. RequestId=${quickData.request_id || 'sent'}`,
         );
         return {
           success: true,
-          messageId: quickData.request_id || "fast2sms_sent",
+          messageId: quickData.request_id || 'fast2sms_sent',
         };
       }
 
       // If Quick SMS returned an error or non-200, try the OTP route as secondary
       const quickError =
         quickData && Array.isArray(quickData.message)
-          ? quickData.message.join(", ")
+          ? quickData.message.join(', ')
           : (quickData && quickData.message) || `HTTP ${quickResponse.status}`;
 
       this.logger.warn(
         `Fast2SMS Quick SMS returned notice (${quickError}), trying OTP route...`,
       );
 
-      const otpResponse = await fetch("https://www.fast2sms.com/dev/bulkV2", {
-        method: "POST",
+      const otpResponse = await fetch('https://www.fast2sms.com/dev/bulkV2', {
+        method: 'POST',
         headers: {
           authorization: apiKey,
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          route: "otp",
+          route: 'otp',
           variables_values: otp,
           numbers: cleanPhone,
         }),
@@ -101,20 +101,23 @@ export class Fast2SmsService {
 
       if (otpResponse.ok && otpData && otpData.return === true) {
         this.logger.log(
-          `[Fast2SMS OTP Route] Dispatched OTP to ${cleanPhone}. RequestId=${otpData.request_id || "sent"}`,
+          `[Fast2SMS OTP Route] Dispatched OTP to ${cleanPhone}. RequestId=${otpData.request_id || 'sent'}`,
         );
         return {
           success: true,
-          messageId: otpData.request_id || "fast2sms_sent",
+          messageId: otpData.request_id || 'fast2sms_sent',
         };
       }
 
       const otpError =
         otpData && Array.isArray(otpData.message)
-          ? otpData.message.join(", ")
-          : (otpData && otpData.message) || `Fast2SMS error HTTP ${otpResponse.status}`;
+          ? otpData.message.join(', ')
+          : (otpData && otpData.message) ||
+            `Fast2SMS error HTTP ${otpResponse.status}`;
 
-      this.logger.warn(`Fast2SMS OTP delivery notice for ${cleanPhone}: ${otpError}`);
+      this.logger.warn(
+        `Fast2SMS OTP delivery notice for ${cleanPhone}: ${otpError}`,
+      );
       return {
         success: false,
         error: otpError,
@@ -126,7 +129,7 @@ export class Fast2SmsService {
       );
       return {
         success: false,
-        error: error?.message || "Network error contacting Fast2SMS",
+        error: error?.message || 'Network error contacting Fast2SMS',
       };
     }
   }

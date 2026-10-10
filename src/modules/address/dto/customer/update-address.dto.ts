@@ -8,11 +8,11 @@ import {
   Max,
   MaxLength,
   Min,
-} from "class-validator";
-import { Transform, Type } from "class-transformer";
+} from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 
 const trim = ({ value }: { value: unknown }) =>
-  typeof value === "string" ? value.trim() : value;
+  typeof value === 'string' ? value.trim() : value;
 
 /**
  * Body for PATCH /customer/addresses/:id. Every field is optional; the same
@@ -26,7 +26,7 @@ const trim = ({ value }: { value: unknown }) =>
 export class UpdateAddressDto {
   @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: "fullName cannot be empty" })
+  @IsNotEmpty({ message: 'fullName cannot be empty' })
   @MaxLength(100)
   @Transform(trim)
   fullName?: string;
@@ -40,7 +40,7 @@ export class UpdateAddressDto {
 
   @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: "houseNumber cannot be empty" })
+  @IsNotEmpty({ message: 'houseNumber cannot be empty' })
   @MaxLength(100)
   @Transform(trim)
   houseNumber?: string;
@@ -64,34 +64,34 @@ export class UpdateAddressDto {
   landmark?: string;
 
   @IsOptional()
-  @IsUUID("4", { message: "stateId must be a valid UUID" })
+  @IsUUID('4', { message: 'stateId must be a valid UUID' })
   stateId?: string;
 
   @IsOptional()
-  @IsUUID("4", { message: "cityId must be a valid UUID" })
+  @IsUUID('4', { message: 'cityId must be a valid UUID' })
   cityId?: string;
 
   @IsOptional()
-  @IsUUID("4", { message: "areaId must be a valid UUID" })
+  @IsUUID('4', { message: 'areaId must be a valid UUID' })
   areaId?: string;
 
   @IsOptional()
   @IsString()
-  @Matches(/^\d{4,10}$/, { message: "pincode must be 4 to 10 digits" })
+  @Matches(/^\d{4,10}$/, { message: 'pincode must be 4 to 10 digits' })
   @Transform(trim)
   pincode?: string;
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber({}, { message: "latitude must be a number" })
-  @Min(-90, { message: "latitude must be between -90 and 90" })
-  @Max(90, { message: "latitude must be between -90 and 90" })
+  @IsNumber({}, { message: 'latitude must be a number' })
+  @Min(-90, { message: 'latitude must be between -90 and 90' })
+  @Max(90, { message: 'latitude must be between -90 and 90' })
   latitude?: number;
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber({}, { message: "longitude must be a number" })
-  @Min(-180, { message: "longitude must be between -180 and 180" })
-  @Max(180, { message: "longitude must be between -180 and 180" })
+  @IsNumber({}, { message: 'longitude must be a number' })
+  @Min(-180, { message: 'longitude must be between -180 and 180' })
+  @Max(180, { message: 'longitude must be between -180 and 180' })
   longitude?: number;
 }

@@ -1,4 +1,4 @@
-import { UpdatePlanBaseDto } from "./update-plan-base.dto";
+import { UpdatePlanBaseDto } from './update-plan-base.dto';
 
 /**
  * Body for PATCH /admin/plans/SEVEN_DAY_TRIAL. The once-per-customer usage

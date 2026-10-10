@@ -1,9 +1,9 @@
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException } from '@nestjs/common';
 
 export const MAX_AVATAR_SIZE = 3 * 1024 * 1024; // 3 MB
-export const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
+export const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
-type DetectedFormat = "image/jpeg" | "image/png" | "image/webp" | null;
+type DetectedFormat = 'image/jpeg' | 'image/png' | 'image/webp' | null;
 
 /**
  * Detects the real image format from the leading magic bytes.
@@ -14,9 +14,8 @@ function detectImageFormat(buffer: Buffer): DetectedFormat {
     return null;
   }
 
-  const isJpeg =
-    buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
-  if (isJpeg) return "image/jpeg";
+  const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  if (isJpeg) return 'image/jpeg';
 
   const isPng =
     buffer[0] === 0x89 &&
@@ -27,7 +26,7 @@ function detectImageFormat(buffer: Buffer): DetectedFormat {
     buffer[5] === 0x0a &&
     buffer[6] === 0x1a &&
     buffer[7] === 0x0a;
-  if (isPng) return "image/png";
+  if (isPng) return 'image/png';
 
   const isWebp =
     buffer[0] === 0x52 && // R
@@ -38,7 +37,7 @@ function detectImageFormat(buffer: Buffer): DetectedFormat {
     buffer[9] === 0x45 && // E
     buffer[10] === 0x42 && // B
     buffer[11] === 0x50; // P
-  if (isWebp) return "image/webp";
+  if (isWebp) return 'image/webp';
 
   return null;
 }
@@ -53,23 +52,23 @@ function detectImageFormat(buffer: Buffer): DetectedFormat {
  */
 export function validateAvatarFile(file?: Express.Multer.File): void {
   if (!file || !file.buffer) {
-    throw new BadRequestException("Avatar file is required");
+    throw new BadRequestException('Avatar file is required');
   }
 
   if (file.size > MAX_AVATAR_SIZE) {
-    throw new BadRequestException("Avatar file size must not exceed 3 MB");
+    throw new BadRequestException('Avatar file size must not exceed 3 MB');
   }
 
   if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
     throw new BadRequestException(
-      "Unsupported file type. Allowed formats: JPEG, PNG, WEBP",
+      'Unsupported file type. Allowed formats: JPEG, PNG, WEBP',
     );
   }
 
   const detected = detectImageFormat(file.buffer);
   if (!detected) {
     throw new BadRequestException(
-      "File signature does not match a valid JPEG, PNG, or WEBP image",
+      'File signature does not match a valid JPEG, PNG, or WEBP image',
     );
   }
 
@@ -77,7 +76,7 @@ export function validateAvatarFile(file?: Express.Multer.File): void {
   // spoofed uploads (e.g. a PNG renamed/relabelled as image/jpeg).
   if (detected !== file.mimetype) {
     throw new BadRequestException(
-      "File contents do not match the declared image type",
+      'File contents do not match the declared image type',
     );
   }
 }

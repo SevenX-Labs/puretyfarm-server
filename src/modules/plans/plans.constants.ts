@@ -5,47 +5,47 @@
 
 /** The three plan types offered to customers. */
 export enum PlanType {
-  BUY_ONCE = "BUY_ONCE",
-  SEVEN_DAY_TRIAL = "SEVEN_DAY_TRIAL",
-  MONTHLY = "MONTHLY",
+  BUY_ONCE = 'BUY_ONCE',
+  SEVEN_DAY_TRIAL = 'SEVEN_DAY_TRIAL',
+  MONTHLY = 'MONTHLY',
 }
 
 /** Monthly plan delivery frequency. */
 export enum DeliveryFrequency {
-  DAILY = "DAILY",
-  ALTERNATE_DAYS = "ALTERNATE_DAYS",
+  DAILY = 'DAILY',
+  ALTERNATE_DAYS = 'ALTERNATE_DAYS',
 }
 
 /** Monthly plan quantity customisation mode. */
 export enum QuantityMode {
-  FIXED = "FIXED",
-  ALTERNATING = "ALTERNATING",
+  FIXED = 'FIXED',
+  ALTERNATING = 'ALTERNATING',
 }
 
 /** Quote status lifecycle. */
 export enum PlanQuoteStatus {
-  PENDING = "PENDING",
-  CONFIRMED = "CONFIRMED",
-  EXPIRED = "EXPIRED",
-  CANCELLED = "CANCELLED",
+  PENDING = 'PENDING',
+  CONFIRMED = 'CONFIRMED',
+  EXPIRED = 'EXPIRED',
+  CANCELLED = 'CANCELLED',
 }
 
 /** Selection status lifecycle. */
 export enum PlanSelectionStatus {
-  CONFIRMED = "CONFIRMED",
-  PENDING_PAYMENT = "PENDING_PAYMENT",
-  ACTIVE = "ACTIVE",
+  CONFIRMED = 'CONFIRMED',
+  PENDING_PAYMENT = 'PENDING_PAYMENT',
+  ACTIVE = 'ACTIVE',
   /** Admin-approved suspension. Non-terminal; a RESUME approval reactivates. */
-  PAUSED = "PAUSED",
-  COMPLETED = "COMPLETED",
-  CANCELLED = "CANCELLED",
+  PAUSED = 'PAUSED',
+  COMPLETED = 'COMPLETED',
+  CANCELLED = 'CANCELLED',
 }
 
 /** Lifecycle of a single scheduled delivery (mirrors the Prisma enum). */
 export enum DeliveryStatus {
-  SCHEDULED = "SCHEDULED",
-  SKIPPED = "SKIPPED",
-  DELIVERED = "DELIVERED",
+  SCHEDULED = 'SCHEDULED',
+  SKIPPED = 'SKIPPED',
+  DELIVERED = 'DELIVERED',
 }
 
 /** How long a quote remains valid before automatic expiry (in minutes). */
@@ -71,7 +71,7 @@ export const QUOTE_EXPIRY_MINUTES = 30;
  * promoting it to a configurable column later means adding a nullable field
  * that falls back to this constant, with no change to the rule itself.
  */
-export const ORDER_CUTOFF_HHMM = "23:00";
+export const ORDER_CUTOFF_HHMM = '23:00';
 
 /** `ORDER_CUTOFF_HHMM` as minutes since IST midnight (23 * 60). */
 export const ORDER_CUTOFF_MINUTES_IST = 23 * 60;
@@ -88,7 +88,7 @@ export const LEAD_DAYS_AFTER_CUTOFF = 2;
  * Re-exported from the shared IST helpers so the DTO, the service and the
  * cut-off logic all validate against one pattern.
  */
-export { HH_MM_PATTERN as DELIVERY_TIME_PATTERN } from "../../common/utils/ist-date.util";
+export { HH_MM_PATTERN as DELIVERY_TIME_PATTERN } from '../../common/utils/ist-date.util';
 
 /** Absolute structural quantity boundaries (enforced in DTOs). */
 export const QUANTITY_MIN = 1;
@@ -109,16 +109,16 @@ export const BUY_ONCE_MAX_USAGES_LIMIT = 100;
 
 /** Types of delivery change that require admin approval. */
 export enum ChangeRequestType {
-  CHANGE_QUANTITY = "CHANGE_QUANTITY",
-  CHANGE_FREQUENCY = "CHANGE_FREQUENCY",
-  CHANGE_PLAN = "CHANGE_PLAN",
-  PAUSE = "PAUSE",
-  RESUME = "RESUME",
+  CHANGE_QUANTITY = 'CHANGE_QUANTITY',
+  CHANGE_FREQUENCY = 'CHANGE_FREQUENCY',
+  CHANGE_PLAN = 'CHANGE_PLAN',
+  PAUSE = 'PAUSE',
+  RESUME = 'RESUME',
 }
 
 /** Lifecycle of an admin-approval request. */
 export enum ChangeRequestStatus {
-  PENDING = "PENDING",
-  APPROVED = "APPROVED",
-  REJECTED = "REJECTED",
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  REJECTED = 'REJECTED',
 }

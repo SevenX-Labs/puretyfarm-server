@@ -13,7 +13,7 @@ describe('validateEnv', () => {
     PHONEPE_CLIENT_VERSION: '1',
     PHONEPE_WEBHOOK_USERNAME: 'test-webhook-user',
     PHONEPE_WEBHOOK_PASSWORD: 'test-webhook-password',
-        PUBLIC_API_BASE_URL: 'https://api.example.com',
+    PUBLIC_API_BASE_URL: 'https://api.example.com',
     PAYMENT_RESULT_REDIRECT_URL: 'https://app.example.com/payment/result',
   };
 
@@ -105,7 +105,6 @@ describe('validateEnv', () => {
     }
   });
 
-  
   it('throws when PUBLIC_API_BASE_URL is missing', () => {
     const { PUBLIC_API_BASE_URL, ...rest } = base;
     expect(() => validateEnv(rest)).toThrow(/PUBLIC_API_BASE_URL is required/);

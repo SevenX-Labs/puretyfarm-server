@@ -139,7 +139,9 @@ describe('PaymentExpiryJob', () => {
 
   it('does not initiate any refund', async () => {
     await job.handleExpiry();
-    expect(payments.initiateRefundForRejectedCreditRequest).not.toHaveBeenCalled();
+    expect(
+      payments.initiateRefundForRejectedCreditRequest,
+    ).not.toHaveBeenCalled();
   });
 
   it('does not create new wallet top-ups', async () => {

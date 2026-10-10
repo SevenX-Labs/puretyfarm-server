@@ -511,7 +511,9 @@ describe('CustomersService', () => {
       };
 
       mockPrismaService.user.count.mockResolvedValue(1);
-      mockPrismaService.user.findMany.mockResolvedValue([userWithSensitiveFields]);
+      mockPrismaService.user.findMany.mockResolvedValue([
+        userWithSensitiveFields,
+      ]);
 
       const result = await service.getCustomers({ page: 1, limit: 20 });
       const item = result.data[0] as any;
@@ -532,7 +534,9 @@ describe('CustomersService', () => {
         planSelections: [],
       };
 
-      mockPrismaService.user.findFirst.mockResolvedValue(userWithSensitiveFields);
+      mockPrismaService.user.findFirst.mockResolvedValue(
+        userWithSensitiveFields,
+      );
 
       const result = (await service.getCustomerById('cust-uuid-1')) as any;
 
@@ -554,7 +558,9 @@ describe('CustomersService', () => {
         'avatars/customers/cust-uuid-1-123.jpg',
         SIGNED_URL_EXPIRY_SECONDS,
       );
-      expect(listResult.data[0].profile?.profileImageUrl).toContain('https://signed.example/');
+      expect(listResult.data[0].profile?.profileImageUrl).toContain(
+        'https://signed.example/',
+      );
 
       mockPrismaService.user.findFirst.mockResolvedValue({
         ...baseCustomerUser,
@@ -563,7 +569,9 @@ describe('CustomersService', () => {
       });
 
       const detailResult = await service.getCustomerById('cust-uuid-1');
-      expect(detailResult.profile?.profileImageUrl).toContain('https://signed.example/');
+      expect(detailResult.profile?.profileImageUrl).toContain(
+        'https://signed.example/',
+      );
     });
   });
 
@@ -596,7 +604,9 @@ describe('CustomersService', () => {
     });
 
     it('sets profileImageUrl to null gracefully if signed URL creation fails', async () => {
-      mockStorageService.createSignedUrl.mockRejectedValue(new Error('Storage failure'));
+      mockStorageService.createSignedUrl.mockRejectedValue(
+        new Error('Storage failure'),
+      );
 
       mockPrismaService.user.count.mockResolvedValue(1);
       mockPrismaService.user.findMany.mockResolvedValue([baseCustomerUser]);

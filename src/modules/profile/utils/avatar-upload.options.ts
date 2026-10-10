@@ -1,6 +1,6 @@
-import { BadRequestException } from "@nestjs/common";
-import type { MulterOptions } from "@nestjs/platform-express/multer/interfaces/multer-options.interface";
-import { ALLOWED_MIME_TYPES, MAX_AVATAR_SIZE } from "./avatar-validator.util";
+import { BadRequestException } from '@nestjs/common';
+import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
+import { ALLOWED_MIME_TYPES, MAX_AVATAR_SIZE } from './avatar-validator.util';
 
 /**
  * Multer options for the single avatar upload field.
@@ -17,7 +17,7 @@ export const avatarMulterOptions: MulterOptions = {
     if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
       cb(
         new BadRequestException(
-          "Unsupported file type. Allowed formats: JPEG, PNG, WEBP",
+          'Unsupported file type. Allowed formats: JPEG, PNG, WEBP',
         ),
         false,
       );

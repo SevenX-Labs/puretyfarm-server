@@ -44,7 +44,9 @@ async function bootstrap() {
             if (normalizedOrigins.has(cleanOrigin)) {
               return callback(null, true);
             }
-            return callback(new Error(`CORS error: Origin ${origin} not allowed by policy`));
+            return callback(
+              new Error(`CORS error: Origin ${origin} not allowed by policy`),
+            );
           },
       credentials: true,
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],

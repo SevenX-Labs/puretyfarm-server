@@ -128,7 +128,9 @@ export class PhonePeRedirectController {
       );
     }
 
-    res.redirect(this.buildRedirectUrl({ transactionId: txnid, result, status }));
+    res.redirect(
+      this.buildRedirectUrl({ transactionId: txnid, result, status }),
+    );
   }
 
   /**

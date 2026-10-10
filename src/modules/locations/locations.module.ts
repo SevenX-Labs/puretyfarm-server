@@ -1,11 +1,11 @@
-import { Module } from "@nestjs/common";
-import { LocationsService } from "./locations.service";
-import { LocationsController } from "./locations.controller";
-import { AdminLocationsController } from "./admin-locations.controller";
-import { GeoapifyService } from "./geoapify/geoapify.service";
-import { PrismaModule } from "../../prisma/prisma.module";
-import { AuthModule } from "../auth/auth.module";
-import { ValkeyModule } from "../../valkey/valkey.module";
+import { Module } from '@nestjs/common';
+import { LocationsService } from './locations.service';
+import { LocationsController } from './locations.controller';
+import { AdminLocationsController } from './admin-locations.controller';
+import { GeoapifyService } from './geoapify/geoapify.service';
+import { PrismaModule } from '../../prisma/prisma.module';
+import { AuthModule } from '../auth/auth.module';
+import { ValkeyModule } from '../../valkey/valkey.module';
 
 @Module({
   imports: [PrismaModule, AuthModule, ValkeyModule],

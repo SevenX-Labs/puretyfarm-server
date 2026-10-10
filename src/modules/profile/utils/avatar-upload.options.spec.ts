@@ -1,13 +1,13 @@
-import { BadRequestException } from "@nestjs/common";
-import { avatarMulterOptions } from "./avatar-upload.options";
+import { BadRequestException } from '@nestjs/common';
+import { avatarMulterOptions } from './avatar-upload.options';
 
-describe("avatarMulterOptions (Multer boundary)", () => {
-  it("F. enforces a 3 MB file-size limit at the Multer boundary", () => {
+describe('avatarMulterOptions (Multer boundary)', () => {
+  it('F. enforces a 3 MB file-size limit at the Multer boundary', () => {
     expect(avatarMulterOptions.limits?.fileSize).toBe(3 * 1024 * 1024);
   });
 
-  it("accepts allowed image MIME types via fileFilter", () => {
-    for (const mimetype of ["image/jpeg", "image/png", "image/webp"]) {
+  it('accepts allowed image MIME types via fileFilter', () => {
+    for (const mimetype of ['image/jpeg', 'image/png', 'image/webp']) {
       const cb = jest.fn();
       avatarMulterOptions.fileFilter!(
         {} as any,
@@ -18,13 +18,13 @@ describe("avatarMulterOptions (Multer boundary)", () => {
     }
   });
 
-  it("rejects disallowed MIME types via fileFilter", () => {
+  it('rejects disallowed MIME types via fileFilter', () => {
     for (const mimetype of [
-      "image/svg+xml",
-      "image/gif",
-      "application/pdf",
-      "text/html",
-      "application/zip",
+      'image/svg+xml',
+      'image/gif',
+      'application/pdf',
+      'text/html',
+      'application/zip',
     ]) {
       const cb = jest.fn();
       avatarMulterOptions.fileFilter!(

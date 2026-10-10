@@ -1,33 +1,30 @@
-jest.mock("@nestjs/config", () => ({
+jest.mock('@nestjs/config', () => ({
   ConfigService: jest.fn().mockImplementation(() => ({ get: jest.fn() })),
 }));
-import { BadRequestException, ConflictException } from "@nestjs/common";
-import { randomUUID } from "crypto";
-import { PlansService } from "./plans.service";
-import { PaymentsService } from "../payments/payments.service";
-import { WalletService } from "../wallet/wallet.service";
+import { BadRequestException, ConflictException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { PlansService } from './plans.service';
+import { PaymentsService } from '../payments/payments.service';
+import { WalletService } from '../wallet/wallet.service';
 import {
   WalletTransactionType,
   WalletTransactionReferenceType,
-} from "../wallet/wallet.constants";
-import {
-  CashCollectionStatus,
-  PaymentMethod,
-} from "@prisma/client";
+} from '../wallet/wallet.constants';
+import { CashCollectionStatus, PaymentMethod } from '@prisma/client';
 import {
   PlanType,
   PlanQuoteStatus,
   PlanSelectionStatus,
   QuantityMode,
   DeliveryStatus,
-} from "./plans.constants";
+} from './plans.constants';
 
 type Row = Record<string, any>;
 
-describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
-  const USER_ID = "user-100";
-  const WALLET_ID = "wallet-100";
-  const ADMIN_ID = "admin-1";
+describe('Cash Plan Confirmation -> Wallet Routing Integration', () => {
+  const USER_ID = 'user-100';
+  const WALLET_ID = 'wallet-100';
+  const ADMIN_ID = 'admin-1';
 
   let db: {
     wallets: Row[];
@@ -50,7 +47,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
 
   const matches = (row: Row, where: Row): boolean =>
     Object.entries(where).every(([field, condition]) => {
-      if (condition && typeof condition === "object" && "in" in condition) {
+      if (condition && typeof condition === 'object' && 'in' in condition) {
         return (condition.in as unknown[]).includes(row[field]);
       }
       return row[field] === condition;
@@ -71,14 +68,14 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
       planDeliveries: [],
       planConfigs: [
         {
-          id: "cfg-trial",
+          id: 'cfg-trial',
           planType: PlanType.SEVEN_DAY_TRIAL,
           isActive: true,
           actualPricePerLitre: TRIAL_ACTUAL_PAISE,
           sellingPricePerLitre: TRIAL_SELLING_PAISE,
           deliveryFeePaise: 0,
-          deliveryStartTime: "05:00",
-          deliveryEndTime: "07:00",
+          deliveryStartTime: '05:00',
+          deliveryEndTime: '07:00',
         },
       ],
       orders: [],
@@ -114,7 +111,9 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
         },
         updateMany: async ({ where, data }: any) => {
           const hits = db.wallets.filter((w) => matches(w, where));
-          hits.forEach((w) => Object.assign(w, data, { updatedAt: new Date() }));
+          hits.forEach((w) =>
+            Object.assign(w, data, { updatedAt: new Date() }),
+          );
           return { count: hits.length };
         },
       },
@@ -128,7 +127,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
                 t.referenceId === data.referenceId,
             )
           ) {
-            throw new Error("unique violation: type_referenceType_referenceId");
+            throw new Error('unique violation: type_referenceType_referenceId');
           }
           const row = { id: randomUUID(), createdAt: new Date(), ...data };
           db.transactions.push(row);
@@ -136,7 +135,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
         },
         findMany: async ({ where, orderBy }: any) => {
           let list = db.transactions.filter((t) => matches(t, where));
-          if (orderBy?.createdAt === "desc") {
+          if (orderBy?.createdAt === 'desc') {
             list = [...list].reverse();
           }
           return list;
@@ -157,7 +156,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
         },
         update: async ({ where, data }: any) => {
           const row = db.planSelections.find((s) => s.id === where.id);
-          if (!row) throw new Error("Plan selection not found");
+          if (!row) throw new Error('Plan selection not found');
           Object.assign(row, data, { updatedAt: new Date() });
           return { ...row };
         },
@@ -165,7 +164,9 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
       planQuote: {
         updateMany: async ({ where, data }: any) => {
           const hits = db.planQuotes.filter((q) => matches(q, where));
-          hits.forEach((q) => Object.assign(q, data, { updatedAt: new Date() }));
+          hits.forEach((q) =>
+            Object.assign(q, data, { updatedAt: new Date() }),
+          );
           return { count: hits.length };
         },
       },
@@ -178,7 +179,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
         },
         findMany: async ({ where, orderBy }: any) => {
           let list = db.planDeliveries.filter((d) => matches(d, where));
-          if (orderBy?.deliveryDate === "asc") {
+          if (orderBy?.deliveryDate === 'asc') {
             list = [...list].sort(
               (a, b) =>
                 new Date(a.deliveryDate).getTime() -
@@ -240,7 +241,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
         },
         findUniqueOrThrow: async ({ where }: any) => {
           const row = db.cashCollections.find((c) => c.id === where.id);
-          if (!row) throw new Error("Cash collection not found");
+          if (!row) throw new Error('Cash collection not found');
           return { ...row };
         },
         findFirst: async ({ where }: any) => {
@@ -249,15 +250,19 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
         },
         updateMany: async ({ where, data }: any) => {
           const hits = db.cashCollections.filter((c) => matches(c, where));
-          hits.forEach((c) => Object.assign(c, data, { updatedAt: new Date() }));
+          hits.forEach((c) =>
+            Object.assign(c, data, { updatedAt: new Date() }),
+          );
           return { count: hits.length };
         },
       },
       $executeRaw: async () => 1,
       $queryRaw: async (strings: any, ...values: any[]) => {
-        const sql = Array.isArray(strings) ? strings.join("?") : String(strings);
+        const sql = Array.isArray(strings)
+          ? strings.join('?')
+          : String(strings);
 
-        if (sql.includes("FOR UPDATE")) {
+        if (sql.includes('FOR UPDATE')) {
           return [{ ok: 1 }];
         }
 
@@ -286,15 +291,9 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
       },
     };
 
-    walletService = new WalletService(
-      prisma,
-      { get: () => undefined } as any,
-    );
+    walletService = new WalletService(prisma, { get: () => undefined } as any);
 
-    plansService = new PlansService(
-      prisma,
-      walletService,
-    );
+    plansService = new PlansService(prisma, walletService);
 
     paymentsService = new PaymentsService(
       prisma,
@@ -306,9 +305,9 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
   });
 
   function seedCashPlan(planAmountPaise = 25000, collectedAmountPaise = 25000) {
-    const quoteId = "quote-1";
-    const selectionId = "sel-1";
-    const collectionId = "cash-1";
+    const quoteId = 'quote-1';
+    const selectionId = 'sel-1';
+    const collectionId = 'cash-1';
 
     db.planQuotes.push({
       id: quoteId,
@@ -318,9 +317,9 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
       deliveryOccurrences: 7,
       quantity: 1,
       quantityMode: QuantityMode.FIXED,
-      frequency: "DAILY",
-      billingPeriodStart: new Date("2026-10-10"),
-      billingPeriodEnd: new Date("2026-10-16"),
+      frequency: 'DAILY',
+      billingPeriodStart: new Date('2026-10-10'),
+      billingPeriodEnd: new Date('2026-10-16'),
       status: PlanQuoteStatus.PENDING,
     });
 
@@ -331,13 +330,13 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
       planType: PlanType.SEVEN_DAY_TRIAL,
       status: PlanSelectionStatus.PENDING_PAYMENT,
       paymentMethod: PaymentMethod.CASH,
-      frequency: "DAILY",
+      frequency: 'DAILY',
       quantityMode: QuantityMode.FIXED,
       quantity: 1,
       quantityA: null,
       quantityB: null,
-      startDate: new Date("2026-10-10"),
-      endDate: new Date("2026-10-16"),
+      startDate: new Date('2026-10-10'),
+      endDate: new Date('2026-10-16'),
       paidAt: null,
       paidAmountPaise: null,
     });
@@ -358,13 +357,13 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     return { quoteId, selectionId, collectionId };
   }
 
-  it("confirmCashCollection: writes atomic CREDIT + DEBIT, updates balance, and activates plan", async () => {
+  it('confirmCashCollection: writes atomic CREDIT + DEBIT, updates balance, and activates plan', async () => {
     const { selectionId, collectionId } = seedCashPlan(25000, 25000);
 
     const result = await paymentsService.confirmCashCollection(
       collectionId,
       ADMIN_ID,
-      { note: "Cash received at hub" },
+      { note: 'Cash received at hub' },
     );
 
     expect(result.success).toBe(true);
@@ -395,9 +394,11 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
       expect(o.sellingPricePerLitrePaise).toBe(TRIAL_SELLING_PAISE);
       expect(o.actualPricePerLitrePaise).toBe(TRIAL_ACTUAL_PAISE);
       expect(o.sellingPricePerLitrePaise).not.toBe(8000);
-      expect(o.paymentStatus).toBe("PAID");
+      expect(o.paymentStatus).toBe('PAID');
     }
-    expect(db.orderItems.every((i) => i.unitPricePaise === TRIAL_SELLING_PAISE)).toBe(true);
+    expect(
+      db.orderItems.every((i) => i.unitPricePaise === TRIAL_SELLING_PAISE),
+    ).toBe(true);
     expect(db.invoices.length).toBe(7);
 
     // 2. Verify Wallet Transactions: exactly 1 CREDIT and 1 DEBIT
@@ -408,20 +409,26 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     );
     expect(creditTx).toBeDefined();
     expect(creditTx?.amountPaise).toBe(25000);
-    expect(creditTx?.referenceType).toBe(WalletTransactionReferenceType.CASH_COLLECTION);
+    expect(creditTx?.referenceType).toBe(
+      WalletTransactionReferenceType.CASH_COLLECTION,
+    );
     expect(creditTx?.referenceId).toBe(collectionId);
     expect(creditTx?.balanceAfterPaise).toBe(25000); // 0 -> 25000
-    expect(creditTx?.description).toBe("Cash collection confirmed (plan payment)");
+    expect(creditTx?.description).toBe(
+      'Cash collection confirmed (plan payment)',
+    );
 
     const debitTx = db.transactions.find(
       (t) => t.type === WalletTransactionType.DEBIT,
     );
     expect(debitTx).toBeDefined();
     expect(debitTx?.amountPaise).toBe(25000);
-    expect(debitTx?.referenceType).toBe(WalletTransactionReferenceType.PLAN_SELECTION);
+    expect(debitTx?.referenceType).toBe(
+      WalletTransactionReferenceType.PLAN_SELECTION,
+    );
     expect(debitTx?.referenceId).toBe(selectionId);
     expect(debitTx?.balanceAfterPaise).toBe(0); // 25000 -> 0
-    expect(debitTx?.description).toBe("Plan payment (SEVEN_DAY_TRIAL)");
+    expect(debitTx?.description).toBe('Plan payment (SEVEN_DAY_TRIAL)');
 
     // 3. Verify final wallet balance is 0 (net zero for exact cash plan payment)
     const wallet = db.wallets.find((w) => w.userId === USER_ID);
@@ -429,7 +436,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(wallet?.autoCreditEnabled).toBe(true);
   });
 
-  it("Customer read: getTransactions returns both CREDIT and DEBIT rows with running balances", async () => {
+  it('Customer read: getTransactions returns both CREDIT and DEBIT rows with running balances', async () => {
     const { collectionId } = seedCashPlan(25000, 25000);
 
     await paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {});
@@ -444,18 +451,26 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(types).toContain(WalletTransactionType.CREDIT);
     expect(types).toContain(WalletTransactionType.DEBIT);
 
-    const credit = history.data.find((t) => t.type === WalletTransactionType.CREDIT);
+    const credit = history.data.find(
+      (t) => t.type === WalletTransactionType.CREDIT,
+    );
     expect(credit?.amountPaise).toBe(25000);
-    expect(credit?.referenceType).toBe(WalletTransactionReferenceType.CASH_COLLECTION);
+    expect(credit?.referenceType).toBe(
+      WalletTransactionReferenceType.CASH_COLLECTION,
+    );
     expect(credit?.balanceAfterPaise).toBe(25000);
 
-    const debit = history.data.find((t) => t.type === WalletTransactionType.DEBIT);
+    const debit = history.data.find(
+      (t) => t.type === WalletTransactionType.DEBIT,
+    );
     expect(debit?.amountPaise).toBe(25000);
-    expect(debit?.referenceType).toBe(WalletTransactionReferenceType.PLAN_SELECTION);
+    expect(debit?.referenceType).toBe(
+      WalletTransactionReferenceType.PLAN_SELECTION,
+    );
     expect(debit?.balanceAfterPaise).toBe(0);
   });
 
-  it("Re-confirm (duplicate admin confirm): rejects with 409 Conflict and creates NO duplicate ledger rows", async () => {
+  it('Re-confirm (duplicate admin confirm): rejects with 409 Conflict and creates NO duplicate ledger rows', async () => {
     const { collectionId } = seedCashPlan(25000, 25000);
 
     // First confirmation succeeds
@@ -464,14 +479,14 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
 
     // Duplicate confirmation throws ConflictException
     await expect(
-      paymentsService.confirmCashCollection(collectionId, "admin-2", {}),
+      paymentsService.confirmCashCollection(collectionId, 'admin-2', {}),
     ).rejects.toThrow(ConflictException);
 
     // Transactions count remains strictly 2 (no second credit or debit)
     expect(db.transactions).toHaveLength(2);
   });
 
-  it("Edge case: collected cash exceeds plan total -> net wallet balance increases by surplus", async () => {
+  it('Edge case: collected cash exceeds plan total -> net wallet balance increases by surplus', async () => {
     // Customer paid ₹1000 cash for ₹900 plan
     const { collectionId } = seedCashPlan(90000, 100000);
 
@@ -479,11 +494,15 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
 
     expect(db.transactions).toHaveLength(2);
 
-    const creditTx = db.transactions.find((t) => t.type === WalletTransactionType.CREDIT);
+    const creditTx = db.transactions.find(
+      (t) => t.type === WalletTransactionType.CREDIT,
+    );
     expect(creditTx?.amountPaise).toBe(100000);
     expect(creditTx?.balanceAfterPaise).toBe(100000);
 
-    const debitTx = db.transactions.find((t) => t.type === WalletTransactionType.DEBIT);
+    const debitTx = db.transactions.find(
+      (t) => t.type === WalletTransactionType.DEBIT,
+    );
     expect(debitTx?.amountPaise).toBe(90000);
     expect(debitTx?.balanceAfterPaise).toBe(10000); // 100000 - 90000 = 10000 paise (₹100)
 
@@ -491,7 +510,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(wallet?.balancePaise).toBe(10000);
   });
 
-  it("Edge case: collected cash less than plan total -> rejects with CASH_SHORT_FOR_PLAN and rolls back fully", async () => {
+  it('Edge case: collected cash less than plan total -> rejects with CASH_SHORT_FOR_PLAN and rolls back fully', async () => {
     // Underpayment: collected ₹200 for ₹250 plan on 0 balance wallet
     const { selectionId, collectionId } = seedCashPlan(25000, 20000);
 
@@ -504,8 +523,8 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
 
     expect(caught).toBeInstanceOf(BadRequestException);
     const body = caught.getResponse();
-    expect(body.error).toBe("CASH_SHORT_FOR_PLAN");
-    expect(body.error).not.toBe("INSUFFICIENT_WALLET_BALANCE");
+    expect(body.error).toBe('CASH_SHORT_FOR_PLAN');
+    expect(body.error).not.toBe('INSUFFICIENT_WALLET_BALANCE');
     expect(body.collectedPaise).toBe(20000);
     expect(body.requiredPaise).toBe(25000);
     expect(body.shortfallPaise).toBe(5000);
@@ -521,7 +540,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     expect(col?.status).toBe(CashCollectionStatus.PENDING);
   });
 
-  it("Missing plan configuration during subscription approval: fails safely (PLAN_CONFIG_MISSING) and rolls back schedule generation", async () => {
+  it('Missing plan configuration during subscription approval: fails safely (PLAN_CONFIG_MISSING) and rolls back schedule generation', async () => {
     const { selectionId, collectionId } = seedCashPlan(25000, 25000);
     await paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {});
 
@@ -539,7 +558,7 @@ describe("Cash Plan Confirmation -> Wallet Routing Integration", () => {
     }
 
     expect(caught).toBeInstanceOf(BadRequestException);
-    expect(caught.getResponse().error).toBe("PLAN_CONFIG_MISSING");
+    expect(caught.getResponse().error).toBe('PLAN_CONFIG_MISSING');
 
     // Deliveries and orders were not created
     expect(db.planDeliveries).toHaveLength(0);

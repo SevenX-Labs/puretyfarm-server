@@ -1,4 +1,11 @@
-import { IsOptional, IsDateString, Validate, ValidatorConstraint, ValidatorConstraintInterface, ValidationArguments } from 'class-validator';
+import {
+  IsOptional,
+  IsDateString,
+  Validate,
+  ValidatorConstraint,
+  ValidatorConstraintInterface,
+  ValidationArguments,
+} from 'class-validator';
 
 @ValidatorConstraint({ name: 'isFromBeforeTo', async: false })
 class IsFromBeforeTo implements ValidatorConstraintInterface {

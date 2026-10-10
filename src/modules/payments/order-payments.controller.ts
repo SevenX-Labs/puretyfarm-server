@@ -41,7 +41,8 @@ export class OrderPaymentsController {
 
     throw new BadRequestException({
       error: 'DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED',
-      message: 'Cash is not supported as a direct payment method for orders. Plan deliveries are prepaid.',
+      message:
+        'Cash is not supported as a direct payment method for orders. Plan deliveries are prepaid.',
     });
   }
 }

@@ -8,19 +8,19 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-} from "@nestjs/common";
-import { LocationsService } from "./locations.service";
-import { DetectLocationDto } from "./dto/customer/detect-location.dto";
-import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
-import { CurrentUser } from "../../common/decorators/current-user.decorator";
-import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
+} from '@nestjs/common';
+import { LocationsService } from './locations.service';
+import { DetectLocationDto } from './dto/customer/detect-location.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 
 /**
  * Customer-side location APIs. All endpoints require a valid customer JWT.
  * These are READ-ONLY with respect to the location catalog — customers can
  * never create or mutate States/Cities/Areas here.
  */
-@Controller(["api/v1/customer/locations", "customer/locations"])
+@Controller(['api/v1/customer/locations', 'customer/locations'])
 @UseGuards(JwtAuthGuard)
 export class LocationsController {
   constructor(private readonly locationsService: LocationsService) {}
@@ -29,7 +29,7 @@ export class LocationsController {
    * Reverse-geocodes the device's current GPS coordinates. Returns resolved
    * location data only — it does NOT create an address.
    */
-  @Post("detect")
+  @Post('detect')
   @HttpCode(HttpStatus.OK)
   async detect(
     @CurrentUser() user: JwtPayload,
@@ -43,23 +43,21 @@ export class LocationsController {
     );
   }
 
-  @Get("states")
+  @Get('states')
   @HttpCode(HttpStatus.OK)
   async getStates() {
     return this.locationsService.getStates();
   }
 
-  @Get("states/:stateId/cities")
+  @Get('states/:stateId/cities')
   @HttpCode(HttpStatus.OK)
-  async getCities(
-    @Param("stateId", new ParseUUIDPipe()) stateId: string,
-  ) {
+  async getCities(@Param('stateId', new ParseUUIDPipe()) stateId: string) {
     return this.locationsService.getCities(stateId);
   }
 
-  @Get("cities/:cityId/areas")
+  @Get('cities/:cityId/areas')
   @HttpCode(HttpStatus.OK)
-  async getAreas(@Param("cityId", new ParseUUIDPipe()) cityId: string) {
+  async getAreas(@Param('cityId', new ParseUUIDPipe()) cityId: string) {
     return this.locationsService.getAreas(cityId);
   }
 }

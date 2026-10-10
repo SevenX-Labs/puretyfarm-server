@@ -84,9 +84,9 @@ describe('PhonePeWebhookService', () => {
   it('rejects an event whose Authorization header does not authenticate', async () => {
     provider.verifyWebhookAuthorization.mockReturnValue(false);
 
-    await expect(service.handle('bogus', completedEvent as any)).rejects.toThrow(
-      ForbiddenException,
-    );
+    await expect(
+      service.handle('bogus', completedEvent as any),
+    ).rejects.toThrow(ForbiddenException);
 
     // Nothing is looked up and nothing is applied on a failed auth.
     expect(provider.fetchVerifiedOutcome).not.toHaveBeenCalled();
@@ -96,9 +96,9 @@ describe('PhonePeWebhookService', () => {
   it('checks the header before it reads the payload at all', async () => {
     provider.verifyWebhookAuthorization.mockReturnValue(false);
 
-    await expect(service.handle(undefined, completedEvent as any)).rejects.toThrow(
-      ForbiddenException,
-    );
+    await expect(
+      service.handle(undefined, completedEvent as any),
+    ).rejects.toThrow(ForbiddenException);
 
     expect(provider.interpretWebhookEvent).not.toHaveBeenCalled();
   });
@@ -106,7 +106,7 @@ describe('PhonePeWebhookService', () => {
   // ── Gate 2: truth from PhonePe, not from the body ───────────────────
 
   it('settles from the Order Status API, not from the event body', async () => {
-    await service.handle('valid-digest', completedEvent as any);
+    await service.handle('valid-digest', completedEvent);
 
     expect(provider.fetchVerifiedOutcome).toHaveBeenCalledWith(TXNID);
     // The object handed to the state machine is the API's, not the event's.
@@ -125,7 +125,7 @@ describe('PhonePeWebhookService', () => {
       rawStatus: 'PENDING',
     });
 
-    const result = await service.handle('valid-digest', completedEvent as any);
+    const result = await service.handle('valid-digest', completedEvent);
 
     expect(result.outcome).toBe('IGNORED');
     expect(paymentsService.applyVerifiedOutcome).not.toHaveBeenCalled();
@@ -162,7 +162,7 @@ describe('PhonePeWebhookService', () => {
       transactionId: TXNID,
     });
 
-    const result = await service.handle('valid-digest', completedEvent as any);
+    const result = await service.handle('valid-digest', completedEvent);
 
     expect(result).toEqual({
       received: true,
@@ -210,7 +210,7 @@ describe('PhonePeWebhookService', () => {
       creditRequestStatus: null,
     });
 
-    const result = await service.handle('valid-digest', completedEvent as any);
+    const result = await service.handle('valid-digest', completedEvent);
 
     expect(result.outcome).toBe('DUPLICATE');
   });

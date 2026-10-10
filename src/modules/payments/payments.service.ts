@@ -363,8 +363,8 @@ export class PaymentsService {
 
     return {
       mobile: user.mobile,
-      email: user.email || "",
-      firstName: user.customerProfile?.firstName || "Customer",
+      email: user.email || '',
+      firstName: user.customerProfile?.firstName || 'Customer',
     };
   }
 
@@ -1640,7 +1640,7 @@ export class PaymentsService {
       // retried rejection may hit "already in progress".
       if (error && typeof error === 'object' && 'response' in error) {
         const code = (error as { response: { error?: string } }).response
-          ?.error as string | undefined;
+          ?.error;
         if (
           code === 'NO_REFUNDABLE_PAYMENT' ||
           code === 'REFUND_ALREADY_IN_PROGRESS' ||

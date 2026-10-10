@@ -1,8 +1,8 @@
-import { IsNotEmpty, IsString, MaxLength } from "class-validator";
-import { Transform } from "class-transformer";
+import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 const trim = ({ value }: { value: unknown }) =>
-  typeof value === "string" ? value.trim() : value;
+  typeof value === 'string' ? value.trim() : value;
 
 /**
  * Body for POST /admin/locations/states. Only the state name is accepted;
@@ -11,7 +11,7 @@ const trim = ({ value }: { value: unknown }) =>
  */
 export class CreateStateDto {
   @IsString()
-  @IsNotEmpty({ message: "name is required" })
+  @IsNotEmpty({ message: 'name is required' })
   @MaxLength(100)
   @Transform(trim)
   name: string;

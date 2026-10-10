@@ -475,9 +475,9 @@ describe('Wallet auto-credit — customer-specific isolation', () => {
       'g-cash',
     );
     expect(walletFor('cust-G')!.balancePaise).toBe(100_000);
-    expect(
-      db.creditRequests.find((r) => r.id === request.id)!.status,
-    ).toBe(WalletCreditRequestStatus.PENDING);
+    expect(db.creditRequests.find((r) => r.id === request.id)!.status).toBe(
+      WalletCreditRequestStatus.PENDING,
+    );
 
     await prisma.$transaction((tx: any) =>
       service.creditConfirmedCashRequest(tx, request.id, 'admin-7'),

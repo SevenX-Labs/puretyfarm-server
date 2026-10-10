@@ -5,11 +5,11 @@ import {
   ForbiddenException,
   ConflictException,
   Logger,
-} from "@nestjs/common";
-import type { PlanConfig } from "@prisma/client";
-import { PrismaService } from "../../prisma/prisma.service";
-import { WalletService } from "../wallet/wallet.service";
-import { WalletTransactionReferenceType } from "../wallet/wallet.constants";
+} from '@nestjs/common';
+import type { PlanConfig } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { WalletService } from '../wallet/wallet.service';
+import { WalletTransactionReferenceType } from '../wallet/wallet.constants';
 import {
   PlanType,
   DeliveryFrequency,
@@ -24,7 +24,7 @@ import {
   ORDER_CUTOFF_MINUTES_IST,
   LEAD_DAYS_BEFORE_CUTOFF,
   LEAD_DAYS_AFTER_CUTOFF,
-} from "./plans.constants";
+} from './plans.constants';
 import {
   IST_TIMEZONE,
   toIstDateOnly,
@@ -34,17 +34,20 @@ import {
   parseHhMmToMinutes,
   formatHhMmTo12h,
   formatMinutesTo12h,
-} from "../../common/utils/ist-date.util";
-import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
-import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
-import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
-import { ConfirmPlanDto, PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
-import { parseUpdateAdminPlanDto } from "./dto/admin/update-admin-plan.dto";
-import { ApproveSubscriptionPlanDto } from "./dto/admin/approve-subscription.dto";
+} from '../../common/utils/ist-date.util';
+import { BuyOnceQuoteDto } from './dto/customer/buy-once-quote.dto';
+import { TrialQuoteDto } from './dto/customer/trial-quote.dto';
+import { MonthlyQuoteDto } from './dto/customer/monthly-quote.dto';
+import {
+  ConfirmPlanDto,
+  PlanPaymentMethod,
+} from './dto/customer/confirm-plan.dto';
+import { parseUpdateAdminPlanDto } from './dto/admin/update-admin-plan.dto';
+import { ApproveSubscriptionPlanDto } from './dto/admin/approve-subscription.dto';
 import {
   generateOrderNumber,
   generateInvoiceNumber,
-} from "../orders/order-number.util";
+} from '../orders/order-number.util';
 
 // ─── Response interfaces ────────────────────────────────────────────
 
@@ -393,7 +396,9 @@ const PLAN_CONFIG_DEFAULTS = {
 };
 
 /** Maps a PlanConfig row to the admin response, exposing only relevant fields. */
-export function toAdminPlanResponse(config: PlanConfig): AdminPlanConfigResponse {
+export function toAdminPlanResponse(
+  config: PlanConfig,
+): AdminPlanConfigResponse {
   const type = config.planType as PlanType;
   const base = {
     type,
@@ -406,7 +411,10 @@ export function toAdminPlanResponse(config: PlanConfig): AdminPlanConfigResponse
     deliveryStartTime: config.deliveryStartTime,
     deliveryEndTime: config.deliveryEndTime,
   };
-  const timestamps = { createdAt: config.createdAt, updatedAt: config.updatedAt };
+  const timestamps = {
+    createdAt: config.createdAt,
+    updatedAt: config.updatedAt,
+  };
 
   switch (type) {
     case PlanType.BUY_ONCE:
@@ -446,13 +454,14 @@ export class PlansService {
   // ── Plans Overview ──────────────────────────────────────────────
 
   async getPlansOverview(userId: string): Promise<PlansOverviewResponse> {
-    const [buyOnceElig, trialElig, monthlyConfig, buyOnceConfig, trialConfig] = await Promise.all([
-      this.getBuyOnceEligibility(userId),
-      this.getTrialEligibility(userId),
-      this.getActiveConfig(PlanType.MONTHLY),
-      this.getActiveConfig(PlanType.BUY_ONCE),
-      this.getActiveConfig(PlanType.SEVEN_DAY_TRIAL),
-    ]);
+    const [buyOnceElig, trialElig, monthlyConfig, buyOnceConfig, trialConfig] =
+      await Promise.all([
+        this.getBuyOnceEligibility(userId),
+        this.getTrialEligibility(userId),
+        this.getActiveConfig(PlanType.MONTHLY),
+        this.getActiveConfig(PlanType.BUY_ONCE),
+        this.getActiveConfig(PlanType.SEVEN_DAY_TRIAL),
+      ]);
 
     return {
       plans: [
@@ -488,7 +497,7 @@ export class PlansService {
             : {
                 deliveryStartTime: null,
                 deliveryEndTime: null,
-                blockedReason: "PLAN_NOT_CONFIGURED",
+                blockedReason: 'PLAN_NOT_CONFIGURED',
               }),
         },
       ],
@@ -508,7 +517,7 @@ export class PlansService {
         usageCount: 0,
         remainingUses: 0,
         maxUses: 0,
-        blockedReason: "PLAN_NOT_CONFIGURED",
+        blockedReason: 'PLAN_NOT_CONFIGURED',
       };
     }
 
@@ -521,7 +530,7 @@ export class PlansService {
         usageCount,
         remainingUses: 0,
         maxUses: config.maxUsages,
-        blockedReason: "TRIAL_ALREADY_USED",
+        blockedReason: 'TRIAL_ALREADY_USED',
       };
     }
 
@@ -534,7 +543,7 @@ export class PlansService {
       remainingUses: remaining,
       maxUses: config.maxUsages,
       maxQuantityLitres: config.quantityMax,
-      ...(remaining === 0 ? { blockedReason: "MAX_USES_REACHED" } : {}),
+      ...(remaining === 0 ? { blockedReason: 'MAX_USES_REACHED' } : {}),
     };
   }
 
@@ -545,21 +554,23 @@ export class PlansService {
     const eligibility = await this.getBuyOnceEligibility(userId);
     if (!eligibility.eligible) {
       throw new ForbiddenException(
-        `Buy Once is not available: ${eligibility.blockedReason ?? "ineligible"}`,
+        `Buy Once is not available: ${eligibility.blockedReason ?? 'ineligible'}`,
       );
     }
 
     const config = await this.requireActiveConfig(PlanType.BUY_ONCE);
-    this.validateQuantityRange(dto.quantityLitres, config.quantityMin, config.quantityMax);
+    this.validateQuantityRange(
+      dto.quantityLitres,
+      config.quantityMin,
+      config.quantityMax,
+    );
 
     const totalLitres = dto.quantityLitres;
     const totalActual = totalLitres * config.actualPricePerLitre;
     const totalSelling = totalLitres * config.sellingPricePerLitre;
     const discount = totalActual - totalSelling;
 
-    const expiresAt = new Date(
-      Date.now() + QUOTE_EXPIRY_MINUTES * 60 * 1000,
-    );
+    const expiresAt = new Date(Date.now() + QUOTE_EXPIRY_MINUTES * 60 * 1000);
 
     const quote = await this.prisma.planQuote.create({
       data: {
@@ -601,7 +612,7 @@ export class PlansService {
       return {
         eligible: false,
         used: false,
-        blockedReason: "PLAN_NOT_CONFIGURED",
+        blockedReason: 'PLAN_NOT_CONFIGURED',
       };
     }
 
@@ -613,7 +624,7 @@ export class PlansService {
         used: false,
         trialDurationDays: TRIAL_DURATION_DAYS,
         maxQuantityLitres: config.quantityMax,
-        blockedReason: "BUY_ONCE_ALREADY_USED",
+        blockedReason: 'BUY_ONCE_ALREADY_USED',
       };
     }
 
@@ -624,7 +635,7 @@ export class PlansService {
         used: true,
         trialDurationDays: TRIAL_DURATION_DAYS,
         maxQuantityLitres: config.quantityMax,
-        blockedReason: "TRIAL_ALREADY_USED",
+        blockedReason: 'TRIAL_ALREADY_USED',
       };
     }
 
@@ -643,12 +654,16 @@ export class PlansService {
     const eligibility = await this.getTrialEligibility(userId);
     if (!eligibility.eligible) {
       throw new ForbiddenException(
-        `7-Day Trial is not available: ${eligibility.blockedReason ?? "ineligible"}`,
+        `7-Day Trial is not available: ${eligibility.blockedReason ?? 'ineligible'}`,
       );
     }
 
     const config = await this.requireActiveConfig(PlanType.SEVEN_DAY_TRIAL);
-    this.validateQuantityRange(dto.quantityLitres, config.quantityMin, config.quantityMax);
+    this.validateQuantityRange(
+      dto.quantityLitres,
+      config.quantityMin,
+      config.quantityMax,
+    );
 
     const deliveryOccurrences = TRIAL_DURATION_DAYS;
     const totalLitres = deliveryOccurrences * dto.quantityLitres;
@@ -656,9 +671,7 @@ export class PlansService {
     const totalSelling = totalLitres * config.sellingPricePerLitre;
     const discount = totalActual - totalSelling;
 
-    const expiresAt = new Date(
-      Date.now() + QUOTE_EXPIRY_MINUTES * 60 * 1000,
-    );
+    const expiresAt = new Date(Date.now() + QUOTE_EXPIRY_MINUTES * 60 * 1000);
 
     const quote = await this.prisma.planQuote.create({
       data: {
@@ -730,18 +743,34 @@ export class PlansService {
     // Validate quantities based on mode
     if (dto.quantityMode === QuantityMode.FIXED) {
       if (dto.quantity === undefined || dto.quantity === null) {
-        throw new BadRequestException("quantity is required for FIXED mode");
+        throw new BadRequestException('quantity is required for FIXED mode');
       }
-      this.validateQuantityRange(dto.quantity, config.quantityMin, config.quantityMax);
+      this.validateQuantityRange(
+        dto.quantity,
+        config.quantityMin,
+        config.quantityMax,
+      );
     } else {
       if (dto.quantityA === undefined || dto.quantityA === null) {
-        throw new BadRequestException("quantityA is required for ALTERNATING mode");
+        throw new BadRequestException(
+          'quantityA is required for ALTERNATING mode',
+        );
       }
       if (dto.quantityB === undefined || dto.quantityB === null) {
-        throw new BadRequestException("quantityB is required for ALTERNATING mode");
+        throw new BadRequestException(
+          'quantityB is required for ALTERNATING mode',
+        );
       }
-      this.validateQuantityRange(dto.quantityA, config.quantityMin, config.quantityMax);
-      this.validateQuantityRange(dto.quantityB, config.quantityMin, config.quantityMax);
+      this.validateQuantityRange(
+        dto.quantityA,
+        config.quantityMin,
+        config.quantityMax,
+      );
+      this.validateQuantityRange(
+        dto.quantityB,
+        config.quantityMin,
+        config.quantityMax,
+      );
     }
 
     // The plan starts on the first deliverable date under the order cut-off
@@ -782,9 +811,7 @@ export class PlansService {
     const totalSelling = totalLitres * config.sellingPricePerLitre;
     const discount = totalActual - totalSelling;
 
-    const expiresAt = new Date(
-      Date.now() + QUOTE_EXPIRY_MINUTES * 60 * 1000,
-    );
+    const expiresAt = new Date(Date.now() + QUOTE_EXPIRY_MINUTES * 60 * 1000);
 
     const quote = await this.prisma.planQuote.create({
       data: {
@@ -844,11 +871,11 @@ export class PlansService {
       });
 
       if (!quote) {
-        throw new NotFoundException("Quote not found");
+        throw new NotFoundException('Quote not found');
       }
 
       if (quote.userId !== userId) {
-        throw new NotFoundException("Quote not found");
+        throw new NotFoundException('Quote not found');
       }
 
       if (quote.status !== PlanQuoteStatus.PENDING) {
@@ -862,10 +889,13 @@ export class PlansService {
           where: { id: quote.id },
           data: { status: PlanQuoteStatus.EXPIRED },
         });
-        throw new BadRequestException("Quote has expired");
+        throw new BadRequestException('Quote has expired');
       }
 
-      const activeConfig = await this.getActiveConfigTx(tx, quote.planType as PlanType);
+      const activeConfig = await this.getActiveConfigTx(
+        tx,
+        quote.planType as PlanType,
+      );
       if (!activeConfig) {
         throw new ForbiddenException(
           `Plan ${quote.planType} is not currently available`,
@@ -881,23 +911,39 @@ export class PlansService {
       }
 
       if (quote.planType === PlanType.BUY_ONCE) {
-        const trialUsed = await this.hasUsedPlanTx(tx, userId, PlanType.SEVEN_DAY_TRIAL);
+        const trialUsed = await this.hasUsedPlanTx(
+          tx,
+          userId,
+          PlanType.SEVEN_DAY_TRIAL,
+        );
         if (trialUsed) {
-          throw new ForbiddenException("Buy Once is no longer available");
+          throw new ForbiddenException('Buy Once is no longer available');
         }
-        const usageCount = await this.countUsagesTx(tx, userId, PlanType.BUY_ONCE);
+        const usageCount = await this.countUsagesTx(
+          tx,
+          userId,
+          PlanType.BUY_ONCE,
+        );
         const config = await this.getActiveConfigTx(tx, PlanType.BUY_ONCE);
         if (!config || usageCount >= config.maxUsages) {
-          throw new ForbiddenException("Buy Once maximum uses reached");
+          throw new ForbiddenException('Buy Once maximum uses reached');
         }
       } else if (quote.planType === PlanType.SEVEN_DAY_TRIAL) {
-        const buyOnceUsed = await this.hasUsedPlanTx(tx, userId, PlanType.BUY_ONCE);
+        const buyOnceUsed = await this.hasUsedPlanTx(
+          tx,
+          userId,
+          PlanType.BUY_ONCE,
+        );
         if (buyOnceUsed) {
-          throw new ForbiddenException("7-Day Trial is no longer available");
+          throw new ForbiddenException('7-Day Trial is no longer available');
         }
-        const trialUsed = await this.hasUsedPlanTx(tx, userId, PlanType.SEVEN_DAY_TRIAL);
+        const trialUsed = await this.hasUsedPlanTx(
+          tx,
+          userId,
+          PlanType.SEVEN_DAY_TRIAL,
+        );
         if (trialUsed) {
-          throw new ForbiddenException("7-Day Trial has already been used");
+          throw new ForbiddenException('7-Day Trial has already been used');
         }
       }
 
@@ -931,8 +977,8 @@ export class PlansService {
           // block future attempts via the partial unique index.
           await tx.planSelection.delete({ where: { id: selection.id } });
           throw new BadRequestException({
-            error: "INSUFFICIENT_WALLET_BALANCE",
-            message: "Insufficient wallet balance",
+            error: 'INSUFFICIENT_WALLET_BALANCE',
+            message: 'Insufficient wallet balance',
             currentBalancePaise: wallet?.balancePaise ?? 0,
             requiredPaise: paymentAmount,
             shortfallPaise: paymentAmount - (wallet?.balancePaise ?? 0),
@@ -992,7 +1038,7 @@ export class PlansService {
           userId,
           planSelectionId: selection.id,
           amountPaise: paymentAmount,
-          status: "PENDING",
+          status: 'PENDING',
         },
       });
 
@@ -1014,7 +1060,7 @@ export class PlansService {
    * Statuses whose order has not yet left the warehouse. Only these may be
    * stood down when a schedule is regenerated.
    */
-  private static readonly REPLACEABLE_ORDER_STATUSES = ["PENDING", "CONFIRMED"];
+  private static readonly REPLACEABLE_ORDER_STATUSES = ['PENDING', 'CONFIRMED'];
 
   /**
    * Makes an existing schedule match `targetDates` without destroying history.
@@ -1039,7 +1085,7 @@ export class PlansService {
    * Returns the dates still needing a new PlanDelivery row.
    */
   private async reconcileScheduleWindow(
-    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     selectionId: string,
     targetDates: Date[],
     /** Litres for the 1-based occurrence index within `targetDates`. */
@@ -1101,7 +1147,7 @@ export class PlansService {
           id: { in: cancelOrderIds },
           status: { in: PlansService.REPLACEABLE_ORDER_STATUSES },
         },
-        data: { status: "CANCELLED" },
+        data: { status: 'CANCELLED' },
       });
     }
 
@@ -1126,7 +1172,7 @@ export class PlansService {
       select: { userId: true },
     });
     if (!selection) {
-      throw new NotFoundException("Subscription not found");
+      throw new NotFoundException('Subscription not found');
     }
 
     await (tx as any).planDelivery.createMany({
@@ -1154,10 +1200,10 @@ export class PlansService {
    * called both from wallet payment (inline) and cash confirmation (admin).
    */
   async materializeDeliveries(
-    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     selectionId: string,
     userId: string,
-    schedule: ReturnType<PlansService["resolveScheduleFromQuote"]>,
+    schedule: ReturnType<PlansService['resolveScheduleFromQuote']>,
     planType: PlanType,
   ): Promise<void> {
     const dates = generateDeliveryDates(
@@ -1211,7 +1257,7 @@ export class PlansService {
    * those paths created deliveries with no dispatch order at all.
    */
   async materializeOrdersForSchedule(
-    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     selectionId: string,
     userId: string,
     planType: PlanType,
@@ -1247,12 +1293,14 @@ export class PlansService {
       deliveryStartTime = priceSnapshot.deliveryStartTime;
       deliveryEndTime = priceSnapshot.deliveryEndTime;
     } else {
-      const config: PlanConfig | null = await (tx as any).planConfig.findUnique({
-        where: { planType },
-      });
+      const config: PlanConfig | null = await (tx as any).planConfig.findUnique(
+        {
+          where: { planType },
+        },
+      );
       if (!config) {
         throw new BadRequestException({
-          error: "PLAN_CONFIG_MISSING",
+          error: 'PLAN_CONFIG_MISSING',
           message: `Plan configuration for ${planType} is missing; cannot materialise priced orders`,
           planType,
         });
@@ -1272,7 +1320,7 @@ export class PlansService {
     // dispatch order for a delivery that is no longer happening.
     const deliveries = await (tx as any).planDelivery.findMany({
       where: { selectionId, status: DeliveryStatus.SCHEDULED },
-      orderBy: { deliveryDate: "asc" },
+      orderBy: { deliveryDate: 'asc' },
     });
 
     if (!deliveries || deliveries.length === 0) {
@@ -1281,7 +1329,7 @@ export class PlansService {
 
     const address = await (tx as any).customerAddress.findFirst({
       where: { userId },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: 'desc' },
     });
 
     const addressSnapshot = address
@@ -1300,12 +1348,12 @@ export class PlansService {
           longitude: address.longitude,
         }
       : {
-          fullName: "Customer",
-          mobile: "",
-          houseNumber: "",
-          city: "Raipur",
-          state: "Chhattisgarh",
-          area: "Raipur",
+          fullName: 'Customer',
+          mobile: '',
+          houseNumber: '',
+          city: 'Raipur',
+          state: 'Chhattisgarh',
+          area: 'Raipur',
         };
 
     for (const d of deliveries) {
@@ -1314,8 +1362,8 @@ export class PlansService {
       });
       if (existingOrder) continue;
 
-      const orderNumber = await generateOrderNumber(tx as any);
-      const invoiceNumber = await generateInvoiceNumber(tx as any);
+      const orderNumber = await generateOrderNumber(tx);
+      const invoiceNumber = await generateInvoiceNumber(tx);
 
       const qty = d.quantityLitres || 1;
       const itemTotal = unitPrice * qty;
@@ -1328,8 +1376,8 @@ export class PlansService {
           planSelectionId: selectionId,
           planDeliveryId: d.id,
           planType,
-          status: "CONFIRMED",
-          paymentStatus: "PAID",
+          status: 'CONFIRMED',
+          paymentStatus: 'PAID',
           subtotalPaise: itemTotal,
           discountPaise: 0,
           taxPaise: 0,
@@ -1347,7 +1395,7 @@ export class PlansService {
           sellingPricePerLitrePaise: unitPrice,
           items: {
             create: {
-              productNameSnapshot: "A2 Desi Gir Cow Milk",
+              productNameSnapshot: 'A2 Desi Gir Cow Milk',
               quantity: qty,
               unitPricePaise: unitPrice,
               discountPaise: 0,
@@ -1378,7 +1426,7 @@ export class PlansService {
    * Completes the plan purchase atomically.
    */
   async confirmPlanAfterCashPayment(
-    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     planSelectionId: string,
     cashCollection?: { id: string; amountPaise: number },
   ): Promise<void> {
@@ -1388,7 +1436,7 @@ export class PlansService {
     });
 
     if (!selection) {
-      throw new NotFoundException("Plan selection not found");
+      throw new NotFoundException('Plan selection not found');
     }
 
     if (selection.status !== PlanSelectionStatus.PENDING_PAYMENT) {
@@ -1406,7 +1454,7 @@ export class PlansService {
     if (collection) {
       if (collection.amountPaise < selection.quote.totalSellingAmount) {
         throw new BadRequestException({
-          error: "CASH_SHORT_FOR_PLAN",
+          error: 'CASH_SHORT_FOR_PLAN',
           message:
             `Collected cash (${collection.amountPaise} paise) is less than ` +
             `plan total (${selection.quote.totalSellingAmount} paise)`,
@@ -1419,17 +1467,17 @@ export class PlansService {
 
       // 1. CREDIT the wallet by the collected cash amount
       await this.walletService.creditWalletWithin(
-        tx as any,
+        tx,
         selection.userId,
         collection.amountPaise,
         WalletTransactionReferenceType.CASH_COLLECTION,
         collection.id,
-        "Cash collection confirmed (plan payment)",
+        'Cash collection confirmed (plan payment)',
       );
 
       // 2. DEBIT the wallet for the plan total (reusing exact scheme as wallet-paid plan)
       await this.walletService.debitWalletWithin(
-        tx as any,
+        tx,
         selection.userId,
         selection.quote.totalSellingAmount,
         WalletTransactionReferenceType.PLAN_SELECTION,
@@ -1464,7 +1512,7 @@ export class PlansService {
       });
 
       if (!selection) {
-        throw new NotFoundException("Subscription not found");
+        throw new NotFoundException('Subscription not found');
       }
 
       // ── Payment eligibility ──────────────────────────────────────
@@ -1482,25 +1530,25 @@ export class PlansService {
       if (!selection.paidAt) {
         if (
           selection.paymentMethod === PlanPaymentMethod.CASH &&
-          selection.cashCollection?.status !== "CONFIRMED"
+          selection.cashCollection?.status !== 'CONFIRMED'
         ) {
           throw new BadRequestException({
-            error: "CASH_NOT_CONFIRMED",
+            error: 'CASH_NOT_CONFIRMED',
             message:
-              "Physical cash receipt has not been confirmed yet. Please confirm payment in Payments/Wallets first.",
+              'Physical cash receipt has not been confirmed yet. Please confirm payment in Payments/Wallets first.',
           });
         }
         throw new BadRequestException({
-          error: "SUBSCRIPTION_NOT_PAID",
+          error: 'SUBSCRIPTION_NOT_PAID',
           message:
-            "This subscription has no confirmed payment. Verify the payment before approving a delivery schedule.",
+            'This subscription has no confirmed payment. Verify the payment before approving a delivery schedule.',
         });
       }
 
       // ── Lifecycle eligibility ────────────────────────────────────
       if (!APPROVABLE_SELECTION_STATUSES.includes(selection.status)) {
         throw new BadRequestException({
-          error: "SUBSCRIPTION_NOT_APPROVABLE",
+          error: 'SUBSCRIPTION_NOT_APPROVABLE',
           message: `A ${selection.status} subscription cannot be scheduled.`,
           status: selection.status,
         });
@@ -1522,7 +1570,10 @@ export class PlansService {
       // `...(selection.paidAt ? {} : { paidAt: now })` fabricated a payment
       // timestamp that the admin dashboard then aggregated as revenue.
       const claimed = await (tx as any).planSelection.updateMany({
-        where: { id: subscriptionId, status: { in: APPROVABLE_SELECTION_STATUSES } },
+        where: {
+          id: subscriptionId,
+          status: { in: APPROVABLE_SELECTION_STATUSES },
+        },
         data: {
           status: PlanSelectionStatus.CONFIRMED,
           startDate: schedule.start,
@@ -1536,9 +1587,9 @@ export class PlansService {
       });
       if (claimed.count === 0) {
         throw new ConflictException({
-          error: "SUBSCRIPTION_APPROVAL_CONFLICT",
+          error: 'SUBSCRIPTION_APPROVAL_CONFLICT',
           message:
-            "This subscription was updated by another request. Reload it and try again.",
+            'This subscription was updated by another request. Reload it and try again.',
         });
       }
 
@@ -1557,7 +1608,8 @@ export class PlansService {
 
       return {
         success: true,
-        message: "Subscription approved and delivery schedule generated successfully",
+        message:
+          'Subscription approved and delivery schedule generated successfully',
         subscriptionId,
         startDate: toIsoDateString(schedule.start),
         endDate: toIsoDateString(schedule.end),
@@ -1629,7 +1681,10 @@ export class PlansService {
       }
 
       const { actualPricePerLitre, sellingPricePerLitre } = dto;
-      if (actualPricePerLitre === undefined || sellingPricePerLitre === undefined) {
+      if (
+        actualPricePerLitre === undefined ||
+        sellingPricePerLitre === undefined
+      ) {
         throw new NotFoundException(
           `Plan ${planType} is not configured. Provide actualPricePerLitre and sellingPricePerLitre to initialise it.`,
         );
@@ -1682,7 +1737,11 @@ export class PlansService {
     // zero-length window would push every order to the next day forever.
     const windowStart = parseDeliveryTimeMinutes(config.deliveryStartTime);
     const windowEnd = parseDeliveryTimeMinutes(config.deliveryEndTime);
-    if (windowStart !== null && windowEnd !== null && windowStart >= windowEnd) {
+    if (
+      windowStart !== null &&
+      windowEnd !== null &&
+      windowStart >= windowEnd
+    ) {
       throw new BadRequestException(
         `deliveryStartTime (${config.deliveryStartTime}) must be earlier than ` +
           `deliveryEndTime (${config.deliveryEndTime})`,
@@ -1692,12 +1751,12 @@ export class PlansService {
     if (planType === PlanType.MONTHLY) {
       if (!config.dailyEnabled && !config.alternateDaysEnabled) {
         throw new BadRequestException(
-          "At least one Monthly frequency (dailyEnabled, alternateDaysEnabled) must be enabled",
+          'At least one Monthly frequency (dailyEnabled, alternateDaysEnabled) must be enabled',
         );
       }
       if (!config.fixedQuantityEnabled && !config.alternatingQuantityEnabled) {
         throw new BadRequestException(
-          "At least one Monthly quantity mode (fixedQuantityEnabled, alternatingQuantityEnabled) must be enabled",
+          'At least one Monthly quantity mode (fixedQuantityEnabled, alternatingQuantityEnabled) must be enabled',
         );
       }
     }
@@ -1796,13 +1855,13 @@ export class PlansService {
       let parsedDate: Date;
       if (explicitStartDate instanceof Date) {
         if (isNaN(explicitStartDate.getTime())) {
-          throw new BadRequestException("Invalid first delivery date");
+          throw new BadRequestException('Invalid first delivery date');
         }
         parsedDate = toIstDateOnly(explicitStartDate);
-      } else if (typeof explicitStartDate === "string") {
+      } else if (typeof explicitStartDate === 'string') {
         const trimmed = explicitStartDate.trim();
         if (!/^d{4}-d{2}-d{2}$/.test(trimmed) && isNaN(Date.parse(trimmed))) {
-          throw new BadRequestException("Invalid first delivery date");
+          throw new BadRequestException('Invalid first delivery date');
         }
         if (/^d{4}-d{2}-d{2}$/.test(trimmed)) {
           parsedDate = new Date(`${trimmed}T00:00:00.000Z`);
@@ -1810,22 +1869,25 @@ export class PlansService {
           parsedDate = toIstDateOnly(new Date(trimmed));
         }
       } else {
-        throw new BadRequestException("Invalid first delivery date");
+        throw new BadRequestException('Invalid first delivery date');
       }
 
       if (isNaN(parsedDate.getTime())) {
-        throw new BadRequestException("Invalid first delivery date");
+        throw new BadRequestException('Invalid first delivery date');
       }
 
       const start = parsedDate;
       const today = toIstDateOnly(now);
       if (start.getTime() < today.getTime()) {
-        throw new BadRequestException("First delivery date cannot be in the past");
+        throw new BadRequestException(
+          'First delivery date cannot be in the past',
+        );
       }
 
       if (quote.planType === PlanType.MONTHLY) {
         const frequency =
-          (quote.frequency as DeliveryFrequency | null) ?? DeliveryFrequency.DAILY;
+          (quote.frequency as DeliveryFrequency | null) ??
+          DeliveryFrequency.DAILY;
         const occurrences = Math.max(1, quote.deliveryOccurrences);
         const step = frequency === DeliveryFrequency.ALTERNATE_DAYS ? 2 : 1;
         const end = addDays(start, (occurrences - 1) * step);
@@ -1860,7 +1922,8 @@ export class PlansService {
 
     if (quote.planType === PlanType.MONTHLY) {
       const frequency =
-        (quote.frequency as DeliveryFrequency | null) ?? DeliveryFrequency.DAILY;
+        (quote.frequency as DeliveryFrequency | null) ??
+        DeliveryFrequency.DAILY;
       const quotedStart = toDateOnly(quote.billingPeriodStart ?? now);
       const quotedEnd = toDateOnly(quote.billingPeriodEnd ?? now);
       const { start, end } = this.resolveMonthlyWindow(
@@ -1912,7 +1975,7 @@ export class PlansService {
   }
 
   private async getActiveConfigTx(
-    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     planType: PlanType,
   ) {
     return (tx as any).planConfig.findFirst({
@@ -1950,7 +2013,10 @@ export class PlansService {
     }
   }
 
-  private async hasUsedPlan(userId: string, planType: PlanType): Promise<boolean> {
+  private async hasUsedPlan(
+    userId: string,
+    planType: PlanType,
+  ): Promise<boolean> {
     const count = await this.prisma.planSelection.count({
       where: {
         userId,
@@ -1962,7 +2028,7 @@ export class PlansService {
   }
 
   private async hasUsedPlanTx(
-    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     userId: string,
     planType: PlanType,
   ): Promise<boolean> {
@@ -1976,7 +2042,10 @@ export class PlansService {
     return count > 0;
   }
 
-  private async countUsages(userId: string, planType: PlanType): Promise<number> {
+  private async countUsages(
+    userId: string,
+    planType: PlanType,
+  ): Promise<number> {
     return this.prisma.planSelection.count({
       where: {
         userId,
@@ -1987,7 +2056,7 @@ export class PlansService {
   }
 
   private async countUsagesTx(
-    tx: Parameters<Parameters<PrismaService["$transaction"]>[0]>[0],
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
     userId: string,
     planType: PlanType,
   ): Promise<number> {
@@ -2002,7 +2071,7 @@ export class PlansService {
 
   private validateQuantityRange(qty: number, min: number, max: number): void {
     if (!Number.isInteger(qty)) {
-      throw new BadRequestException("Quantity must be a whole number");
+      throw new BadRequestException('Quantity must be a whole number');
     }
     if (qty < min || qty > max) {
       throw new BadRequestException(
@@ -2021,23 +2090,23 @@ export class PlansService {
     const limit = query.limit ?? 20;
 
     const where: any = {};
-    if (query.status && query.status !== "ALL") {
+    if (query.status && query.status !== 'ALL') {
       where.status = query.status;
     }
-    if (query.planType && query.planType !== "ALL") {
+    if (query.planType && query.planType !== 'ALL') {
       where.planType = query.planType;
     }
     if (query.search) {
       const s = query.search.trim();
       where.user = {
         OR: [
-          { mobile: { contains: s, mode: "insensitive" } },
-          { email: { contains: s, mode: "insensitive" } },
+          { mobile: { contains: s, mode: 'insensitive' } },
+          { email: { contains: s, mode: 'insensitive' } },
           {
             customerProfile: {
               OR: [
-                { firstName: { contains: s, mode: "insensitive" } },
-                { lastName: { contains: s, mode: "insensitive" } },
+                { firstName: { contains: s, mode: 'insensitive' } },
+                { lastName: { contains: s, mode: 'insensitive' } },
               ],
             },
           },
@@ -2048,7 +2117,7 @@ export class PlansService {
     const [selections, total] = await Promise.all([
       this.prisma.planSelection.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
         include: {
@@ -2066,7 +2135,7 @@ export class PlansService {
               },
               addresses: {
                 take: 1,
-                orderBy: { createdAt: "desc" },
+                orderBy: { createdAt: 'desc' },
                 select: {
                   fullName: true,
                   houseNumber: true,
@@ -2145,7 +2214,11 @@ export class PlansService {
           };
         })(),
         cashCollection: s.cashCollection
-          ? { id: s.cashCollection.id, status: s.cashCollection.status, amountPaise: s.cashCollection.amountPaise }
+          ? {
+              id: s.cashCollection.id,
+              status: s.cashCollection.status,
+              amountPaise: s.cashCollection.amountPaise,
+            }
           : null,
         customer: {
           id: s.user?.id,
@@ -2165,5 +2238,4 @@ export class PlansService {
       },
     };
   }
-
 }

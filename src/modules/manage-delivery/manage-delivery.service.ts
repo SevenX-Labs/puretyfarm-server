@@ -5,8 +5,8 @@ import {
   ConflictException,
   NotImplementedException,
   Logger,
-} from "@nestjs/common";
-import { PrismaService } from "../../prisma/prisma.service";
+} from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
 import {
   PlanType,
   DeliveryFrequency,
@@ -15,24 +15,24 @@ import {
   PlanSelectionStatus,
   ChangeRequestType,
   ChangeRequestStatus,
-} from "../plans/plans.constants";
+} from '../plans/plans.constants';
 import {
   toDateOnly,
   generateDeliveryDates,
   quantityForOccurrence,
-} from "../plans/plans.service";
-import { toIsoDateString } from "../../common/utils/ist-date.util";
-import { OrderStatus } from "../orders/orders.constants";
-import { PlansService } from "../plans/plans.service";
-import type { OrderPriceSnapshot } from "../plans/plans.service";
-import { SkipDeliveryDto } from "./dto/customer/skip-delivery.dto";
-import { ChangeQuantityDto } from "./dto/customer/change-quantity.dto";
-import { ChangeFrequencyDto } from "./dto/customer/change-frequency.dto";
-import { ChangePlanDto } from "./dto/customer/change-plan.dto";
-import { ChangeScheduleDto } from "./dto/customer/change-schedule.dto";
-import { PauseDeliveryDto } from "./dto/customer/pause-delivery.dto";
-import { RejectRequestDto } from "./dto/admin/reject-request.dto";
-import { ListRequestsQueryDto } from "./dto/admin/list-requests-query.dto";
+} from '../plans/plans.service';
+import { toIsoDateString } from '../../common/utils/ist-date.util';
+import { OrderStatus } from '../orders/orders.constants';
+import { PlansService } from '../plans/plans.service';
+import type { OrderPriceSnapshot } from '../plans/plans.service';
+import { SkipDeliveryDto } from './dto/customer/skip-delivery.dto';
+import { ChangeQuantityDto } from './dto/customer/change-quantity.dto';
+import { ChangeFrequencyDto } from './dto/customer/change-frequency.dto';
+import { ChangePlanDto } from './dto/customer/change-plan.dto';
+import { ChangeScheduleDto } from './dto/customer/change-schedule.dto';
+import { PauseDeliveryDto } from './dto/customer/pause-delivery.dto';
+import { RejectRequestDto } from './dto/admin/reject-request.dto';
+import { ListRequestsQueryDto } from './dto/admin/list-requests-query.dto';
 
 // ─── Response interfaces ────────────────────────────────────────────
 
@@ -109,21 +109,26 @@ export class ManageDeliveryService {
     // state and submit a resume request.
     const selection = await this.prisma.planSelection.findFirst({
       where: { userId, status: { in: VIEWABLE_STATUSES } },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: 'desc' },
     });
     if (!selection) {
-      throw new NotFoundException("No active plan found");
+      throw new NotFoundException('No active plan found');
     }
     const [deliveries, config] = await Promise.all([
       this.prisma.planDelivery.findMany({
         where: { selectionId: selection.id, userId },
-        orderBy: { deliveryDate: "asc" },
+        orderBy: { deliveryDate: 'asc' },
       }),
       this.prisma.planConfig.findUnique({
         where: { planType: selection.planType as any },
       }),
     ]);
-    return this.buildView(selection, deliveries, config?.deliveryStartTime, config?.deliveryEndTime);
+    return this.buildView(
+      selection,
+      deliveries,
+      config?.deliveryStartTime,
+      config?.deliveryEndTime,
+    );
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -133,12 +138,16 @@ export class ManageDeliveryService {
   async skipDelivery(
     userId: string,
     dto: SkipDeliveryDto,
-  ): Promise<{ success: true; message: string; delivery: ManageDeliveryResponse }> {
+  ): Promise<{
+    success: true;
+    message: string;
+    delivery: ManageDeliveryResponse;
+  }> {
     const today = toDateOnly(new Date());
     const target = toDateOnly(new Date(dto.deliveryDate));
 
     if (target.getTime() <= today.getTime()) {
-      throw new BadRequestException("Only future deliveries can be skipped");
+      throw new BadRequestException('Only future deliveries can be skipped');
     }
 
     const selection = await this.requireActiveSelection(userId);
@@ -152,10 +161,10 @@ export class ManageDeliveryService {
       );
     }
     if (delivery.status === DeliveryStatus.SKIPPED) {
-      throw new BadRequestException("This delivery is already skipped");
+      throw new BadRequestException('This delivery is already skipped');
     }
     if (delivery.status === DeliveryStatus.DELIVERED) {
-      throw new BadRequestException("A completed delivery cannot be skipped");
+      throw new BadRequestException('A completed delivery cannot be skipped');
     }
 
     // Skip the delivery and stand down its dispatch order together, so the
@@ -169,7 +178,7 @@ export class ManageDeliveryService {
       });
       if (res.count === 0) {
         throw new BadRequestException(
-          "This delivery could not be skipped (it was just modified)",
+          'This delivery could not be skipped (it was just modified)',
         );
       }
 
@@ -184,7 +193,7 @@ export class ManageDeliveryService {
       // aggregates. An order already out for delivery or delivered is left
       // exactly as it is — it is a fulfilment record, and the delivery-date
       // guard above means this should not normally arise.
-      if (!REPLACEABLE_ORDER_STATUSES.includes(order.status)) {
+      if (!REPLACEABLE_ORDER_STATUSES.includes(order.status as any)) {
         this.logger.warn(
           `Delivery skipped but its order was left untouched because it has ` +
             `advanced: orderNumber=${order.orderNumber} orderStatus=${order.status} ` +
@@ -194,15 +203,18 @@ export class ManageDeliveryService {
       }
 
       await tx.order.updateMany({
-        where: { id: order.id, status: { in: REPLACEABLE_ORDER_STATUSES } },
-        data: { status: "CANCELLED" },
+        where: {
+          id: order.id,
+          status: { in: REPLACEABLE_ORDER_STATUSES as any },
+        },
+        data: { status: 'CANCELLED' },
       });
     });
 
     const view = await this.getManageDelivery(userId);
     return {
       success: true,
-      message: "Delivery skipped successfully.",
+      message: 'Delivery skipped successfully.',
       delivery: view,
     };
   }
@@ -240,9 +252,12 @@ export class ManageDeliveryService {
       const today = toDateOnly(new Date());
       const resume = toDateOnly(new Date(dto.resumeDate));
       if (resume.getTime() <= today.getTime()) {
-        throw new BadRequestException("resumeDate must be in the future");
+        throw new BadRequestException('resumeDate must be in the future');
       }
-      if (selection.endDate && resume.getTime() > toDateOnly(selection.endDate).getTime()) {
+      if (
+        selection.endDate &&
+        resume.getTime() > toDateOnly(selection.endDate).getTime()
+      ) {
         throw new BadRequestException(
           "resumeDate cannot be after your plan's end date",
         );
@@ -274,7 +289,7 @@ export class ManageDeliveryService {
     return {
       success: true,
       message:
-        "Your pause request has been submitted. Deliveries continue as normal until an admin approves it.",
+        'Your pause request has been submitted. Deliveries continue as normal until an admin approves it.',
       request: this.formatCustomerRequest(request),
     };
   }
@@ -285,10 +300,10 @@ export class ManageDeliveryService {
   async resumeDelivery(userId: string) {
     const selection = await this.prisma.planSelection.findFirst({
       where: { userId, status: PlanSelectionStatus.PAUSED },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: 'desc' },
     });
     if (!selection) {
-      throw new NotFoundException("You have no paused plan to resume");
+      throw new NotFoundException('You have no paused plan to resume');
     }
 
     await this.rejectDuplicatePending(
@@ -322,7 +337,7 @@ export class ManageDeliveryService {
     return {
       success: true,
       message:
-        "Your resume request has been submitted. Your plan stays paused until an admin approves it.",
+        'Your resume request has been submitted. Your plan stays paused until an admin approves it.',
       request: this.formatCustomerRequest(request),
     };
   }
@@ -364,7 +379,7 @@ export class ManageDeliveryService {
     return {
       success: true,
       message:
-        "Your quantity change request has been submitted for admin approval.",
+        'Your quantity change request has been submitted for admin approval.',
       request: {
         id: request.id,
         type: request.requestType,
@@ -384,13 +399,13 @@ export class ManageDeliveryService {
 
     if (selection.planType !== PlanType.MONTHLY) {
       throw new BadRequestException(
-        "Frequency changes apply to monthly plans only",
+        'Frequency changes apply to monthly plans only',
       );
     }
 
     if (selection.frequency === dto.frequency) {
       throw new BadRequestException(
-        "Requested frequency is the same as current",
+        'Requested frequency is the same as current',
       );
     }
 
@@ -416,7 +431,7 @@ export class ManageDeliveryService {
     return {
       success: true,
       message:
-        "Your delivery frequency change request has been submitted for admin approval.",
+        'Your delivery frequency change request has been submitted for admin approval.',
       request: {
         id: request.id,
         type: request.requestType,
@@ -436,7 +451,7 @@ export class ManageDeliveryService {
 
     if (selection.planType === dto.planType) {
       throw new BadRequestException(
-        "Requested plan type is the same as current",
+        'Requested plan type is the same as current',
       );
     }
 
@@ -446,7 +461,7 @@ export class ManageDeliveryService {
     });
     if (!targetConfig || !targetConfig.isActive) {
       throw new BadRequestException(
-        "The requested plan type is not currently available",
+        'The requested plan type is not currently available',
       );
     }
 
@@ -472,7 +487,7 @@ export class ManageDeliveryService {
     return {
       success: true,
       message:
-        "Your plan change request has been submitted for admin approval.",
+        'Your plan change request has been submitted for admin approval.',
       request: {
         id: request.id,
         type: request.requestType,
@@ -492,12 +507,12 @@ export class ManageDeliveryService {
 
     if (selection.planType !== PlanType.MONTHLY) {
       throw new BadRequestException(
-        "Frequency and quantity-pattern changes apply to monthly plans only",
+        'Frequency and quantity-pattern changes apply to monthly plans only',
       );
     }
     if (!selection.endDate) {
       throw new BadRequestException(
-        "This plan has no schedule window to reconfigure",
+        'This plan has no schedule window to reconfigure',
       );
     }
 
@@ -537,7 +552,7 @@ export class ManageDeliveryService {
     return {
       success: true,
       message:
-        "Your schedule change request has been submitted for admin approval.",
+        'Your schedule change request has been submitted for admin approval.',
       request: {
         id: request.id,
         type: request.requestType,
@@ -553,7 +568,7 @@ export class ManageDeliveryService {
   async getCustomerRequests(userId: string) {
     const requests = await this.prisma.manageDeliveryChangeRequest.findMany({
       where: { userId },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: 'desc' },
     });
     return requests.map((r) => this.formatCustomerRequest(r));
   }
@@ -563,7 +578,7 @@ export class ManageDeliveryService {
       where: { id: requestId, userId },
     });
     if (!request) {
-      throw new NotFoundException("Request not found");
+      throw new NotFoundException('Request not found');
     }
     return this.formatCustomerRequest(request);
   }
@@ -583,7 +598,7 @@ export class ManageDeliveryService {
     const [requests, total] = await Promise.all([
       this.prisma.manageDeliveryChangeRequest.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
         include: {
@@ -647,7 +662,7 @@ export class ManageDeliveryService {
       },
     });
     if (!request) {
-      throw new NotFoundException("Request not found");
+      throw new NotFoundException('Request not found');
     }
     return {
       id: request.id,
@@ -691,7 +706,7 @@ export class ManageDeliveryService {
         const existing = await tx.manageDeliveryChangeRequest.findUnique({
           where: { id: requestId },
         });
-        if (!existing) throw new NotFoundException("Request not found");
+        if (!existing) throw new NotFoundException('Request not found');
         throw new ConflictException(
           `Request has already been ${existing.status.toLowerCase()}`,
         );
@@ -700,13 +715,13 @@ export class ManageDeliveryService {
       const request = await tx.manageDeliveryChangeRequest.findUnique({
         where: { id: requestId },
       });
-      if (!request) throw new NotFoundException("Request not found");
+      if (!request) throw new NotFoundException('Request not found');
 
       const warnings = await this.applyApprovedChange(tx, request);
 
       return {
         success: true,
-        message: "The change request has been approved and applied.",
+        message: 'The change request has been approved and applied.',
         /**
          * Operator-facing caveats about what the approval did NOT do. Empty for
          * a fully self-contained change.
@@ -745,7 +760,7 @@ export class ManageDeliveryService {
         const existing = await tx.manageDeliveryChangeRequest.findUnique({
           where: { id: requestId },
         });
-        if (!existing) throw new NotFoundException("Request not found");
+        if (!existing) throw new NotFoundException('Request not found');
         throw new ConflictException(
           `Request has already been ${existing.status.toLowerCase()}`,
         );
@@ -753,7 +768,7 @@ export class ManageDeliveryService {
 
       return {
         success: true,
-        message: "The change request has been rejected.",
+        message: 'The change request has been rejected.',
         request: {
           id: requestId,
           status: ChangeRequestStatus.REJECTED,
@@ -779,14 +794,13 @@ export class ManageDeliveryService {
     // transaction back, keeping the request PENDING and reviewable.
     if (!selection) {
       throw new NotFoundException(
-        "The plan this request belongs to no longer exists.",
+        'The plan this request belongs to no longer exists.',
       );
     }
 
     // Revalidate the lifecycle against the latest persisted state. A plan may
     // have been cancelled or completed between request and review.
-    const requiresActivePlan =
-      request.requestType !== ChangeRequestType.RESUME;
+    const requiresActivePlan = request.requestType !== ChangeRequestType.RESUME;
     if (requiresActivePlan && !ACTIVE_STATUSES.includes(selection.status)) {
       throw new ConflictException(
         `This plan is ${selection.status} and can no longer be changed.`,
@@ -840,12 +854,12 @@ export class ManageDeliveryService {
   private blockQuantityChangeApproval(): Promise<string[]> {
     throw new NotImplementedException(
       "Approving quantity changes is temporarily disabled. A prepaid plan's " +
-        "upcoming deliveries are already paid against fixed price snapshots and " +
-        "invoices, and there is no billing, refund or settlement rule for the " +
-        "difference a new quantity would create. The request has been kept " +
-        "PENDING and the active quantity is unchanged — reject it, or re-enable " +
-        "approval once a prepaid-plan quantity-change billing/refund/settlement " +
-        "policy is in place.",
+        'upcoming deliveries are already paid against fixed price snapshots and ' +
+        'invoices, and there is no billing, refund or settlement rule for the ' +
+        'difference a new quantity would create. The request has been kept ' +
+        'PENDING and the active quantity is unchanged — reject it, or re-enable ' +
+        'approval once a prepaid-plan quantity-change billing/refund/settlement ' +
+        'policy is in place.',
     );
   }
 
@@ -876,8 +890,12 @@ export class ManageDeliveryService {
     // dispatch order: the order survived (optional relation, SetNull) as an
     // orphaned CONFIRMED + PAID + invoiced row still counted in revenue, while
     // the new deliveries got no orders at all.
-    await this.reconcileFutureSchedule(tx, selection, today, dates, (occurrence) =>
-      quantityForOccurrence(qMode, occurrence, qty, qA, qB),
+    await this.reconcileFutureSchedule(
+      tx,
+      selection,
+      today,
+      dates,
+      (occurrence) => quantityForOccurrence(qMode, occurrence, qty, qA, qB),
     );
 
     // Give the newly created deliveries their dispatch orders. Reconciliation
@@ -986,7 +1004,7 @@ export class ManageDeliveryService {
           id: { in: cancelOrderIds },
           status: { in: REPLACEABLE_ORDER_STATUSES },
         },
-        data: { status: "CANCELLED" },
+        data: { status: 'CANCELLED' },
       });
     }
 
@@ -1057,7 +1075,8 @@ export class ManageDeliveryService {
 
     const cancelOrderIds = affected
       .filter(
-        (d: any) => d.order && REPLACEABLE_ORDER_STATUSES.includes(d.order.status),
+        (d: any) =>
+          d.order && REPLACEABLE_ORDER_STATUSES.includes(d.order.status),
       )
       .map((d: any) => d.order.id);
 
@@ -1067,12 +1086,15 @@ export class ManageDeliveryService {
           id: { in: cancelOrderIds },
           status: { in: REPLACEABLE_ORDER_STATUSES },
         },
-        data: { status: "CANCELLED" },
+        data: { status: 'CANCELLED' },
       });
     }
 
     const skippableIds = affected
-      .filter((d: any) => !d.order || REPLACEABLE_ORDER_STATUSES.includes(d.order.status))
+      .filter(
+        (d: any) =>
+          !d.order || REPLACEABLE_ORDER_STATUSES.includes(d.order.status),
+      )
       .map((d: any) => d.id);
 
     if (skippableIds.length > 0) {
@@ -1139,13 +1161,13 @@ export class ManageDeliveryService {
         requestType: ChangeRequestType.PAUSE,
         status: ChangeRequestStatus.APPROVED,
       },
-      orderBy: { reviewedAt: "desc" },
+      orderBy: { reviewedAt: 'desc' },
     });
 
     const pausedIds: string[] = Array.isArray(
-      (pauseRequest?.requestedConfiguration as any)?.pausedDeliveryIds,
+      pauseRequest?.requestedConfiguration?.pausedDeliveryIds,
     )
-      ? (pauseRequest!.requestedConfiguration as any).pausedDeliveryIds
+      ? pauseRequest!.requestedConfiguration.pausedDeliveryIds
       : [];
 
     if (pausedIds.length > 0) {
@@ -1173,21 +1195,28 @@ export class ManageDeliveryService {
     // a commercial term settled at purchase.
     if (end.getTime() < firstFuture.getTime()) return;
 
-    const freq = (selection.frequency ?? DeliveryFrequency.DAILY) as DeliveryFrequency;
-    const qMode = (selection.quantityMode ?? QuantityMode.FIXED) as QuantityMode;
+    const freq = (selection.frequency ??
+      DeliveryFrequency.DAILY) as DeliveryFrequency;
+    const qMode = (selection.quantityMode ??
+      QuantityMode.FIXED) as QuantityMode;
     const dates = generateDeliveryDates(freq, firstFuture, end);
 
     // Step 2 — fill any cadence gap left by the pause window, bounded by the
     // existing end date and without duplicating a date that already has a
     // live delivery.
-    await this.reconcileFutureSchedule(tx, selection, today, dates, (occurrence) =>
-      quantityForOccurrence(
-        qMode,
-        occurrence,
-        selection.quantity,
-        selection.quantityA,
-        selection.quantityB,
-      ),
+    await this.reconcileFutureSchedule(
+      tx,
+      selection,
+      today,
+      dates,
+      (occurrence) =>
+        quantityForOccurrence(
+          qMode,
+          occurrence,
+          selection.quantity,
+          selection.quantityA,
+          selection.quantityB,
+        ),
     );
 
     // Step 3 — give every revived or newly created delivery a dispatch order.
@@ -1237,13 +1266,13 @@ export class ManageDeliveryService {
    */
   private blockPlanChangeApproval(): Promise<string[]> {
     throw new NotImplementedException(
-      "Approving plan-type changes is temporarily disabled. Changing the plan " +
-        "type also requires defined rules for pricing, billing duration, the " +
+      'Approving plan-type changes is temporarily disabled. Changing the plan ' +
+        'type also requires defined rules for pricing, billing duration, the ' +
         "plan end date, the new plan's quantity limits, delivery regeneration " +
-        "and reconciling existing order/invoice snapshots — none of which are " +
-        "implemented yet. The request has been kept PENDING and the plan is " +
-        "unchanged — reject it, or re-enable approval once those rules are in " +
-        "place.",
+        'and reconciling existing order/invoice snapshots — none of which are ' +
+        'implemented yet. The request has been kept PENDING and the plan is ' +
+        'unchanged — reject it, or re-enable approval once those rules are in ' +
+        'place.',
     );
   }
 
@@ -1274,7 +1303,7 @@ export class ManageDeliveryService {
         planSelectionId: selectionId,
         sellingPricePerLitrePaise: { not: null },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: 'desc' },
       select: {
         sellingPricePerLitrePaise: true,
         actualPricePerLitrePaise: true,
@@ -1286,11 +1315,11 @@ export class ManageDeliveryService {
 
     if (!order || order.sellingPricePerLitrePaise == null) {
       throw new ConflictException(
-        "This subscription has no established price from an existing order, so " +
-          "new deliveries cannot be scheduled without silently applying the " +
-          "current (possibly changed) plan pricing. The operation was blocked " +
+        'This subscription has no established price from an existing order, so ' +
+          'new deliveries cannot be scheduled without silently applying the ' +
+          'current (possibly changed) plan pricing. The operation was blocked ' +
           "and no new orders were created — resolve the subscription's pricing " +
-          "before retrying.",
+          'before retrying.',
       );
     }
 
@@ -1306,10 +1335,10 @@ export class ManageDeliveryService {
   private async requireActiveSelection(userId: string) {
     const selection = await this.prisma.planSelection.findFirst({
       where: { userId, status: { in: ACTIVE_STATUSES } },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: 'desc' },
     });
     if (!selection) {
-      throw new NotFoundException("No active plan found");
+      throw new NotFoundException('No active plan found');
     }
     return selection;
   }
@@ -1329,7 +1358,7 @@ export class ManageDeliveryService {
     });
     if (existing) {
       throw new ConflictException(
-        "You already have a pending request of this type. Please wait for admin review.",
+        'You already have a pending request of this type. Please wait for admin review.',
       );
     }
   }
@@ -1337,17 +1366,17 @@ export class ManageDeliveryService {
   private validateScheduleDto(dto: ChangeScheduleDto): void {
     if (dto.quantityMode === QuantityMode.FIXED) {
       if (dto.quantity === undefined || dto.quantity === null) {
-        throw new BadRequestException("quantity is required for FIXED mode");
+        throw new BadRequestException('quantity is required for FIXED mode');
       }
     } else {
       if (dto.quantityA === undefined || dto.quantityA === null) {
         throw new BadRequestException(
-          "quantityA is required for ALTERNATING mode",
+          'quantityA is required for ALTERNATING mode',
         );
       }
       if (dto.quantityB === undefined || dto.quantityB === null) {
         throw new BadRequestException(
-          "quantityB is required for ALTERNATING mode",
+          'quantityB is required for ALTERNATING mode',
         );
       }
     }
@@ -1365,12 +1394,12 @@ export class ManageDeliveryService {
     };
 
     if (r.status === ChangeRequestStatus.PENDING) {
-      base.message = "Your change request is pending admin approval.";
+      base.message = 'Your change request is pending admin approval.';
     } else if (r.status === ChangeRequestStatus.APPROVED) {
       base.message =
-        "Your change request has been approved and your delivery schedule has been updated.";
+        'Your change request has been approved and your delivery schedule has been updated.';
     } else if (r.status === ChangeRequestStatus.REJECTED) {
-      base.message = "Your change request was rejected.";
+      base.message = 'Your change request was rejected.';
       base.adminNote = r.adminNote;
       base.reason = r.adminNote;
     }

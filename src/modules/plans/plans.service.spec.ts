@@ -1,8 +1,8 @@
-jest.mock("@nestjs/config", () => ({
+jest.mock('@nestjs/config', () => ({
   ConfigService: jest.fn().mockImplementation(() => ({ get: jest.fn() })),
 }));
 
-import { Test, TestingModule } from "@nestjs/testing";
+import { Test, TestingModule } from '@nestjs/testing';
 import {
   PlansService,
   calculateMonthlyDeliveryOccurrences,
@@ -13,19 +13,19 @@ import {
   getOrderCutoffPolicy,
   isAfterOrderCutoff,
   toDateOnly,
-} from "./plans.service";
+} from './plans.service';
 import {
   IST_UTC_OFFSET_MINUTES,
   toIstDateOnly,
   istMinutesSinceMidnight,
-} from "../../common/utils/ist-date.util";
-import { PrismaService } from "../../prisma/prisma.service";
+} from '../../common/utils/ist-date.util';
+import { PrismaService } from '../../prisma/prisma.service';
 import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
   ConflictException,
-} from "@nestjs/common";
+} from '@nestjs/common';
 import {
   PlanType,
   DeliveryFrequency,
@@ -35,12 +35,12 @@ import {
   QUOTE_EXPIRY_MINUTES,
   TRIAL_DURATION_DAYS,
   ORDER_CUTOFF_MINUTES_IST,
-} from "./plans.constants";
-import { PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
-import { WalletTransactionReferenceType } from "../wallet/wallet.constants";
-import { WalletService } from "../wallet/wallet.service";
+} from './plans.constants';
+import { PlanPaymentMethod } from './dto/customer/confirm-plan.dto';
+import { WalletTransactionReferenceType } from '../wallet/wallet.constants';
+import { WalletService } from '../wallet/wallet.service';
 
-describe("PlansService", () => {
+describe('PlansService', () => {
   let service: PlansService;
 
   // ── Prisma mock ──
@@ -52,7 +52,12 @@ describe("PlansService", () => {
       update: jest.fn(),
       create: jest.fn(),
     },
-    planSelection: { count: jest.fn(), create: jest.fn(), update: jest.fn(), delete: jest.fn() },
+    planSelection: {
+      count: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    },
     planDelivery: { createMany: jest.fn(), findMany: jest.fn() },
     order: { findUnique: jest.fn(), count: jest.fn(), create: jest.fn() },
     invoice: { count: jest.fn() },
@@ -74,12 +79,12 @@ describe("PlansService", () => {
     creditWalletWithin: jest.fn().mockResolvedValue(undefined),
   };
 
-  const USER = "user-1";
-  const OTHER = "user-2";
+  const USER = 'user-1';
+  const OTHER = 'user-2';
 
   /** Default BUY_ONCE config */
   const buyOnceConfig = {
-    id: "cfg-bo",
+    id: 'cfg-bo',
     planType: PlanType.BUY_ONCE,
     isActive: true,
     actualPricePerLitre: 12000, // ₹120.00 in paise
@@ -92,7 +97,7 @@ describe("PlansService", () => {
 
   /** Default TRIAL config */
   const trialConfig = {
-    id: "cfg-tr",
+    id: 'cfg-tr',
     planType: PlanType.SEVEN_DAY_TRIAL,
     isActive: true,
     actualPricePerLitre: 11000, // ₹110.00 in paise
@@ -105,7 +110,7 @@ describe("PlansService", () => {
 
   /** Default MONTHLY config */
   const monthlyConfig = {
-    id: "cfg-mo",
+    id: 'cfg-mo',
     planType: PlanType.MONTHLY,
     isActive: true,
     actualPricePerLitre: 10000, // ₹100.00 in paise
@@ -148,7 +153,7 @@ describe("PlansService", () => {
     mockPrisma.planSelection.count.mockResolvedValue(0);
     // Default: quote create echoes back with id.
     mockPrisma.planQuote.create.mockImplementation(({ data }: any) => ({
-      id: "quote-1",
+      id: 'quote-1',
       ...data,
     }));
 
@@ -166,8 +171,8 @@ describe("PlansService", () => {
   //  PLANS OVERVIEW
   // ══════════════════════════════════════════════════════════════
 
-  describe("getPlansOverview", () => {
-    it("new customer gets all 3 plans available", async () => {
+  describe('getPlansOverview', () => {
+    it('new customer gets all 3 plans available', async () => {
       const result = await service.getPlansOverview(USER);
       expect(result.plans).toHaveLength(3);
       expect(result.plans[0]).toMatchObject({
@@ -189,8 +194,8 @@ describe("PlansService", () => {
   //  BUY ONCE — ELIGIBILITY
   // ══════════════════════════════════════════════════════════════
 
-  describe("getBuyOnceEligibility", () => {
-    it("new customer is eligible with 7 remaining", async () => {
+  describe('getBuyOnceEligibility', () => {
+    it('new customer is eligible with 7 remaining', async () => {
       const result = await service.getBuyOnceEligibility(USER);
       expect(result.eligible).toBe(true);
       expect(result.usageCount).toBe(0);
@@ -198,10 +203,10 @@ describe("PlansService", () => {
       expect(result.maxUses).toBe(7);
     });
 
-    it("after 1 use, still eligible with 6 remaining", async () => {
+    it('after 1 use, still eligible with 6 remaining', async () => {
       // First call: trial check (0 = no trial), second call: buy once count (1)
       mockPrisma.planSelection.count
-        .mockResolvedValueOnce(0)  // trial check
+        .mockResolvedValueOnce(0) // trial check
         .mockResolvedValueOnce(1); // buy-once count
       const result = await service.getBuyOnceEligibility(USER);
       expect(result.eligible).toBe(true);
@@ -209,9 +214,9 @@ describe("PlansService", () => {
       expect(result.remainingUses).toBe(6);
     });
 
-    it("after 6 uses, still eligible with 1 remaining", async () => {
+    it('after 6 uses, still eligible with 1 remaining', async () => {
       mockPrisma.planSelection.count
-        .mockResolvedValueOnce(0)  // trial check
+        .mockResolvedValueOnce(0) // trial check
         .mockResolvedValueOnce(6); // buy-once count
       const result = await service.getBuyOnceEligibility(USER);
       expect(result.eligible).toBe(true);
@@ -219,30 +224,30 @@ describe("PlansService", () => {
       expect(result.remainingUses).toBe(1);
     });
 
-    it("after 7 uses, no longer eligible", async () => {
+    it('after 7 uses, no longer eligible', async () => {
       mockPrisma.planSelection.count
-        .mockResolvedValueOnce(0)  // trial check
+        .mockResolvedValueOnce(0) // trial check
         .mockResolvedValueOnce(7); // buy-once count
       const result = await service.getBuyOnceEligibility(USER);
       expect(result.eligible).toBe(false);
       expect(result.remainingUses).toBe(0);
-      expect(result.blockedReason).toBe("MAX_USES_REACHED");
+      expect(result.blockedReason).toBe('MAX_USES_REACHED');
     });
 
-    it("Trial already used blocks Buy Once", async () => {
+    it('Trial already used blocks Buy Once', async () => {
       mockPrisma.planSelection.count
-        .mockResolvedValueOnce(1)  // trial check = used
+        .mockResolvedValueOnce(1) // trial check = used
         .mockResolvedValueOnce(0); // buy-once count
       const result = await service.getBuyOnceEligibility(USER);
       expect(result.eligible).toBe(false);
-      expect(result.blockedReason).toBe("TRIAL_ALREADY_USED");
+      expect(result.blockedReason).toBe('TRIAL_ALREADY_USED');
     });
 
-    it("returns ineligible when plan not configured", async () => {
+    it('returns ineligible when plan not configured', async () => {
       mockPrisma.planConfig.findFirst.mockResolvedValue(null);
       const result = await service.getBuyOnceEligibility(USER);
       expect(result.eligible).toBe(false);
-      expect(result.blockedReason).toBe("PLAN_NOT_CONFIGURED");
+      expect(result.blockedReason).toBe('PLAN_NOT_CONFIGURED');
     });
   });
 
@@ -250,8 +255,8 @@ describe("PlansService", () => {
   //  BUY ONCE — QUOTE
   // ══════════════════════════════════════════════════════════════
 
-  describe("createBuyOnceQuote", () => {
-    it("calculates amount server-side for qty=3", async () => {
+  describe('createBuyOnceQuote', () => {
+    it('calculates amount server-side for qty=3', async () => {
       const result = await service.createBuyOnceQuote(USER, {
         quantityLitres: 3,
       });
@@ -266,54 +271,54 @@ describe("PlansService", () => {
       expect(result.quoteId).toBeDefined();
     });
 
-    it("quantity=1 accepted", async () => {
+    it('quantity=1 accepted', async () => {
       const result = await service.createBuyOnceQuote(USER, {
         quantityLitres: 1,
       });
       expect(result.totalLitres).toBe(1);
     });
 
-    it("quantity=5 accepted", async () => {
+    it('quantity=5 accepted', async () => {
       const result = await service.createBuyOnceQuote(USER, {
         quantityLitres: 5,
       });
       expect(result.totalLitres).toBe(5);
     });
 
-    it("quantity=0 rejected", async () => {
+    it('quantity=0 rejected', async () => {
       await expect(
         service.createBuyOnceQuote(USER, { quantityLitres: 0 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("quantity=6 rejected", async () => {
+    it('quantity=6 rejected', async () => {
       await expect(
         service.createBuyOnceQuote(USER, { quantityLitres: 6 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects when customer is ineligible (Trial used)", async () => {
+    it('rejects when customer is ineligible (Trial used)', async () => {
       mockPrisma.planSelection.count
-        .mockResolvedValueOnce(1)  // trial check = used
+        .mockResolvedValueOnce(1) // trial check = used
         .mockResolvedValueOnce(0); // buy-once count
       await expect(
         service.createBuyOnceQuote(USER, { quantityLitres: 2 }),
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it("8th use is rejected (eligibility check)", async () => {
+    it('8th use is rejected (eligibility check)', async () => {
       mockPrisma.planSelection.count
-        .mockResolvedValueOnce(0)  // trial check
+        .mockResolvedValueOnce(0) // trial check
         .mockResolvedValueOnce(7); // buy-once count = max
       await expect(
         service.createBuyOnceQuote(USER, { quantityLitres: 2 }),
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it("frontend amount cannot override server calculation", async () => {
+    it('frontend amount cannot override server calculation', async () => {
       const result = await service.createBuyOnceQuote(USER, {
         quantityLitres: 2,
-      } as any);
+      });
       // The service always uses config price, never a body-supplied amount.
       expect(result.totalSellingAmount).toBe(20000); // 2L × ₹100 = ₹200.00
       expect(result.sellingPricePerLitre).toBe(10000);
@@ -324,29 +329,29 @@ describe("PlansService", () => {
   //  TRIAL — ELIGIBILITY
   // ══════════════════════════════════════════════════════════════
 
-  describe("getTrialEligibility", () => {
-    it("new customer is eligible", async () => {
+  describe('getTrialEligibility', () => {
+    it('new customer is eligible', async () => {
       const result = await service.getTrialEligibility(USER);
       expect(result.eligible).toBe(true);
       expect(result.used).toBe(false);
       expect(result.trialDurationDays).toBe(7);
     });
 
-    it("after Buy Once used, Trial is unavailable", async () => {
+    it('after Buy Once used, Trial is unavailable', async () => {
       mockPrisma.planSelection.count.mockResolvedValueOnce(1); // buy once used
       const result = await service.getTrialEligibility(USER);
       expect(result.eligible).toBe(false);
-      expect(result.blockedReason).toBe("BUY_ONCE_ALREADY_USED");
+      expect(result.blockedReason).toBe('BUY_ONCE_ALREADY_USED');
     });
 
-    it("after Trial used, Trial is unavailable", async () => {
+    it('after Trial used, Trial is unavailable', async () => {
       mockPrisma.planSelection.count
-        .mockResolvedValueOnce(0)  // buy once check
+        .mockResolvedValueOnce(0) // buy once check
         .mockResolvedValueOnce(1); // trial used
       const result = await service.getTrialEligibility(USER);
       expect(result.eligible).toBe(false);
       expect(result.used).toBe(true);
-      expect(result.blockedReason).toBe("TRIAL_ALREADY_USED");
+      expect(result.blockedReason).toBe('TRIAL_ALREADY_USED');
     });
   });
 
@@ -354,8 +359,8 @@ describe("PlansService", () => {
   //  TRIAL — QUOTE
   // ══════════════════════════════════════════════════════════════
 
-  describe("createTrialQuote", () => {
-    it("calculates 7-day trial amount server-side", async () => {
+  describe('createTrialQuote', () => {
+    it('calculates 7-day trial amount server-side', async () => {
       const result = await service.createTrialQuote(USER, {
         quantityLitres: 2,
       });
@@ -368,33 +373,33 @@ describe("PlansService", () => {
       expect(result.discountAmount).toBe(14 * 11000 - 14 * 9500);
     });
 
-    it("quantity=1 accepted", async () => {
+    it('quantity=1 accepted', async () => {
       const result = await service.createTrialQuote(USER, {
         quantityLitres: 1,
       });
       expect(result.totalLitres).toBe(7);
     });
 
-    it("quantity=5 accepted", async () => {
+    it('quantity=5 accepted', async () => {
       const result = await service.createTrialQuote(USER, {
         quantityLitres: 5,
       });
       expect(result.totalLitres).toBe(35);
     });
 
-    it("quantity=0 rejected", async () => {
+    it('quantity=0 rejected', async () => {
       await expect(
         service.createTrialQuote(USER, { quantityLitres: 0 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("quantity=6 rejected", async () => {
+    it('quantity=6 rejected', async () => {
       await expect(
         service.createTrialQuote(USER, { quantityLitres: 6 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects when ineligible (Buy Once used)", async () => {
+    it('rejects when ineligible (Buy Once used)', async () => {
       mockPrisma.planSelection.count.mockResolvedValueOnce(1); // buy once used
       await expect(
         service.createTrialQuote(USER, { quantityLitres: 2 }),
@@ -406,12 +411,12 @@ describe("PlansService", () => {
   //  MONTHLY — INFO
   // ══════════════════════════════════════════════════════════════
 
-  describe("getMonthlyInfo", () => {
-    it("returns monthly configuration", async () => {
+  describe('getMonthlyInfo', () => {
+    it('returns monthly configuration', async () => {
       const result = await service.getMonthlyInfo();
       expect(result.available).toBe(true);
-      expect(result.frequencies).toEqual(["DAILY", "ALTERNATE_DAYS"]);
-      expect(result.quantityModes).toEqual(["FIXED", "ALTERNATING"]);
+      expect(result.frequencies).toEqual(['DAILY', 'ALTERNATE_DAYS']);
+      expect(result.quantityModes).toEqual(['FIXED', 'ALTERNATING']);
       expect(result.quantityMin).toBe(1);
       expect(result.quantityMax).toBe(5);
       expect(result.sellingPricePerLitre).toBe(9000); // paise
@@ -422,8 +427,8 @@ describe("PlansService", () => {
   //  MONTHLY — QUOTE
   // ══════════════════════════════════════════════════════════════
 
-  describe("createMonthlyQuote", () => {
-    it("DAILY + FIXED works", async () => {
+  describe('createMonthlyQuote', () => {
+    it('DAILY + FIXED works', async () => {
       const result = await service.createMonthlyQuote(USER, {
         frequency: DeliveryFrequency.DAILY,
         quantityMode: QuantityMode.FIXED,
@@ -438,7 +443,7 @@ describe("PlansService", () => {
       expect(result.totalSellingAmount).toBe(result.totalLitres * 9000); // paise
     });
 
-    it("DAILY + ALTERNATING works", async () => {
+    it('DAILY + ALTERNATING works', async () => {
       const result = await service.createMonthlyQuote(USER, {
         frequency: DeliveryFrequency.DAILY,
         quantityMode: QuantityMode.ALTERNATING,
@@ -454,7 +459,7 @@ describe("PlansService", () => {
       expect(result.totalLitres).toBe(expectedLitres);
     });
 
-    it("ALTERNATE_DAYS + FIXED works", async () => {
+    it('ALTERNATE_DAYS + FIXED works', async () => {
       const result = await service.createMonthlyQuote(USER, {
         frequency: DeliveryFrequency.ALTERNATE_DAYS,
         quantityMode: QuantityMode.FIXED,
@@ -466,7 +471,7 @@ describe("PlansService", () => {
       expect(result.totalLitres).toBe(result.deliveryOccurrences * 3);
     });
 
-    it("ALTERNATE_DAYS + ALTERNATING works", async () => {
+    it('ALTERNATE_DAYS + ALTERNATING works', async () => {
       const result = await service.createMonthlyQuote(USER, {
         frequency: DeliveryFrequency.ALTERNATE_DAYS,
         quantityMode: QuantityMode.ALTERNATING,
@@ -478,7 +483,7 @@ describe("PlansService", () => {
       expect(result.totalLitres).toBe(expectedLitres);
     });
 
-    it("quantity range 1-5 for fixed", async () => {
+    it('quantity range 1-5 for fixed', async () => {
       // min
       const r1 = await service.createMonthlyQuote(USER, {
         frequency: DeliveryFrequency.DAILY,
@@ -496,7 +501,7 @@ describe("PlansService", () => {
       expect(r5.quantity).toBe(5);
     });
 
-    it("quantity=0 rejected for fixed", async () => {
+    it('quantity=0 rejected for fixed', async () => {
       await expect(
         service.createMonthlyQuote(USER, {
           frequency: DeliveryFrequency.DAILY,
@@ -506,7 +511,7 @@ describe("PlansService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("quantity=6 rejected for fixed", async () => {
+    it('quantity=6 rejected for fixed', async () => {
       await expect(
         service.createMonthlyQuote(USER, {
           frequency: DeliveryFrequency.DAILY,
@@ -516,7 +521,7 @@ describe("PlansService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("quantityA=0 rejected for alternating", async () => {
+    it('quantityA=0 rejected for alternating', async () => {
       await expect(
         service.createMonthlyQuote(USER, {
           frequency: DeliveryFrequency.DAILY,
@@ -527,7 +532,7 @@ describe("PlansService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("quantityB=6 rejected for alternating", async () => {
+    it('quantityB=6 rejected for alternating', async () => {
       await expect(
         service.createMonthlyQuote(USER, {
           frequency: DeliveryFrequency.DAILY,
@@ -538,7 +543,7 @@ describe("PlansService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("missing quantity for FIXED mode rejected", async () => {
+    it('missing quantity for FIXED mode rejected', async () => {
       await expect(
         service.createMonthlyQuote(USER, {
           frequency: DeliveryFrequency.DAILY,
@@ -547,7 +552,7 @@ describe("PlansService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("missing quantityA for ALTERNATING mode rejected", async () => {
+    it('missing quantityA for ALTERNATING mode rejected', async () => {
       await expect(
         service.createMonthlyQuote(USER, {
           frequency: DeliveryFrequency.DAILY,
@@ -557,7 +562,7 @@ describe("PlansService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("missing quantityB for ALTERNATING mode rejected", async () => {
+    it('missing quantityB for ALTERNATING mode rejected', async () => {
       await expect(
         service.createMonthlyQuote(USER, {
           frequency: DeliveryFrequency.DAILY,
@@ -567,12 +572,12 @@ describe("PlansService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("amount calculated server-side, not from frontend", async () => {
+    it('amount calculated server-side, not from frontend', async () => {
       const result = await service.createMonthlyQuote(USER, {
         frequency: DeliveryFrequency.DAILY,
         quantityMode: QuantityMode.FIXED,
         quantity: 2,
-      } as any);
+      });
       // Always uses config price.
       expect(result.sellingPricePerLitre).toBe(9000); // paise
     });
@@ -582,8 +587,8 @@ describe("PlansService", () => {
   //  DELIVERY OCCURRENCE CALCULATION
   // ══════════════════════════════════════════════════════════════
 
-  describe("calculateMonthlyDeliveryOccurrences", () => {
-    it("January (31 days) DAILY = 31", () => {
+  describe('calculateMonthlyDeliveryOccurrences', () => {
+    it('January (31 days) DAILY = 31', () => {
       // Jan 2027
       expect(
         calculateMonthlyDeliveryOccurrences(
@@ -593,7 +598,7 @@ describe("PlansService", () => {
       ).toBe(31);
     });
 
-    it("February non-leap (28 days) DAILY = 28", () => {
+    it('February non-leap (28 days) DAILY = 28', () => {
       // Feb 2027
       expect(
         calculateMonthlyDeliveryOccurrences(
@@ -603,7 +608,7 @@ describe("PlansService", () => {
       ).toBe(28);
     });
 
-    it("February leap (29 days) DAILY = 29", () => {
+    it('February leap (29 days) DAILY = 29', () => {
       // Feb 2028 (leap year)
       expect(
         calculateMonthlyDeliveryOccurrences(
@@ -613,7 +618,7 @@ describe("PlansService", () => {
       ).toBe(29);
     });
 
-    it("April (30 days) DAILY = 30", () => {
+    it('April (30 days) DAILY = 30', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
@@ -622,7 +627,7 @@ describe("PlansService", () => {
       ).toBe(30);
     });
 
-    it("January (31 days) ALTERNATE_DAYS = 16", () => {
+    it('January (31 days) ALTERNATE_DAYS = 16', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
@@ -631,7 +636,7 @@ describe("PlansService", () => {
       ).toBe(16);
     });
 
-    it("February non-leap (28 days) ALTERNATE_DAYS = 14", () => {
+    it('February non-leap (28 days) ALTERNATE_DAYS = 14', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
@@ -640,7 +645,7 @@ describe("PlansService", () => {
       ).toBe(14);
     });
 
-    it("April (30 days) ALTERNATE_DAYS = 15", () => {
+    it('April (30 days) ALTERNATE_DAYS = 15', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
@@ -650,7 +655,7 @@ describe("PlansService", () => {
     });
 
     // ── Mid-month / month-end starts (start-date aware) ──
-    it("MID-MONTH: Oct 15 (31-day month) DAILY = 17 (Oct 15..31), not 31", () => {
+    it('MID-MONTH: Oct 15 (31-day month) DAILY = 17 (Oct 15..31), not 31', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
@@ -659,7 +664,7 @@ describe("PlansService", () => {
       ).toBe(17);
     });
 
-    it("MID-MONTH: Oct 15 ALTERNATE_DAYS = 9 (15,17,...,31)", () => {
+    it('MID-MONTH: Oct 15 ALTERNATE_DAYS = 9 (15,17,...,31)', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
@@ -668,7 +673,7 @@ describe("PlansService", () => {
       ).toBe(9);
     });
 
-    it("NEAR MONTH-END: Jan 31 DAILY = 1", () => {
+    it('NEAR MONTH-END: Jan 31 DAILY = 1', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
@@ -677,7 +682,7 @@ describe("PlansService", () => {
       ).toBe(1);
     });
 
-    it("NEAR MONTH-END: Jan 30 ALTERNATE_DAYS = 1 (30 delivers, 31 would be next)", () => {
+    it('NEAR MONTH-END: Jan 30 ALTERNATE_DAYS = 1 (30 delivers, 31 would be next)', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
@@ -686,7 +691,7 @@ describe("PlansService", () => {
       ).toBe(1);
     });
 
-    it("FEB leap mid-month: Feb 27 2028 DAILY = 3 (27,28,29)", () => {
+    it('FEB leap mid-month: Feb 27 2028 DAILY = 3 (27,28,29)', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
@@ -695,7 +700,7 @@ describe("PlansService", () => {
       ).toBe(3);
     });
 
-    it("FEB non-leap mid-month: Feb 27 2027 DAILY = 2 (27,28)", () => {
+    it('FEB non-leap mid-month: Feb 27 2027 DAILY = 2 (27,28)', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
@@ -705,22 +710,22 @@ describe("PlansService", () => {
     });
   });
 
-  describe("mid-month materialization (generateDeliveryDates from the start date)", () => {
-    it("DAILY from Oct 15 produces NO deliveries on Oct 1-14", () => {
+  describe('mid-month materialization (generateDeliveryDates from the start date)', () => {
+    it('DAILY from Oct 15 produces NO deliveries on Oct 1-14', () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.DAILY,
         new Date(2026, 9, 15),
         new Date(2026, 9, 31),
       );
-      expect(dates[0].toISOString().slice(0, 10)).toBe("2026-10-15");
-      expect(dates[dates.length - 1].toISOString().slice(0, 10)).toBe("2026-10-31");
+      expect(dates[0].toISOString().slice(0, 10)).toBe('2026-10-15');
+      expect(dates[dates.length - 1].toISOString().slice(0, 10)).toBe(
+        '2026-10-31',
+      );
       expect(dates).toHaveLength(17);
-      expect(
-        dates.every((d) => d.getUTCDate() >= 15),
-      ).toBe(true); // never before the start date
+      expect(dates.every((d) => d.getUTCDate() >= 15)).toBe(true); // never before the start date
     });
 
-    it("ALTERNATE_DAYS from Oct 15 delivers 15,17,...,31", () => {
+    it('ALTERNATE_DAYS from Oct 15 delivers 15,17,...,31', () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.ALTERNATE_DAYS,
         new Date(2026, 9, 15),
@@ -731,21 +736,21 @@ describe("PlansService", () => {
       ]);
     });
 
-    it("respects the end boundary (never past end of month)", () => {
+    it('respects the end boundary (never past end of month)', () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.DAILY,
         new Date(2027, 1, 27), // Feb 27 2027 (non-leap)
         new Date(2027, 1, 28),
       );
       expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
-        "2027-02-27",
-        "2027-02-28",
+        '2027-02-27',
+        '2027-02-28',
       ]);
     });
   });
 
-  describe("money is exact integer paise (no float drift)", () => {
-    it("fractional-rupee price × litres stays an exact integer in paise", () => {
+  describe('money is exact integer paise (no float drift)', () => {
+    it('fractional-rupee price × litres stays an exact integer in paise', () => {
       // ₹99.50/L = 9950 paise. 3L selling = 29850 paise = ₹298.50 exactly.
       const pricePaise = 9950;
       const litres = 3;
@@ -754,12 +759,12 @@ describe("PlansService", () => {
       expect(Number.isInteger(total)).toBe(true);
     });
 
-    it("the classic 0.1+0.2 float trap does not occur with paise", () => {
+    it('the classic 0.1+0.2 float trap does not occur with paise', () => {
       // ₹0.10 + ₹0.20 in paise = 10 + 20 = 30 paise exactly (float would be 0.30000000000000004).
       expect(10 + 20).toBe(30);
     });
 
-    it("quote amounts from the service are whole integers (paise)", async () => {
+    it('quote amounts from the service are whole integers (paise)', async () => {
       const r = await service.createBuyOnceQuote(USER, { quantityLitres: 3 });
       for (const v of [
         r.totalSellingAmount,
@@ -773,8 +778,8 @@ describe("PlansService", () => {
     });
   });
 
-  describe("calculateTotalLitres", () => {
-    it("DAILY + FIXED: 30 occ × 2L = 60", () => {
+  describe('calculateTotalLitres', () => {
+    it('DAILY + FIXED: 30 occ × 2L = 60', () => {
       expect(
         calculateTotalLitres(
           DeliveryFrequency.DAILY,
@@ -785,7 +790,7 @@ describe("PlansService", () => {
       ).toBe(60);
     });
 
-    it("DAILY + ALTERNATING: 30 occ, 1L/2L = 15×1+15×2 = 45", () => {
+    it('DAILY + ALTERNATING: 30 occ, 1L/2L = 15×1+15×2 = 45', () => {
       expect(
         calculateTotalLitres(
           DeliveryFrequency.DAILY,
@@ -798,7 +803,7 @@ describe("PlansService", () => {
       ).toBe(45);
     });
 
-    it("ALTERNATE_DAYS + FIXED: 15 occ × 2L = 30", () => {
+    it('ALTERNATE_DAYS + FIXED: 15 occ × 2L = 30', () => {
       expect(
         calculateTotalLitres(
           DeliveryFrequency.ALTERNATE_DAYS,
@@ -809,7 +814,7 @@ describe("PlansService", () => {
       ).toBe(30);
     });
 
-    it("ALTERNATE_DAYS + ALTERNATING: 15 occ, 1L/2L = 8×1+7×2 = 22", () => {
+    it('ALTERNATE_DAYS + ALTERNATING: 15 occ, 1L/2L = 8×1+7×2 = 22', () => {
       expect(
         calculateTotalLitres(
           DeliveryFrequency.ALTERNATE_DAYS,
@@ -822,7 +827,7 @@ describe("PlansService", () => {
       ).toBe(22);
     });
 
-    it("odd occurrences: 31 DAILY ALTERNATING 3L/5L = 16×3+15×5 = 123", () => {
+    it('odd occurrences: 31 DAILY ALTERNATING 3L/5L = 16×3+15×5 = 123', () => {
       expect(
         calculateTotalLitres(
           DeliveryFrequency.DAILY,
@@ -840,36 +845,36 @@ describe("PlansService", () => {
   //  CONFIRM PLAN
   // ══════════════════════════════════════════════════════════════
 
-  describe("generateDeliveryDates (shared delivery helper)", () => {
-    it("DAILY yields every calendar day in the inclusive range", () => {
+  describe('generateDeliveryDates (shared delivery helper)', () => {
+    it('DAILY yields every calendar day in the inclusive range', () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.DAILY,
         new Date(2026, 0, 1),
         new Date(2026, 0, 5),
       );
       expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
-        "2026-01-01",
-        "2026-01-02",
-        "2026-01-03",
-        "2026-01-04",
-        "2026-01-05",
+        '2026-01-01',
+        '2026-01-02',
+        '2026-01-03',
+        '2026-01-04',
+        '2026-01-05',
       ]);
     });
 
-    it("ALTERNATE_DAYS delivers on day 1, 3, 5 (every other day from start)", () => {
+    it('ALTERNATE_DAYS delivers on day 1, 3, 5 (every other day from start)', () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.ALTERNATE_DAYS,
         new Date(2026, 0, 1),
         new Date(2026, 0, 6),
       );
       expect(dates.map((d) => d.toISOString().slice(0, 10))).toEqual([
-        "2026-01-01",
-        "2026-01-03",
-        "2026-01-05",
+        '2026-01-01',
+        '2026-01-03',
+        '2026-01-05',
       ]);
     });
 
-    it("spans month boundaries without assuming 30 days (Feb 2028 leap)", () => {
+    it('spans month boundaries without assuming 30 days (Feb 2028 leap)', () => {
       const dates = generateDeliveryDates(
         DeliveryFrequency.DAILY,
         new Date(2028, 1, 1),
@@ -907,49 +912,49 @@ describe("PlansService", () => {
     return d.toISOString().slice(0, 10);
   }
 
-  describe("toIstDateOnly (business calendar date)", () => {
+  describe('toIstDateOnly (business calendar date)', () => {
     it("returns the Indian calendar date, not the server's", () => {
       // 20:00 UTC on 10 Oct is already 01:30 IST on 11 Oct.
-      expect(isoDate(toIstDateOnly(new Date("2026-10-10T20:00:00Z")))).toBe(
-        "2026-10-11",
+      expect(isoDate(toIstDateOnly(new Date('2026-10-10T20:00:00Z')))).toBe(
+        '2026-10-11',
       );
       // 18:29 UTC is still 23:59 IST on the 10th.
-      expect(isoDate(toIstDateOnly(new Date("2026-10-10T18:29:00Z")))).toBe(
-        "2026-10-10",
+      expect(isoDate(toIstDateOnly(new Date('2026-10-10T18:29:00Z')))).toBe(
+        '2026-10-10',
       );
       // 18:30 UTC is exactly 00:00 IST on the 11th.
-      expect(isoDate(toIstDateOnly(new Date("2026-10-10T18:30:00Z")))).toBe(
-        "2026-10-11",
+      expect(isoDate(toIstDateOnly(new Date('2026-10-10T18:30:00Z')))).toBe(
+        '2026-10-11',
       );
     });
 
-    it("leaves an already date-only value (Postgres DATE) untouched", () => {
+    it('leaves an already date-only value (Postgres DATE) untouched', () => {
       // Prisma hands DATE columns back as midnight UTC; shifting into IST must
       // not move the calendar day.
-      expect(isoDate(toIstDateOnly(new Date("2026-10-15T00:00:00Z")))).toBe(
-        "2026-10-15",
+      expect(isoDate(toIstDateOnly(new Date('2026-10-15T00:00:00Z')))).toBe(
+        '2026-10-15',
       );
-      expect(isoDate(toIstDateOnly(new Date("2026-01-01T00:00:00Z")))).toBe(
-        "2026-01-01",
+      expect(isoDate(toIstDateOnly(new Date('2026-01-01T00:00:00Z')))).toBe(
+        '2026-01-01',
       );
     });
 
-    it("normalises to midnight UTC", () => {
-      const d = toIstDateOnly(new Date("2026-10-10T20:00:00Z"));
+    it('normalises to midnight UTC', () => {
+      const d = toIstDateOnly(new Date('2026-10-10T20:00:00Z'));
       expect(d.getUTCHours()).toBe(0);
       expect(d.getUTCMinutes()).toBe(0);
       expect(d.getUTCSeconds()).toBe(0);
       expect(d.getUTCMilliseconds()).toBe(0);
     });
 
-    it("toDateOnly delegates to the IST helper", () => {
-      const instant = new Date("2026-10-10T20:00:00Z");
+    it('toDateOnly delegates to the IST helper', () => {
+      const instant = new Date('2026-10-10T20:00:00Z');
       expect(toDateOnly(instant)).toEqual(toIstDateOnly(instant));
     });
   });
 
-  describe("istMinutesSinceMidnight (business wall clock)", () => {
-    it("reads IST, so the cut-off never follows the server clock", () => {
+  describe('istMinutesSinceMidnight (business wall clock)', () => {
+    it('reads IST, so the cut-off never follows the server clock', () => {
       expect(istMinutesSinceMidnight(istInstant(2026, 10, 10, 22, 59))).toBe(
         22 * 60 + 59,
       );
@@ -960,115 +965,117 @@ describe("PlansService", () => {
     });
   });
 
-  describe("getOrderCutoffPolicy", () => {
-    it("reports 23:00 Asia/Kolkata with its lead days", () => {
+  describe('getOrderCutoffPolicy', () => {
+    it('reports 23:00 Asia/Kolkata with its lead days', () => {
       expect(getOrderCutoffPolicy()).toEqual({
-        time: "23:00",
-        timeLabel: "11:00 PM",
-        timezone: "Asia/Kolkata",
+        time: '23:00',
+        timeLabel: '11:00 PM',
+        timezone: 'Asia/Kolkata',
         leadDaysBeforeCutoff: 1,
         leadDaysAfterCutoff: 2,
       });
     });
   });
 
-  describe("isAfterOrderCutoff", () => {
-    it("is false before 23:00 IST and true from 23:00 IST onwards", () => {
+  describe('isAfterOrderCutoff', () => {
+    it('is false before 23:00 IST and true from 23:00 IST onwards', () => {
       expect(isAfterOrderCutoff(istInstant(2026, 10, 10, 22, 59))).toBe(false);
       expect(isAfterOrderCutoff(istInstant(2026, 10, 10, 23, 0))).toBe(true);
       expect(isAfterOrderCutoff(istInstant(2026, 10, 10, 23, 1))).toBe(true);
     });
   });
 
-  describe("resolveFirstDeliveryDate (23:00 IST cut-off)", () => {
-    it("22:59 IST on 10 Oct schedules 11 Oct", () => {
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 22, 59)))).toBe(
-        "2026-10-11",
-      );
+  describe('resolveFirstDeliveryDate (23:00 IST cut-off)', () => {
+    it('22:59 IST on 10 Oct schedules 11 Oct', () => {
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 22, 59))),
+      ).toBe('2026-10-11');
     });
 
     it("exactly 23:00 IST on 10 Oct schedules 12 Oct (the cut-off instant is 'after')", () => {
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 23, 0)))).toBe(
-        "2026-10-12",
-      );
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 23, 0))),
+      ).toBe('2026-10-12');
     });
 
-    it("23:01 IST on 10 Oct schedules 12 Oct", () => {
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 23, 1)))).toBe(
-        "2026-10-12",
-      );
+    it('23:01 IST on 10 Oct schedules 12 Oct', () => {
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 23, 1))),
+      ).toBe('2026-10-12');
     });
 
-    it("is never same-day, even at 00:01 IST", () => {
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 0, 1)))).toBe(
-        "2026-10-11",
-      );
+    it('is never same-day, even at 00:01 IST', () => {
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 0, 1))),
+      ).toBe('2026-10-11');
     });
 
-    it("gives the same answer for a UTC-clock server as for an IST one", () => {
+    it('gives the same answer for a UTC-clock server as for an IST one', () => {
       // 17:29 UTC == 22:59 IST (before the cut-off).
-      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T17:29:00Z")))).toBe(
-        "2026-10-11",
-      );
+      expect(
+        isoDate(resolveFirstDeliveryDate(new Date('2026-10-10T17:29:00Z'))),
+      ).toBe('2026-10-11');
       // 17:30 UTC == 23:00 IST (at the cut-off).
-      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T17:30:00Z")))).toBe(
-        "2026-10-12",
-      );
+      expect(
+        isoDate(resolveFirstDeliveryDate(new Date('2026-10-10T17:30:00Z'))),
+      ).toBe('2026-10-12');
     });
 
-    it("handles the IST midnight crossing without skipping a day", () => {
+    it('handles the IST midnight crossing without skipping a day', () => {
       // 18:29 UTC is 23:59 IST on the 10th -> after cut-off -> 12 Oct.
-      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T18:29:00Z")))).toBe(
-        "2026-10-12",
-      );
+      expect(
+        isoDate(resolveFirstDeliveryDate(new Date('2026-10-10T18:29:00Z'))),
+      ).toBe('2026-10-12');
       // One minute later it is 00:00 IST on the 11th -> before cut-off -> 12 Oct.
-      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T18:30:00Z")))).toBe(
-        "2026-10-12",
-      );
+      expect(
+        isoDate(resolveFirstDeliveryDate(new Date('2026-10-10T18:30:00Z'))),
+      ).toBe('2026-10-12');
       // And 00:01 IST on the 11th is still 12 Oct.
-      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T18:31:00Z")))).toBe(
-        "2026-10-12",
-      );
+      expect(
+        isoDate(resolveFirstDeliveryDate(new Date('2026-10-10T18:31:00Z'))),
+      ).toBe('2026-10-12');
     });
 
-    it("rolls over a month end", () => {
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 31, 10, 0)))).toBe(
-        "2026-11-01",
-      );
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 31, 23, 30)))).toBe(
-        "2026-11-02",
-      );
+    it('rolls over a month end', () => {
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 31, 10, 0))),
+      ).toBe('2026-11-01');
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 31, 23, 30))),
+      ).toBe('2026-11-02');
     });
 
-    it("rolls over a year end", () => {
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 12, 31, 10, 0)))).toBe(
-        "2027-01-01",
-      );
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 12, 31, 23, 30)))).toBe(
-        "2027-01-02",
-      );
+    it('rolls over a year end', () => {
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 12, 31, 10, 0))),
+      ).toBe('2027-01-01');
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2026, 12, 31, 23, 30))),
+      ).toBe('2027-01-02');
     });
 
-    it("rolls over a February end in a leap year", () => {
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2028, 2, 28, 23, 30)))).toBe(
-        "2028-03-01",
-      );
-      expect(isoDate(resolveFirstDeliveryDate(istInstant(2028, 2, 29, 10, 0)))).toBe(
-        "2028-03-01",
-      );
+    it('rolls over a February end in a leap year', () => {
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2028, 2, 28, 23, 30))),
+      ).toBe('2028-03-01');
+      expect(
+        isoDate(resolveFirstDeliveryDate(istInstant(2028, 2, 29, 10, 0))),
+      ).toBe('2028-03-01');
     });
 
-    it("ignores the delivery window entirely", () => {
+    it('ignores the delivery window entirely', () => {
       // The window used to double as the cut-off. It takes no argument now, so
       // a plan delivering 06:00-11:00 and one delivering 16:00-18:00 schedule
       // identically — only the clock matters.
       const beforeCutoff = istInstant(2026, 10, 10, 12, 0);
-      expect(isoDate(resolveFirstDeliveryDate(beforeCutoff))).toBe("2026-10-11");
+      expect(isoDate(resolveFirstDeliveryDate(beforeCutoff))).toBe(
+        '2026-10-11',
+      );
       expect(resolveFirstDeliveryDate.length).toBe(0);
     });
   });
 
-  describe("resolveScheduleFromQuote under the cut-off", () => {
+  describe('resolveScheduleFromQuote under the cut-off', () => {
     const buyOnceQuote = {
       planType: PlanType.BUY_ONCE,
       frequency: null,
@@ -1087,17 +1094,17 @@ describe("PlansService", () => {
       deliveryOccurrences: TRIAL_DURATION_DAYS,
     };
 
-    it("BUY_ONCE lands on the next day before the cut-off", () => {
+    it('BUY_ONCE lands on the next day before the cut-off', () => {
       const schedule = service.resolveScheduleFromQuote(
         buyOnceQuote,
         istInstant(2026, 10, 10, 22, 59),
       );
-      expect(isoDate(schedule.start)).toBe("2026-10-11");
+      expect(isoDate(schedule.start)).toBe('2026-10-11');
       // A single delivery: start and end are the same day.
       expect(schedule.end).toEqual(schedule.start);
     });
 
-    it("BUY_ONCE lands two days out at/after the cut-off", () => {
+    it('BUY_ONCE lands two days out at/after the cut-off', () => {
       expect(
         isoDate(
           service.resolveScheduleFromQuote(
@@ -1105,7 +1112,7 @@ describe("PlansService", () => {
             istInstant(2026, 10, 10, 23, 0),
           ).start,
         ),
-      ).toBe("2026-10-12");
+      ).toBe('2026-10-12');
       expect(
         isoDate(
           service.resolveScheduleFromQuote(
@@ -1113,46 +1120,46 @@ describe("PlansService", () => {
             istInstant(2026, 10, 10, 23, 1),
           ).start,
         ),
-      ).toBe("2026-10-12");
+      ).toBe('2026-10-12');
     });
 
-    it("SEVEN_DAY_TRIAL keeps its 7-day duration before the cut-off", () => {
+    it('SEVEN_DAY_TRIAL keeps its 7-day duration before the cut-off', () => {
       const schedule = service.resolveScheduleFromQuote(
         trialQuote,
         istInstant(2026, 10, 10, 22, 59),
       );
-      expect(isoDate(schedule.start)).toBe("2026-10-11");
-      expect(isoDate(schedule.end)).toBe("2026-10-17");
+      expect(isoDate(schedule.start)).toBe('2026-10-11');
+      expect(isoDate(schedule.end)).toBe('2026-10-17');
       expect(
         generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
       ).toHaveLength(TRIAL_DURATION_DAYS);
     });
 
-    it("SEVEN_DAY_TRIAL keeps its 7-day duration after the cut-off, just shifted", () => {
+    it('SEVEN_DAY_TRIAL keeps its 7-day duration after the cut-off, just shifted', () => {
       const schedule = service.resolveScheduleFromQuote(
         trialQuote,
         istInstant(2026, 10, 10, 23, 1),
       );
-      expect(isoDate(schedule.start)).toBe("2026-10-12");
-      expect(isoDate(schedule.end)).toBe("2026-10-18");
+      expect(isoDate(schedule.start)).toBe('2026-10-12');
+      expect(isoDate(schedule.end)).toBe('2026-10-18');
       expect(
         generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
       ).toHaveLength(TRIAL_DURATION_DAYS);
     });
 
-    it("SEVEN_DAY_TRIAL spans a month end correctly", () => {
+    it('SEVEN_DAY_TRIAL spans a month end correctly', () => {
       const schedule = service.resolveScheduleFromQuote(
         trialQuote,
         istInstant(2026, 10, 28, 23, 30),
       );
-      expect(isoDate(schedule.start)).toBe("2026-10-30");
-      expect(isoDate(schedule.end)).toBe("2026-11-05");
+      expect(isoDate(schedule.start)).toBe('2026-10-30');
+      expect(isoDate(schedule.end)).toBe('2026-11-05');
       expect(
         generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
       ).toHaveLength(TRIAL_DURATION_DAYS);
     });
 
-    it("MONTHLY uses the immutable quoted billing period when it is still future", () => {
+    it('MONTHLY uses the immutable quoted billing period when it is still future', () => {
       const billingStart = new Date(Date.UTC(2026, 9, 11));
       const billingEnd = new Date(Date.UTC(2026, 9, 31));
       const schedule = service.resolveScheduleFromQuote(
@@ -1172,7 +1179,7 @@ describe("PlansService", () => {
     });
   });
 
-  describe("MONTHLY stale-quote policy (late cash confirmation)", () => {
+  describe('MONTHLY stale-quote policy (late cash confirmation)', () => {
     function monthlyQuote(
       billingStart: Date,
       billingEnd: Date,
@@ -1192,21 +1199,29 @@ describe("PlansService", () => {
       };
     }
 
-    it("never materialises a start date in the past", () => {
+    it('never materialises a start date in the past', () => {
       // Quoted for 5 Oct, confirmed on 10 Oct.
       const schedule = service.resolveScheduleFromQuote(
-        monthlyQuote(new Date(Date.UTC(2026, 9, 5)), new Date(Date.UTC(2026, 9, 31)), 27),
+        monthlyQuote(
+          new Date(Date.UTC(2026, 9, 5)),
+          new Date(Date.UTC(2026, 9, 31)),
+          27,
+        ),
         istInstant(2026, 10, 10, 10, 0),
       );
-      expect(isoDate(schedule.start)).toBe("2026-10-11");
+      expect(isoDate(schedule.start)).toBe('2026-10-11');
       expect(schedule.start.getTime()).toBeGreaterThan(
         istInstant(2026, 10, 10, 10, 0).getTime(),
       );
     });
 
-    it("preserves the paid occurrence count when it shifts the window", () => {
+    it('preserves the paid occurrence count when it shifts the window', () => {
       const schedule = service.resolveScheduleFromQuote(
-        monthlyQuote(new Date(Date.UTC(2026, 9, 5)), new Date(Date.UTC(2026, 9, 31)), 27),
+        monthlyQuote(
+          new Date(Date.UTC(2026, 9, 5)),
+          new Date(Date.UTC(2026, 9, 31)),
+          27,
+        ),
         istInstant(2026, 10, 10, 10, 0),
       );
       expect(
@@ -1214,7 +1229,7 @@ describe("PlansService", () => {
       ).toHaveLength(27);
     });
 
-    it("preserves the occurrence count for an ALTERNATE_DAYS plan too", () => {
+    it('preserves the occurrence count for an ALTERNATE_DAYS plan too', () => {
       const schedule = service.resolveScheduleFromQuote(
         monthlyQuote(
           new Date(Date.UTC(2026, 9, 5)),
@@ -1224,13 +1239,13 @@ describe("PlansService", () => {
         ),
         istInstant(2026, 10, 10, 10, 0),
       );
-      expect(isoDate(schedule.start)).toBe("2026-10-11");
+      expect(isoDate(schedule.start)).toBe('2026-10-11');
       expect(
         generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
       ).toHaveLength(14);
     });
 
-    it("does not touch the quote, so the price the customer paid is unchanged", () => {
+    it('does not touch the quote, so the price the customer paid is unchanged', () => {
       const quote = monthlyQuote(
         new Date(Date.UTC(2026, 9, 5)),
         new Date(Date.UTC(2026, 9, 31)),
@@ -1242,7 +1257,7 @@ describe("PlansService", () => {
     });
   });
 
-  describe("delivery window validation", () => {
+  describe('delivery window validation', () => {
     const base = {
       actualPricePerLitre: 9500,
       sellingPricePerLitre: 8500,
@@ -1254,60 +1269,60 @@ describe("PlansService", () => {
       alternatingQuantityEnabled: true,
     };
 
-    it("accepts a window whose start precedes its end", () => {
+    it('accepts a window whose start precedes its end', () => {
       expect(() =>
         service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
           ...base,
-          deliveryStartTime: "06:00",
-          deliveryEndTime: "11:00",
+          deliveryStartTime: '06:00',
+          deliveryEndTime: '11:00',
         }),
       ).not.toThrow();
     });
 
-    it("accepts a window unrelated to the order cut-off", () => {
+    it('accepts a window unrelated to the order cut-off', () => {
       // The cut-off is 23:00 IST; an afternoon window is perfectly valid.
       expect(() =>
         service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
           ...base,
-          deliveryStartTime: "16:00",
-          deliveryEndTime: "18:00",
+          deliveryStartTime: '16:00',
+          deliveryEndTime: '18:00',
         }),
       ).not.toThrow();
     });
 
-    it("rejects an inverted window", () => {
+    it('rejects an inverted window', () => {
       expect(() =>
         service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
           ...base,
-          deliveryStartTime: "11:00",
-          deliveryEndTime: "06:00",
+          deliveryStartTime: '11:00',
+          deliveryEndTime: '06:00',
         }),
       ).toThrow(BadRequestException);
     });
 
-    it("rejects a zero-length window", () => {
+    it('rejects a zero-length window', () => {
       expect(() =>
         service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
           ...base,
-          deliveryStartTime: "06:00",
-          deliveryEndTime: "06:00",
+          deliveryStartTime: '06:00',
+          deliveryEndTime: '06:00',
         }),
       ).toThrow(BadRequestException);
     });
 
-    it("skips the rule when either side is unset (PATCH of one field only)", () => {
+    it('skips the rule when either side is unset (PATCH of one field only)', () => {
       expect(() =>
         service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
           ...base,
-          deliveryStartTime: "06:00",
+          deliveryStartTime: '06:00',
           deliveryEndTime: null,
         }),
       ).not.toThrow();
     });
   });
 
-  describe("delivery window is never fabricated", () => {
-    it("plans overview reports null for an unconfigured window", async () => {
+  describe('delivery window is never fabricated', () => {
+    it('plans overview reports null for an unconfigured window', async () => {
       mockPrisma.planConfig.findFirst.mockResolvedValue(null);
       mockPrisma.planConfig.findMany.mockResolvedValue([]);
       mockPrisma.planSelection.count.mockResolvedValue(0);
@@ -1319,7 +1334,7 @@ describe("PlansService", () => {
       }
     });
 
-    it("plans overview exposes the cut-off policy", async () => {
+    it('plans overview exposes the cut-off policy', async () => {
       mockPrisma.planConfig.findFirst.mockResolvedValue(null);
       mockPrisma.planSelection.count.mockResolvedValue(0);
 
@@ -1328,24 +1343,31 @@ describe("PlansService", () => {
     });
   });
 
-
-  describe("quantityForOccurrence (alternating by occurrence, not day)", () => {
-    it("FIXED returns the constant quantity", () => {
+  describe('quantityForOccurrence (alternating by occurrence, not day)', () => {
+    it('FIXED returns the constant quantity', () => {
       expect(quantityForOccurrence(QuantityMode.FIXED, 1, 3)).toBe(3);
       expect(quantityForOccurrence(QuantityMode.FIXED, 4, 3)).toBe(3);
     });
 
-    it("ALTERNATING maps odd occurrence -> A, even -> B", () => {
-      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 1, null, 1, 2)).toBe(1);
-      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 2, null, 1, 2)).toBe(2);
-      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 3, null, 1, 2)).toBe(1);
-      expect(quantityForOccurrence(QuantityMode.ALTERNATING, 4, null, 1, 2)).toBe(2);
+    it('ALTERNATING maps odd occurrence -> A, even -> B', () => {
+      expect(
+        quantityForOccurrence(QuantityMode.ALTERNATING, 1, null, 1, 2),
+      ).toBe(1);
+      expect(
+        quantityForOccurrence(QuantityMode.ALTERNATING, 2, null, 1, 2),
+      ).toBe(2);
+      expect(
+        quantityForOccurrence(QuantityMode.ALTERNATING, 3, null, 1, 2),
+      ).toBe(1);
+      expect(
+        quantityForOccurrence(QuantityMode.ALTERNATING, 4, null, 1, 2),
+      ).toBe(2);
     });
   });
 
-  describe("confirmPlan", () => {
+  describe('confirmPlan', () => {
     const validQuote = {
-      id: "quote-1",
+      id: 'quote-1',
       userId: USER,
       planType: PlanType.BUY_ONCE,
       status: PlanQuoteStatus.PENDING,
@@ -1374,20 +1396,18 @@ describe("PlansService", () => {
       // the just-created deliveries. Returning [] keeps these unit tests focused
       // on confirmPlan; full order materialisation is covered by the
       // cash-plan-wallet integration spec.
-      mockPrisma.planConfig.findUnique.mockImplementation(
-        ({ where }: any) => {
-          switch (where.planType) {
-            case PlanType.BUY_ONCE:
-              return buyOnceConfig;
-            case PlanType.SEVEN_DAY_TRIAL:
-              return trialConfig;
-            case PlanType.MONTHLY:
-              return monthlyConfig;
-            default:
-              return null;
-          }
-        },
-      );
+      mockPrisma.planConfig.findUnique.mockImplementation(({ where }: any) => {
+        switch (where.planType) {
+          case PlanType.BUY_ONCE:
+            return buyOnceConfig;
+          case PlanType.SEVEN_DAY_TRIAL:
+            return trialConfig;
+          case PlanType.MONTHLY:
+            return monthlyConfig;
+          default:
+            return null;
+        }
+      });
       mockPrisma.planDelivery.findMany.mockResolvedValue([]);
       mockPrisma.planQuote.findUnique.mockResolvedValue(validQuote);
       mockPrisma.planQuote.update.mockResolvedValue({
@@ -1396,11 +1416,11 @@ describe("PlansService", () => {
       });
       mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
       mockPrisma.planSelection.create.mockImplementation(({ data }: any) => ({
-        id: "sel-1",
+        id: 'sel-1',
         ...data,
       }));
       mockPrisma.planSelection.update.mockImplementation(({ data }: any) => ({
-        id: "sel-1",
+        id: 'sel-1',
         ...data,
       }));
       mockPrisma.wallet.findUnique.mockResolvedValue({
@@ -1409,33 +1429,33 @@ describe("PlansService", () => {
       });
     });
 
-    it("confirms a valid pending quote via WALLET", async () => {
+    it('confirms a valid pending quote via WALLET', async () => {
       const result = await service.confirmPlan(USER, {
-        quoteId: "quote-1",
+        quoteId: 'quote-1',
         paymentMethod: PlanPaymentMethod.WALLET,
       });
-      expect(result.selectionId).toBe("sel-1");
-      expect(result.quoteId).toBe("quote-1");
+      expect(result.selectionId).toBe('sel-1');
+      expect(result.quoteId).toBe('quote-1');
       expect(result.plan).toBe(PlanType.BUY_ONCE);
       expect(result.status).toBe(PlanSelectionStatus.CONFIRMED);
       expect(result.paymentMethod).toBe(PlanPaymentMethod.WALLET);
       expect(result.paidAmountPaise).toBe(300);
     });
 
-    it("confirms a valid pending quote via CASH (creates CashCollection, stays PENDING_PAYMENT)", async () => {
-      mockPrisma.cashCollection.create.mockResolvedValue({ id: "cc-1" });
+    it('confirms a valid pending quote via CASH (creates CashCollection, stays PENDING_PAYMENT)', async () => {
+      mockPrisma.cashCollection.create.mockResolvedValue({ id: 'cc-1' });
       const result = await service.confirmPlan(USER, {
-        quoteId: "quote-1",
+        quoteId: 'quote-1',
         paymentMethod: PlanPaymentMethod.CASH,
       });
-      expect(result.selectionId).toBe("sel-1");
+      expect(result.selectionId).toBe('sel-1');
       expect(result.status).toBe(PlanSelectionStatus.PENDING_PAYMENT);
       expect(result.paymentMethod).toBe(PlanPaymentMethod.CASH);
-      expect(result.cashCollectionId).toBe("cc-1");
+      expect(result.cashCollectionId).toBe('cc-1');
       expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
     });
 
-    it("throws INSUFFICIENT_WALLET_BALANCE when wallet balance is too low", async () => {
+    it('throws INSUFFICIENT_WALLET_BALANCE when wallet balance is too low', async () => {
       mockPrisma.wallet.findUnique.mockResolvedValue({
         userId: USER,
         balancePaise: 100,
@@ -1443,14 +1463,14 @@ describe("PlansService", () => {
       mockPrisma.planSelection.delete.mockResolvedValue({});
       try {
         await service.confirmPlan(USER, {
-          quoteId: "quote-1",
+          quoteId: 'quote-1',
           paymentMethod: PlanPaymentMethod.WALLET,
         });
-        fail("Expected BadRequestException");
+        fail('Expected BadRequestException');
       } catch (err: any) {
         expect(err).toBeInstanceOf(BadRequestException);
         const response = err.getResponse();
-        expect(response.error).toBe("INSUFFICIENT_WALLET_BALANCE");
+        expect(response.error).toBe('INSUFFICIENT_WALLET_BALANCE');
         expect(response.currentBalancePaise).toBe(100);
         expect(response.requiredPaise).toBe(300);
         expect(response.shortfallPaise).toBe(200);
@@ -1458,52 +1478,67 @@ describe("PlansService", () => {
       expect(mockPrisma.planSelection.delete).toHaveBeenCalled();
     });
 
-    it("throws NotFound when quote does not exist", async () => {
+    it('throws NotFound when quote does not exist', async () => {
       mockPrisma.planQuote.findUnique.mockResolvedValue(null);
       await expect(
-        service.confirmPlan(USER, { quoteId: "no-such", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'no-such',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("throws NotFound when quote belongs to another user (IDOR)", async () => {
+    it('throws NotFound when quote belongs to another user (IDOR)', async () => {
       mockPrisma.planQuote.findUnique.mockResolvedValue({
         ...validQuote,
         userId: OTHER,
       });
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("rejects already-confirmed quote", async () => {
+    it('rejects already-confirmed quote', async () => {
       mockPrisma.planQuote.findUnique.mockResolvedValue({
         ...validQuote,
         status: PlanQuoteStatus.CONFIRMED,
       });
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects expired quote", async () => {
+    it('rejects expired quote', async () => {
       mockPrisma.planQuote.findUnique.mockResolvedValue({
         ...validQuote,
         expiresAt: new Date(Date.now() - 1000), // Past
       });
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("re-checks Buy Once eligibility in the transaction (Trial used)", async () => {
+    it('re-checks Buy Once eligibility in the transaction (Trial used)', async () => {
       // First planSelection.count in transaction returns 1 (trial used).
       mockPrisma.planSelection.count.mockResolvedValueOnce(1);
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it("re-checks Trial eligibility in the transaction (Buy Once used)", async () => {
+    it('re-checks Trial eligibility in the transaction (Buy Once used)', async () => {
       mockPrisma.planQuote.findUnique.mockResolvedValue({
         ...validQuote,
         planType: PlanType.SEVEN_DAY_TRIAL,
@@ -1511,29 +1546,38 @@ describe("PlansService", () => {
       // First planSelection.count for buy-once check returns 1.
       mockPrisma.planSelection.count.mockResolvedValueOnce(1);
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it("is race-safe: advisory lock serializes same-user confirmations", async () => {
-      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
+    it('is race-safe: advisory lock serializes same-user confirmations', async () => {
+      await service.confirmPlan(USER, {
+        quoteId: 'quote-1',
+        paymentMethod: PlanPaymentMethod.WALLET,
+      });
       expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1);
-      const sql = mockPrisma.$executeRaw.mock.calls[0][0].join("?");
-      expect(sql).toContain("pg_advisory_xact_lock");
+      const sql = mockPrisma.$executeRaw.mock.calls[0][0].join('?');
+      expect(sql).toContain('pg_advisory_xact_lock');
     });
 
-    it("acquires a per-user advisory lock to serialize confirmations (DB-level cross-quote race guard)", async () => {
-      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
+    it('acquires a per-user advisory lock to serialize confirmations (DB-level cross-quote race guard)', async () => {
+      await service.confirmPlan(USER, {
+        quoteId: 'quote-1',
+        paymentMethod: PlanPaymentMethod.WALLET,
+      });
       // The advisory lock must be taken inside the transaction.
       expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1);
       const args = mockPrisma.$executeRaw.mock.calls[0];
       // Tagged-template: first arg is the SQL strings array, USER is interpolated.
-      const sql = args[0].join("?");
-      expect(sql).toContain("pg_advisory_xact_lock");
+      const sql = args[0].join('?');
+      expect(sql).toContain('pg_advisory_xact_lock');
       expect(args).toContain(USER);
     });
 
-    it("cross-quote race: a second TRIAL confirmation is rejected once a Trial selection exists", async () => {
+    it('cross-quote race: a second TRIAL confirmation is rejected once a Trial selection exists', async () => {
       mockPrisma.planQuote.findUnique.mockResolvedValue({
         ...validQuote,
         planType: PlanType.SEVEN_DAY_TRIAL,
@@ -1543,31 +1587,40 @@ describe("PlansService", () => {
         .mockResolvedValueOnce(0) // buy-once used?
         .mockResolvedValueOnce(1); // trial already used
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(ForbiddenException);
       expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
     });
 
-    it("cross-quote race: a BUY_ONCE confirmation at the usage cap is rejected", async () => {
+    it('cross-quote race: a BUY_ONCE confirmation at the usage cap is rejected', async () => {
       // trial check = 0, buy-once count already at max (7).
       mockPrisma.planSelection.count
         .mockResolvedValueOnce(0)
         .mockResolvedValueOnce(7);
       await expect(
-        service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+        service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod: PlanPaymentMethod.WALLET,
+        }),
       ).rejects.toThrow(ForbiddenException);
       expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
     });
 
-    it("uses a guarded PENDING-only transition for the winning confirmation", async () => {
-      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
+    it('uses a guarded PENDING-only transition for the winning confirmation', async () => {
+      await service.confirmPlan(USER, {
+        quoteId: 'quote-1',
+        paymentMethod: PlanPaymentMethod.WALLET,
+      });
       expect(mockPrisma.planQuote.updateMany).toHaveBeenCalledWith({
-        where: { id: "quote-1", status: PlanQuoteStatus.PENDING },
+        where: { id: 'quote-1', status: PlanQuoteStatus.PENDING },
         data: { status: PlanQuoteStatus.CONFIRMED },
       });
     });
 
-    it("materialises delivery rows and seeds the live schedule for a MONTHLY plan", async () => {
+    it('materialises delivery rows and seeds the live schedule for a MONTHLY plan', async () => {
       const start = new Date(2026, 0, 1);
       const end = new Date(2026, 0, 5);
       mockPrisma.planQuote.findUnique.mockResolvedValue({
@@ -1582,7 +1635,10 @@ describe("PlansService", () => {
         billingPeriodStart: start,
         billingPeriodEnd: end,
       });
-      await service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET });
+      await service.confirmPlan(USER, {
+        quoteId: 'quote-1',
+        paymentMethod: PlanPaymentMethod.WALLET,
+      });
       expect(mockPrisma.planDelivery.createMany).toHaveBeenCalledTimes(1);
       const rows = mockPrisma.planDelivery.createMany.mock.calls[0][0].data;
       expect(rows).toHaveLength(5); // Jan 1..5
@@ -1590,7 +1646,7 @@ describe("PlansService", () => {
       expect(rows[0].occurrence).toBe(1);
     });
 
-    it("quoting does NOT mark Trial or Buy Once as used", async () => {
+    it('quoting does NOT mark Trial or Buy Once as used', async () => {
       // Generate a quote
       await service.createBuyOnceQuote(USER, { quantityLitres: 2 });
       // planSelection.create should NOT have been called by quote creation.
@@ -1598,17 +1654,17 @@ describe("PlansService", () => {
     });
   });
 
-  describe("confirmPlanAfterCashPayment", () => {
-    it("confirms a PENDING_PAYMENT selection, sets paidAt, but does NOT materialize deliveries", async () => {
+  describe('confirmPlanAfterCashPayment', () => {
+    it('confirms a PENDING_PAYMENT selection, sets paidAt, but does NOT materialize deliveries', async () => {
       const mockTx: any = {
         planSelection: {
           findUnique: jest.fn().mockResolvedValue({
-            id: "sel-1",
+            id: 'sel-1',
             userId: USER,
             status: PlanSelectionStatus.PENDING_PAYMENT,
-            quoteId: "quote-1",
+            quoteId: 'quote-1',
             quote: {
-              id: "quote-1",
+              id: 'quote-1',
               planType: PlanType.BUY_ONCE,
               totalSellingAmount: 500,
               deliveryOccurrences: 1,
@@ -1617,43 +1673,49 @@ describe("PlansService", () => {
               quantityA: null,
               quantityB: null,
               frequency: null,
-              billingPeriodStart: new Date("2026-10-07"),
-              billingPeriodEnd: new Date("2026-10-07"),
+              billingPeriodStart: new Date('2026-10-07'),
+              billingPeriodEnd: new Date('2026-10-07'),
               status: PlanQuoteStatus.PENDING,
             },
           }),
           update: jest.fn(),
         },
         planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-        planDelivery: { createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+        planDelivery: {
+          createMany: jest.fn(),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
         planConfig: { findUnique: jest.fn().mockResolvedValue(buyOnceConfig) },
         order: { findUnique: jest.fn(), count: jest.fn(), create: jest.fn() },
         invoice: { count: jest.fn() },
         customerAddress: { findFirst: jest.fn() },
       };
 
-      await service.confirmPlanAfterCashPayment(mockTx, "sel-1", { id: "cash-1", amountPaise: 500 });
+      await service.confirmPlanAfterCashPayment(mockTx, 'sel-1', {
+        id: 'cash-1',
+        amountPaise: 500,
+      });
 
       expect(mockWalletService.creditWalletWithin).toHaveBeenCalledWith(
         mockTx,
         USER,
         500,
         WalletTransactionReferenceType.CASH_COLLECTION,
-        "cash-1",
-        "Cash collection confirmed (plan payment)",
+        'cash-1',
+        'Cash collection confirmed (plan payment)',
       );
       expect(mockWalletService.debitWalletWithin).toHaveBeenCalledWith(
         mockTx,
         USER,
         500,
         WalletTransactionReferenceType.PLAN_SELECTION,
-        "sel-1",
-        "Plan payment (BUY_ONCE)",
+        'sel-1',
+        'Plan payment (BUY_ONCE)',
       );
 
       expect(mockTx.planSelection.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: "sel-1" },
+          where: { id: 'sel-1' },
           data: expect.objectContaining({
             paidAmountPaise: 500,
           }),
@@ -1662,244 +1724,247 @@ describe("PlansService", () => {
       expect(mockTx.planDelivery.createMany).not.toHaveBeenCalled();
     });
 
-    it("throws if selection is not PENDING_PAYMENT", async () => {
+    it('throws if selection is not PENDING_PAYMENT', async () => {
       const mockTx: any = {
         planSelection: {
           findUnique: jest.fn().mockResolvedValue({
-            id: "sel-1",
+            id: 'sel-1',
             status: PlanSelectionStatus.CONFIRMED,
           }),
         },
       };
       await expect(
-        service.confirmPlanAfterCashPayment(mockTx, "sel-1"),
+        service.confirmPlanAfterCashPayment(mockTx, 'sel-1'),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("throws NotFound if selection does not exist", async () => {
+    it('throws NotFound if selection does not exist', async () => {
       const mockTx: any = {
         planSelection: { findUnique: jest.fn().mockResolvedValue(null) },
       };
       await expect(
-        service.confirmPlanAfterCashPayment(mockTx, "sel-1"),
+        service.confirmPlanAfterCashPayment(mockTx, 'sel-1'),
       ).rejects.toThrow(NotFoundException);
     });
   });
 
-
-    describe("adminApproveSubscription", () => {
-      /** A paid, schedulable BUY_ONCE subscription. */
-      const selectionRow = {
-        id: "sub-100",
-        userId: USER,
+  describe('adminApproveSubscription', () => {
+    /** A paid, schedulable BUY_ONCE subscription. */
+    const selectionRow = {
+      id: 'sub-100',
+      userId: USER,
+      planType: PlanType.BUY_ONCE,
+      status: PlanSelectionStatus.PENDING_PAYMENT,
+      paymentMethod: 'WALLET',
+      paidAt: new Date(),
+      cashCollection: null,
+      quoteId: 'quote-100',
+      quote: {
+        id: 'quote-100',
         planType: PlanType.BUY_ONCE,
-        status: PlanSelectionStatus.PENDING_PAYMENT,
-        paymentMethod: "WALLET",
-        paidAt: new Date(),
-        cashCollection: null,
-        quoteId: "quote-100",
-        quote: {
-          id: "quote-100",
-          planType: PlanType.BUY_ONCE,
-          totalSellingAmount: 10000,
-          deliveryOccurrences: 1,
-          quantity: 1,
-          quantityMode: QuantityMode.FIXED,
-          quantityA: null,
-          quantityB: null,
-          frequency: null,
-          billingPeriodStart: null,
-          billingPeriodEnd: null,
-          status: PlanQuoteStatus.PENDING,
-        },
-      };
+        totalSellingAmount: 10000,
+        deliveryOccurrences: 1,
+        quantity: 1,
+        quantityMode: QuantityMode.FIXED,
+        quantityA: null,
+        quantityB: null,
+        frequency: null,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+        status: PlanQuoteStatus.PENDING,
+      },
+    };
 
-      it("approves a paid plan, sets start/end date, and materializes deliveries", async () => {
-        mockPrisma.$transaction.mockImplementation(async (cb: any) => {
-          const tx = {
-            planSelection: {
-              findUnique: jest.fn().mockResolvedValue(selectionRow),
-              update: jest.fn().mockResolvedValue(selectionRow),
-              updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-            },
-            planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-            planDelivery: {
-              createMany: jest.fn(),
-              findMany: jest.fn().mockResolvedValue([]),
-              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-            },
-            order: {
-              findMany: jest.fn().mockResolvedValue([]),
-              findUnique: jest.fn().mockResolvedValue(null),
-              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-              create: jest.fn(),
-            },
-            planConfig: { findUnique: jest.fn().mockResolvedValue(buyOnceConfig) },
-            customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
-          };
-          return cb(tx);
-        });
-
-        const res = await service.adminApproveSubscription("admin-1", "sub-100", {
-          firstDeliveryDate: "2026-10-15",
-        });
-
-        expect(res.success).toBe(true);
-        expect(res.startDate).toBe("2026-10-15");
+    it('approves a paid plan, sets start/end date, and materializes deliveries', async () => {
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          planSelection: {
+            findUnique: jest.fn().mockResolvedValue(selectionRow),
+            update: jest.fn().mockResolvedValue(selectionRow),
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+          planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+          planDelivery: {
+            createMany: jest.fn(),
+            findMany: jest.fn().mockResolvedValue([]),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+          },
+          order: {
+            findMany: jest.fn().mockResolvedValue([]),
+            findUnique: jest.fn().mockResolvedValue(null),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+            create: jest.fn(),
+          },
+          planConfig: {
+            findUnique: jest.fn().mockResolvedValue(buyOnceConfig),
+          },
+          customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
+        };
+        return cb(tx);
       });
 
-      it("does not write paidAt or paidAmountPaise when scheduling is approved", async () => {
-        const captured: any = { update: null, updateMany: null };
-        mockPrisma.$transaction.mockImplementation(async (cb: any) => {
-          const tx = {
-            planSelection: {
-              findUnique: jest.fn().mockResolvedValue(selectionRow),
-              update: jest.fn().mockImplementation((args: any) => {
-                captured.update = args;
-                return selectionRow;
-              }),
-              updateMany: jest.fn().mockImplementation((args: any) => {
-                captured.updateMany = args;
-                return { count: 1 };
-              }),
-            },
-            planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-            planDelivery: {
-              createMany: jest.fn(),
-              findMany: jest.fn().mockResolvedValue([]),
-              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-            },
-            order: {
-              findMany: jest.fn().mockResolvedValue([]),
-              findUnique: jest.fn().mockResolvedValue(null),
-              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-              create: jest.fn(),
-            },
-            planConfig: { findUnique: jest.fn().mockResolvedValue(buyOnceConfig) },
-            customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
-          };
-          return cb(tx);
-        });
-
-        await service.adminApproveSubscription("admin-1", "sub-100", {
-          firstDeliveryDate: "2026-10-15",
-        });
-
-        // Scheduling approval is not a payment event.
-        const written = captured.updateMany?.data ?? captured.update?.data ?? {};
-        expect(Object.keys(written)).not.toContain("paidAt");
-        expect(Object.keys(written)).not.toContain("paidAmountPaise");
+      const res = await service.adminApproveSubscription('admin-1', 'sub-100', {
+        firstDeliveryDate: '2026-10-15',
       });
 
-      it("refuses to approve a subscription with no confirmed payment, whatever the method", async () => {
-        for (const paymentMethod of ["WALLET", null, undefined]) {
-          mockPrisma.$transaction.mockImplementation(async (cb: any) =>
-            cb({
-              planSelection: {
-                findUnique: jest.fn().mockResolvedValue({
-                  id: "sub-x",
-                  userId: USER,
-                  planType: PlanType.MONTHLY,
-                  status: PlanSelectionStatus.PENDING_PAYMENT,
-                  paymentMethod,
-                  paidAt: null,
-                  cashCollection: null,
-                  quote: {
-                    planType: PlanType.MONTHLY,
-                    deliveryOccurrences: 30,
-                    quantity: 1,
-                    frequency: DeliveryFrequency.DAILY,
-                  },
-                }),
-              },
+      expect(res.success).toBe(true);
+      expect(res.startDate).toBe('2026-10-15');
+    });
+
+    it('does not write paidAt or paidAmountPaise when scheduling is approved', async () => {
+      const captured: any = { update: null, updateMany: null };
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          planSelection: {
+            findUnique: jest.fn().mockResolvedValue(selectionRow),
+            update: jest.fn().mockImplementation((args: any) => {
+              captured.update = args;
+              return selectionRow;
             }),
-          );
-
-          // The old guard was gated on paymentMethod === "CASH", so every other
-          // method slipped through unpaid.
-          await expect(
-            service.adminApproveSubscription("admin-1", "sub-x", {
-              firstDeliveryDate: "2026-10-15",
+            updateMany: jest.fn().mockImplementation((args: any) => {
+              captured.updateMany = args;
+              return { count: 1 };
             }),
-          ).rejects.toThrow(BadRequestException);
-        }
+          },
+          planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+          planDelivery: {
+            createMany: jest.fn(),
+            findMany: jest.fn().mockResolvedValue([]),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+          },
+          order: {
+            findMany: jest.fn().mockResolvedValue([]),
+            findUnique: jest.fn().mockResolvedValue(null),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+            create: jest.fn(),
+          },
+          planConfig: {
+            findUnique: jest.fn().mockResolvedValue(buyOnceConfig),
+          },
+          customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
+        };
+        return cb(tx);
       });
 
-      it("refuses to schedule a CANCELLED subscription", async () => {
+      await service.adminApproveSubscription('admin-1', 'sub-100', {
+        firstDeliveryDate: '2026-10-15',
+      });
+
+      // Scheduling approval is not a payment event.
+      const written = captured.updateMany?.data ?? captured.update?.data ?? {};
+      expect(Object.keys(written)).not.toContain('paidAt');
+      expect(Object.keys(written)).not.toContain('paidAmountPaise');
+    });
+
+    it('refuses to approve a subscription with no confirmed payment, whatever the method', async () => {
+      for (const paymentMethod of ['WALLET', null, undefined]) {
         mockPrisma.$transaction.mockImplementation(async (cb: any) =>
           cb({
             planSelection: {
               findUnique: jest.fn().mockResolvedValue({
-                ...selectionRow,
-                status: PlanSelectionStatus.CANCELLED,
+                id: 'sub-x',
+                userId: USER,
+                planType: PlanType.MONTHLY,
+                status: PlanSelectionStatus.PENDING_PAYMENT,
+                paymentMethod,
+                paidAt: null,
+                cashCollection: null,
+                quote: {
+                  planType: PlanType.MONTHLY,
+                  deliveryOccurrences: 30,
+                  quantity: 1,
+                  frequency: DeliveryFrequency.DAILY,
+                },
               }),
             },
           }),
         );
 
+        // The old guard was gated on paymentMethod === "CASH", so every other
+        // method slipped through unpaid.
         await expect(
-          service.adminApproveSubscription("admin-1", "sub-100", {
-            firstDeliveryDate: "2026-10-15",
+          service.adminApproveSubscription('admin-1', 'sub-x', {
+            firstDeliveryDate: '2026-10-15',
           }),
         ).rejects.toThrow(BadRequestException);
-      });
+      }
+    });
 
-      it("returns a conflict when another request already claimed the subscription", async () => {
-        mockPrisma.$transaction.mockImplementation(async (cb: any) =>
-          cb({
-            planSelection: {
-              findUnique: jest.fn().mockResolvedValue(selectionRow),
-              updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-            },
-          }),
-        );
+    it('refuses to schedule a CANCELLED subscription', async () => {
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb({
+          planSelection: {
+            findUnique: jest.fn().mockResolvedValue({
+              ...selectionRow,
+              status: PlanSelectionStatus.CANCELLED,
+            }),
+          },
+        }),
+      );
 
-        await expect(
-          service.adminApproveSubscription("admin-1", "sub-100", {
-            firstDeliveryDate: "2026-10-15",
-          }),
-        ).rejects.toThrow(ConflictException);
-      });
+      await expect(
+        service.adminApproveSubscription('admin-1', 'sub-100', {
+          firstDeliveryDate: '2026-10-15',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
 
-      it("rejects approving an unpaid CASH plan whose cash collection is not confirmed", async () => {
-        const unpaidSelectionRow = {
-          id: "sub-unpaid",
-          userId: USER,
+    it('returns a conflict when another request already claimed the subscription', async () => {
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb({
+          planSelection: {
+            findUnique: jest.fn().mockResolvedValue(selectionRow),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+          },
+        }),
+      );
+
+      await expect(
+        service.adminApproveSubscription('admin-1', 'sub-100', {
+          firstDeliveryDate: '2026-10-15',
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('rejects approving an unpaid CASH plan whose cash collection is not confirmed', async () => {
+      const unpaidSelectionRow = {
+        id: 'sub-unpaid',
+        userId: USER,
+        planType: PlanType.MONTHLY,
+        paymentMethod: 'CASH',
+        paidAt: null,
+        cashCollection: { status: 'PENDING' },
+        quote: {
           planType: PlanType.MONTHLY,
-          paymentMethod: "CASH",
-          paidAt: null,
-          cashCollection: { status: "PENDING" },
-          quote: {
-            planType: PlanType.MONTHLY,
-            deliveryOccurrences: 30,
-            quantity: 1,
-            frequency: DeliveryFrequency.DAILY,
+          deliveryOccurrences: 30,
+          quantity: 1,
+          frequency: DeliveryFrequency.DAILY,
+        },
+      };
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          planSelection: {
+            findUnique: jest.fn().mockResolvedValue(unpaidSelectionRow),
           },
         };
-
-        mockPrisma.$transaction.mockImplementation(async (cb: any) => {
-          const tx = {
-            planSelection: {
-              findUnique: jest.fn().mockResolvedValue(unpaidSelectionRow),
-            },
-          };
-          return cb(tx);
-        });
-
-        await expect(
-          service.adminApproveSubscription("admin-1", "sub-unpaid", {
-            firstDeliveryDate: "2026-10-15",
-          }),
-        ).rejects.toThrow("Physical cash receipt has not been confirmed yet");
+        return cb(tx);
       });
+
+      await expect(
+        service.adminApproveSubscription('admin-1', 'sub-unpaid', {
+          firstDeliveryDate: '2026-10-15',
+        }),
+      ).rejects.toThrow('Physical cash receipt has not been confirmed yet');
     });
+  });
 
   // ── Admin: plan configuration ─────────────────────────────────────
 
-  describe("Admin plan configuration", () => {
+  describe('Admin plan configuration', () => {
     const timestamps = {
-      createdAt: new Date("2026-01-01T00:00:00Z"),
-      updatedAt: new Date("2026-01-02T00:00:00Z"),
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-02T00:00:00Z'),
     };
     const rows: Record<string, any> = {};
 
@@ -1919,24 +1984,26 @@ describe("PlansService", () => {
       mockPrisma.planConfig.update.mockImplementation(
         async ({ where, data }: any) => ({ ...rows[where.planType], ...data }),
       );
-      mockPrisma.planConfig.create.mockImplementation(async ({ data }: any) => ({
-        id: "cfg-new",
-        quantityMin: 1,
-        quantityMax: 5,
-        maxUsages: 7,
-        trialDurationDays: 7,
-        isActive: true,
-        dailyEnabled: true,
-        alternateDaysEnabled: true,
-        fixedQuantityEnabled: true,
-        alternatingQuantityEnabled: true,
-        ...timestamps,
-        ...data,
-      }));
+      mockPrisma.planConfig.create.mockImplementation(
+        async ({ data }: any) => ({
+          id: 'cfg-new',
+          quantityMin: 1,
+          quantityMax: 5,
+          maxUsages: 7,
+          trialDurationDays: 7,
+          isActive: true,
+          dailyEnabled: true,
+          alternateDaysEnabled: true,
+          fixedQuantityEnabled: true,
+          alternatingQuantityEnabled: true,
+          ...timestamps,
+          ...data,
+        }),
+      );
     });
 
-    describe("getAdminPlans", () => {
-      it("returns all three plans in fixed order with plan-specific fields", async () => {
+    describe('getAdminPlans', () => {
+      it('returns all three plans in fixed order with plan-specific fields', async () => {
         const res = await service.getAdminPlans();
         expect(res.unconfigured).toEqual([]);
         expect(res.plans.map((p) => p.type)).toEqual([
@@ -1961,17 +2028,20 @@ describe("PlansService", () => {
           alternateDaysEnabled: true,
           fixedQuantityEnabled: true,
           alternatingQuantityEnabled: true,
-          frequencies: [DeliveryFrequency.DAILY, DeliveryFrequency.ALTERNATE_DAYS],
+          frequencies: [
+            DeliveryFrequency.DAILY,
+            DeliveryFrequency.ALTERNATE_DAYS,
+          ],
           quantityModes: [QuantityMode.FIXED, QuantityMode.ALTERNATING],
         });
         // Fields irrelevant to Monthly are not leaked into its response.
-        expect(mo).not.toHaveProperty("maxUsages");
-        expect(mo).not.toHaveProperty("trialDurationDays");
+        expect(mo).not.toHaveProperty('maxUsages');
+        expect(mo).not.toHaveProperty('trialDurationDays');
         // Internal id is not part of the admin contract.
-        expect(bo).not.toHaveProperty("id");
+        expect(bo).not.toHaveProperty('id');
       });
 
-      it("reports missing rows as unconfigured without creating them", async () => {
+      it('reports missing rows as unconfigured without creating them', async () => {
         delete rows[PlanType.MONTHLY];
         const res = await service.getAdminPlans();
         expect(res.plans).toHaveLength(2);
@@ -1980,14 +2050,14 @@ describe("PlansService", () => {
       });
     });
 
-    describe("getAdminPlan", () => {
-      it("returns one plan", async () => {
+    describe('getAdminPlan', () => {
+      it('returns one plan', async () => {
         const res = await service.getAdminPlan(PlanType.SEVEN_DAY_TRIAL);
         expect(res.type).toBe(PlanType.SEVEN_DAY_TRIAL);
         expect(res.trialDurationDays).toBe(7);
       });
 
-      it("404s when not configured and does not create a row", async () => {
+      it('404s when not configured and does not create a row', async () => {
         delete rows[PlanType.BUY_ONCE];
         await expect(service.getAdminPlan(PlanType.BUY_ONCE)).rejects.toThrow(
           NotFoundException,
@@ -1996,8 +2066,8 @@ describe("PlansService", () => {
       });
     });
 
-    describe("updateAdminPlan", () => {
-      it("updates Buy Once and writes only the supplied fields", async () => {
+    describe('updateAdminPlan', () => {
+      it('updates Buy Once and writes only the supplied fields', async () => {
         const res = await service.updateAdminPlan(PlanType.BUY_ONCE, {
           sellingPricePerLitre: 8500,
           maxUsages: 3,
@@ -2010,7 +2080,7 @@ describe("PlansService", () => {
         expect(res.maxUsages).toBe(3);
       });
 
-      it("updates Trial configuration", async () => {
+      it('updates Trial configuration', async () => {
         const res = await service.updateAdminPlan(PlanType.SEVEN_DAY_TRIAL, {
           actualPricePerLitre: 11500,
           sellingPricePerLitre: 9200,
@@ -2021,7 +2091,7 @@ describe("PlansService", () => {
         expect(res.maxUsages).toBe(1);
       });
 
-      it("updates Monthly toggles and derives the customer option lists", async () => {
+      it('updates Monthly toggles and derives the customer option lists', async () => {
         const res = await service.updateAdminPlan(PlanType.MONTHLY, {
           alternateDaysEnabled: false,
           alternatingQuantityEnabled: false,
@@ -2030,63 +2100,97 @@ describe("PlansService", () => {
         expect(res.quantityModes).toEqual([QuantityMode.FIXED]);
       });
 
-      it.each([false, true])("sets isActive=%s", async (isActive) => {
+      it.each([false, true])('sets isActive=%s', async (isActive) => {
         const res = await service.updateAdminPlan(PlanType.MONTHLY, {
           isActive,
         });
         expect(res.isActive).toBe(isActive);
       });
 
-      it("serialises edits with a per-plan advisory lock inside a transaction", async () => {
+      it('serialises edits with a per-plan advisory lock inside a transaction', async () => {
         await service.updateAdminPlan(PlanType.BUY_ONCE, { isActive: false });
         expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
         const args = mockPrisma.$executeRaw.mock.calls[0];
-        expect(args[0].join("?")).toContain("pg_advisory_xact_lock");
+        expect(args[0].join('?')).toContain('pg_advisory_xact_lock');
         expect(args).toContain(`plan_config:${PlanType.BUY_ONCE}`);
       });
 
-      describe("field validation (400)", () => {
+      describe('field validation (400)', () => {
         it.each([
-          ["string price", PlanType.BUY_ONCE, { sellingPricePerLitre: "8500" }],
-          ["float price", PlanType.BUY_ONCE, { sellingPricePerLitre: 85.5 }],
-          ["negative actual price", PlanType.BUY_ONCE, { actualPricePerLitre: -1 }],
-          ["negative selling price", PlanType.MONTHLY, { sellingPricePerLitre: -100 }],
-          ["price above ceiling", PlanType.MONTHLY, { actualPricePerLitre: 1_000_001 }],
-          ["quantityMax above 5", PlanType.BUY_ONCE, { quantityMax: 6 }],
-          ["quantityMin below 1", PlanType.SEVEN_DAY_TRIAL, { quantityMin: 0 }],
-          ["non-integer quantity", PlanType.MONTHLY, { quantityMax: 4.5 }],
-          ["maxUsages 0", PlanType.BUY_ONCE, { maxUsages: 0 }],
-          ["negative maxUsages", PlanType.BUY_ONCE, { maxUsages: -3 }],
-          ["float maxUsages", PlanType.BUY_ONCE, { maxUsages: 1.5 }],
-          ["trialDurationDays (fixed rule)", PlanType.SEVEN_DAY_TRIAL, { trialDurationDays: 5 }],
-          ["string isActive", PlanType.BUY_ONCE, { isActive: "false" }],
-          ["numeric toggle", PlanType.MONTHLY, { dailyEnabled: 1 }],
-          ["adminId in body", PlanType.BUY_ONCE, { adminId: "a-1", isActive: true }],
-          ["Trial maxUsages (fixed rule)", PlanType.SEVEN_DAY_TRIAL, { maxUsages: 3 }],
-          ["Buy Once field on Monthly", PlanType.MONTHLY, { maxUsages: 3 }],
-          ["Monthly field on Buy Once", PlanType.BUY_ONCE, { dailyEnabled: true }],
-          ["planType in body", PlanType.BUY_ONCE, { planType: PlanType.MONTHLY }],
-          ["empty body", PlanType.BUY_ONCE, {}],
-          ["array body", PlanType.BUY_ONCE, [{ isActive: true }]],
-          ["null body", PlanType.BUY_ONCE, null],
-        ])("rejects %s", async (_label, planType, body) => {
-          await expect(
-            service.updateAdminPlan(planType as PlanType, body),
-          ).rejects.toThrow(BadRequestException);
+          ['string price', PlanType.BUY_ONCE, { sellingPricePerLitre: '8500' }],
+          ['float price', PlanType.BUY_ONCE, { sellingPricePerLitre: 85.5 }],
+          [
+            'negative actual price',
+            PlanType.BUY_ONCE,
+            { actualPricePerLitre: -1 },
+          ],
+          [
+            'negative selling price',
+            PlanType.MONTHLY,
+            { sellingPricePerLitre: -100 },
+          ],
+          [
+            'price above ceiling',
+            PlanType.MONTHLY,
+            { actualPricePerLitre: 1_000_001 },
+          ],
+          ['quantityMax above 5', PlanType.BUY_ONCE, { quantityMax: 6 }],
+          ['quantityMin below 1', PlanType.SEVEN_DAY_TRIAL, { quantityMin: 0 }],
+          ['non-integer quantity', PlanType.MONTHLY, { quantityMax: 4.5 }],
+          ['maxUsages 0', PlanType.BUY_ONCE, { maxUsages: 0 }],
+          ['negative maxUsages', PlanType.BUY_ONCE, { maxUsages: -3 }],
+          ['float maxUsages', PlanType.BUY_ONCE, { maxUsages: 1.5 }],
+          [
+            'trialDurationDays (fixed rule)',
+            PlanType.SEVEN_DAY_TRIAL,
+            { trialDurationDays: 5 },
+          ],
+          ['string isActive', PlanType.BUY_ONCE, { isActive: 'false' }],
+          ['numeric toggle', PlanType.MONTHLY, { dailyEnabled: 1 }],
+          [
+            'adminId in body',
+            PlanType.BUY_ONCE,
+            { adminId: 'a-1', isActive: true },
+          ],
+          [
+            'Trial maxUsages (fixed rule)',
+            PlanType.SEVEN_DAY_TRIAL,
+            { maxUsages: 3 },
+          ],
+          ['Buy Once field on Monthly', PlanType.MONTHLY, { maxUsages: 3 }],
+          [
+            'Monthly field on Buy Once',
+            PlanType.BUY_ONCE,
+            { dailyEnabled: true },
+          ],
+          [
+            'planType in body',
+            PlanType.BUY_ONCE,
+            { planType: PlanType.MONTHLY },
+          ],
+          ['empty body', PlanType.BUY_ONCE, {}],
+          ['array body', PlanType.BUY_ONCE, [{ isActive: true }]],
+          ['null body', PlanType.BUY_ONCE, null],
+        ])('rejects %s', async (_label, planType, body) => {
+          await expect(service.updateAdminPlan(planType, body)).rejects.toThrow(
+            BadRequestException,
+          );
           expect(mockPrisma.planConfig.update).not.toHaveBeenCalled();
           expect(mockPrisma.planConfig.create).not.toHaveBeenCalled();
         });
       });
 
-      describe("cross-field validation against the merged stored config (400)", () => {
-        it("rejects quantityMin above the stored quantityMax", async () => {
+      describe('cross-field validation against the merged stored config (400)', () => {
+        it('rejects quantityMin above the stored quantityMax', async () => {
           rows[PlanType.BUY_ONCE].quantityMax = 3;
           await expect(
             service.updateAdminPlan(PlanType.BUY_ONCE, { quantityMin: 4 }),
-          ).rejects.toThrow(/quantityMin \(4\) cannot exceed quantityMax \(3\)/);
+          ).rejects.toThrow(
+            /quantityMin \(4\) cannot exceed quantityMax \(3\)/,
+          );
         });
 
-        it("rejects min > max in the same request", async () => {
+        it('rejects min > max in the same request', async () => {
           await expect(
             service.updateAdminPlan(PlanType.MONTHLY, {
               quantityMin: 5,
@@ -2095,7 +2199,7 @@ describe("PlansService", () => {
           ).rejects.toThrow(BadRequestException);
         });
 
-        it("rejects a selling price above the stored actual price", async () => {
+        it('rejects a selling price above the stored actual price', async () => {
           await expect(
             service.updateAdminPlan(PlanType.BUY_ONCE, {
               sellingPricePerLitre: 12001,
@@ -2103,14 +2207,14 @@ describe("PlansService", () => {
           ).rejects.toThrow(/cannot exceed actualPricePerLitre/);
         });
 
-        it("rejects disabling every Monthly frequency", async () => {
+        it('rejects disabling every Monthly frequency', async () => {
           rows[PlanType.MONTHLY].alternateDaysEnabled = false;
           await expect(
             service.updateAdminPlan(PlanType.MONTHLY, { dailyEnabled: false }),
           ).rejects.toThrow(/frequency/);
         });
 
-        it("rejects disabling every Monthly quantity mode", async () => {
+        it('rejects disabling every Monthly quantity mode', async () => {
           await expect(
             service.updateAdminPlan(PlanType.MONTHLY, {
               fixedQuantityEnabled: false,
@@ -2119,7 +2223,7 @@ describe("PlansService", () => {
           ).rejects.toThrow(/quantity mode/);
         });
 
-        it("accepts selling == actual (zero discount) and min == max", async () => {
+        it('accepts selling == actual (zero discount) and min == max', async () => {
           await expect(
             service.updateAdminPlan(PlanType.BUY_ONCE, {
               sellingPricePerLitre: 12000,
@@ -2130,17 +2234,17 @@ describe("PlansService", () => {
         });
       });
 
-      describe("unconfigured plan", () => {
+      describe('unconfigured plan', () => {
         beforeEach(() => delete rows[PlanType.MONTHLY]);
 
-        it("404s when the body does not supply both prices", async () => {
+        it('404s when the body does not supply both prices', async () => {
           await expect(
             service.updateAdminPlan(PlanType.MONTHLY, { isActive: true }),
           ).rejects.toThrow(NotFoundException);
           expect(mockPrisma.planConfig.create).not.toHaveBeenCalled();
         });
 
-        it("initialises the row when both prices are supplied", async () => {
+        it('initialises the row when both prices are supplied', async () => {
           const res = await service.updateAdminPlan(PlanType.MONTHLY, {
             actualPricePerLitre: 10000,
             sellingPricePerLitre: 9000,
@@ -2157,7 +2261,7 @@ describe("PlansService", () => {
           expect(res.frequencies).toEqual([DeliveryFrequency.DAILY]);
         });
 
-        it("still applies cross-field rules on initialisation", async () => {
+        it('still applies cross-field rules on initialisation', async () => {
           await expect(
             service.updateAdminPlan(PlanType.MONTHLY, {
               actualPricePerLitre: 9000,
@@ -2172,7 +2276,7 @@ describe("PlansService", () => {
 
   // ── Customer flows honour admin configuration ─────────────────────
 
-  describe("customer flows honour admin configuration", () => {
+  describe('customer flows honour admin configuration', () => {
     function withConfig(planType: PlanType, overrides: Record<string, any>) {
       const base: Record<string, any> = {
         [PlanType.BUY_ONCE]: buyOnceConfig,
@@ -2187,7 +2291,7 @@ describe("PlansService", () => {
       });
     }
 
-    it("Buy Once quote uses the admin-updated price", async () => {
+    it('Buy Once quote uses the admin-updated price', async () => {
       withConfig(PlanType.BUY_ONCE, { sellingPricePerLitre: 8500 });
       const q = await service.createBuyOnceQuote(USER, { quantityLitres: 2 });
       expect(q.sellingPricePerLitre).toBe(8500);
@@ -2195,14 +2299,14 @@ describe("PlansService", () => {
       expect(q.discountAmount).toBe(24000 - 17000);
     });
 
-    it("Buy Once honours an admin-lowered quantityMax", async () => {
+    it('Buy Once honours an admin-lowered quantityMax', async () => {
       withConfig(PlanType.BUY_ONCE, { quantityMax: 3 });
       await expect(
         service.createBuyOnceQuote(USER, { quantityLitres: 4 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("Buy Once eligibility honours an admin-lowered maxUsages", async () => {
+    it('Buy Once eligibility honours an admin-lowered maxUsages', async () => {
       withConfig(PlanType.BUY_ONCE, { maxUsages: 2 });
       mockPrisma.planSelection.count
         .mockResolvedValueOnce(0) // trial used?
@@ -2211,19 +2315,27 @@ describe("PlansService", () => {
       expect(e).toMatchObject({
         eligible: false,
         maxUses: 2,
-        blockedReason: "MAX_USES_REACHED",
+        blockedReason: 'MAX_USES_REACHED',
       });
     });
 
-    it("Trial quote honours the 7-day trial duration", async () => {
+    it('Trial quote honours the 7-day trial duration', async () => {
       const q = await service.createTrialQuote(USER, { quantityLitres: 2 });
       expect(q.deliveryOccurrences).toBe(7);
       expect(q.totalLitres).toBe(14);
     });
 
     it.each([
-      [PlanType.BUY_ONCE, (s: PlansService) => s.createBuyOnceQuote(USER, { quantityLitres: 1 }), ForbiddenException],
-      [PlanType.SEVEN_DAY_TRIAL, (s: PlansService) => s.createTrialQuote(USER, { quantityLitres: 1 }), ForbiddenException],
+      [
+        PlanType.BUY_ONCE,
+        (s: PlansService) => s.createBuyOnceQuote(USER, { quantityLitres: 1 }),
+        ForbiddenException,
+      ],
+      [
+        PlanType.SEVEN_DAY_TRIAL,
+        (s: PlansService) => s.createTrialQuote(USER, { quantityLitres: 1 }),
+        ForbiddenException,
+      ],
       [
         PlanType.MONTHLY,
         (s: PlansService) =>
@@ -2234,25 +2346,28 @@ describe("PlansService", () => {
           }),
         BadRequestException,
       ],
-    ])("disabled %s cannot produce a new quote", async (planType, call, err) => {
-      withConfig(planType as PlanType, { isActive: false });
-      await expect(call(service)).rejects.toThrow(err as any);
-      expect(mockPrisma.planQuote.create).not.toHaveBeenCalled();
-    });
+    ])(
+      'disabled %s cannot produce a new quote',
+      async (planType, call, err) => {
+        withConfig(planType, { isActive: false });
+        await expect(call(service)).rejects.toThrow(err);
+        expect(mockPrisma.planQuote.create).not.toHaveBeenCalled();
+      },
+    );
 
-    it("overview reports a disabled Monthly plan as unavailable", async () => {
+    it('overview reports a disabled Monthly plan as unavailable', async () => {
       withConfig(PlanType.MONTHLY, { isActive: false });
       const res = await service.getPlansOverview(USER);
       expect(res.plans.find((p) => p.type === PlanType.MONTHLY)).toEqual({
         type: PlanType.MONTHLY,
         available: false,
-        blockedReason: "PLAN_NOT_CONFIGURED",
+        blockedReason: 'PLAN_NOT_CONFIGURED',
         deliveryStartTime: null,
         deliveryEndTime: null,
       });
     });
 
-    it("monthly info lists only admin-enabled options", async () => {
+    it('monthly info lists only admin-enabled options', async () => {
       withConfig(PlanType.MONTHLY, {
         dailyEnabled: false,
         fixedQuantityEnabled: false,
@@ -2262,7 +2377,7 @@ describe("PlansService", () => {
       expect(res.quantityModes).toEqual([QuantityMode.ALTERNATING]);
     });
 
-    it("rejects a Monthly quote using a disabled frequency", async () => {
+    it('rejects a Monthly quote using a disabled frequency', async () => {
       withConfig(PlanType.MONTHLY, { alternateDaysEnabled: false });
       await expect(
         service.createMonthlyQuote(USER, {
@@ -2281,7 +2396,7 @@ describe("PlansService", () => {
       ).resolves.toMatchObject({ frequency: DeliveryFrequency.DAILY });
     });
 
-    it("rejects a Monthly quote using a disabled quantity mode", async () => {
+    it('rejects a Monthly quote using a disabled quantity mode', async () => {
       withConfig(PlanType.MONTHLY, { alternatingQuantityEnabled: false });
       await expect(
         service.createMonthlyQuote(USER, {
@@ -2293,9 +2408,9 @@ describe("PlansService", () => {
       ).rejects.toThrow(/Quantity mode ALTERNATING is not currently available/);
     });
 
-    describe("confirmation after the admin disables something", () => {
+    describe('confirmation after the admin disables something', () => {
       const pendingQuote = {
-        id: "quote-1",
+        id: 'quote-1',
         userId: USER,
         planType: PlanType.BUY_ONCE,
         status: PlanQuoteStatus.PENDING,
@@ -2317,11 +2432,11 @@ describe("PlansService", () => {
         );
         mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 1 });
         mockPrisma.planSelection.create.mockImplementation(({ data }: any) => ({
-          id: "sel-1",
+          id: 'sel-1',
           ...data,
         }));
         mockPrisma.planSelection.update.mockImplementation(({ data }: any) => ({
-          id: "sel-1",
+          id: 'sel-1',
           ...data,
         }));
         mockPrisma.wallet.findUnique.mockResolvedValue({
@@ -2331,7 +2446,7 @@ describe("PlansService", () => {
       });
 
       it.each([PlanType.BUY_ONCE, PlanType.SEVEN_DAY_TRIAL, PlanType.MONTHLY])(
-        "a pending %s quote cannot be confirmed once the plan is disabled",
+        'a pending %s quote cannot be confirmed once the plan is disabled',
         async (planType) => {
           withConfig(planType, { isActive: false });
           mockPrisma.planQuote.findUnique.mockResolvedValue({
@@ -2339,14 +2454,17 @@ describe("PlansService", () => {
             planType,
           });
           await expect(
-            service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+            service.confirmPlan(USER, {
+              quoteId: 'quote-1',
+              paymentMethod: PlanPaymentMethod.WALLET,
+            }),
           ).rejects.toThrow(ForbiddenException);
           expect(mockPrisma.planQuote.updateMany).not.toHaveBeenCalled();
           expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
         },
       );
 
-      it("a pending Monthly quote cannot be confirmed once its frequency is disabled", async () => {
+      it('a pending Monthly quote cannot be confirmed once its frequency is disabled', async () => {
         withConfig(PlanType.MONTHLY, { alternateDaysEnabled: false });
         mockPrisma.planQuote.findUnique.mockResolvedValue({
           ...pendingQuote,
@@ -2357,23 +2475,29 @@ describe("PlansService", () => {
           billingPeriodEnd: new Date(2026, 0, 31),
         });
         await expect(
-          service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
+          service.confirmPlan(USER, {
+            quoteId: 'quote-1',
+            paymentMethod: PlanPaymentMethod.WALLET,
+          }),
         ).rejects.toThrow(ForbiddenException);
         expect(mockPrisma.planSelection.create).not.toHaveBeenCalled();
       });
 
-      it("an active plan still confirms normally", async () => {
+      it('an active plan still confirms normally', async () => {
         mockPrisma.planQuote.findUnique.mockResolvedValue(pendingQuote);
         await expect(
-          service.confirmPlan(USER, { quoteId: "quote-1", paymentMethod: PlanPaymentMethod.WALLET }),
-        ).resolves.toMatchObject({ selectionId: "sel-1" });
+          service.confirmPlan(USER, {
+            quoteId: 'quote-1',
+            paymentMethod: PlanPaymentMethod.WALLET,
+          }),
+        ).resolves.toMatchObject({ selectionId: 'sel-1' });
       });
     });
   });
 
   // ── Issue #1: Trial duration uses constant, not DB ────────────────
 
-  describe("Trial customer logic uses TRIAL_DURATION_DAYS constant, not DB value", () => {
+  describe('Trial customer logic uses TRIAL_DURATION_DAYS constant, not DB value', () => {
     beforeEach(() => {
       mockPrisma.planConfig.findFirst.mockImplementation(({ where }: any) => {
         if (where.planType === PlanType.SEVEN_DAY_TRIAL) {
@@ -2383,15 +2507,15 @@ describe("PlansService", () => {
       });
     });
 
-    it("eligibility returns TRIAL_DURATION_DAYS (7) even when DB has 10", async () => {
+    it('eligibility returns TRIAL_DURATION_DAYS (7) even when DB has 10', async () => {
       const result = await service.getTrialEligibility(USER);
       expect(result.trialDurationDays).toBe(TRIAL_DURATION_DAYS);
       expect(result.trialDurationDays).toBe(7);
     });
 
-    it("Trial quote produces exactly TRIAL_DURATION_DAYS delivery occurrences despite DB=10", async () => {
+    it('Trial quote produces exactly TRIAL_DURATION_DAYS delivery occurrences despite DB=10', async () => {
       mockPrisma.planQuote.create.mockImplementation(({ data }: any) => ({
-        id: "q-trial",
+        id: 'q-trial',
         ...data,
       }));
       const q = await service.createTrialQuote(USER, { quantityLitres: 2 });
@@ -2403,9 +2527,9 @@ describe("PlansService", () => {
 
   // ── Issue #2: confirmPlan uses transaction client for PlanConfig ───
 
-  describe("confirmPlan uses transaction client for PlanConfig lookups", () => {
+  describe('confirmPlan uses transaction client for PlanConfig lookups', () => {
     const pendingBuyOnce = {
-      id: "quote-tx",
+      id: 'quote-tx',
       userId: USER,
       planType: PlanType.BUY_ONCE,
       status: PlanQuoteStatus.PENDING,
@@ -2413,7 +2537,7 @@ describe("PlansService", () => {
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     };
 
-    it("calls tx.planConfig.findFirst, not this.prisma.planConfig.findFirst", async () => {
+    it('calls tx.planConfig.findFirst, not this.prisma.planConfig.findFirst', async () => {
       const txPlanConfig = {
         findFirst: jest.fn().mockResolvedValue(buyOnceConfig),
         findUnique: jest.fn().mockResolvedValue(buyOnceConfig),
@@ -2436,11 +2560,14 @@ describe("PlansService", () => {
         balancePaise: 999_999,
       });
       mockPrisma.planSelection.create.mockResolvedValue({
-        id: "sel-tx",
+        id: 'sel-tx',
         status: PlanSelectionStatus.CONFIRMED,
       });
 
-      await service.confirmPlan(USER, { quoteId: "quote-tx", paymentMethod: PlanPaymentMethod.WALLET });
+      await service.confirmPlan(USER, {
+        quoteId: 'quote-tx',
+        paymentMethod: PlanPaymentMethod.WALLET,
+      });
 
       expect(txPlanConfig.findFirst).toHaveBeenCalledWith({
         where: { planType: PlanType.BUY_ONCE, isActive: true },
@@ -2448,105 +2575,116 @@ describe("PlansService", () => {
     });
   });
 
-    describe("Admin explicit firstDeliveryDate selection", () => {
-      it("anchors BUY_ONCE on the admin-selected date regardless of order cut-off", () => {
-        const quote = {
-          planType: PlanType.BUY_ONCE,
-          frequency: null,
-          quantityMode: null,
-          quantity: 1,
-          quantityA: null,
-          quantityB: null,
-          deliveryOccurrences: 1,
-          billingPeriodStart: null,
-          billingPeriodEnd: null,
-        };
-        const now = new Date("2026-10-10T12:00:00.000Z"); // 17:30 IST
-        const explicitDate = "2026-10-15";
-        const schedule = service.resolveScheduleFromQuote(quote, now, explicitDate);
+  describe('Admin explicit firstDeliveryDate selection', () => {
+    it('anchors BUY_ONCE on the admin-selected date regardless of order cut-off', () => {
+      const quote = {
+        planType: PlanType.BUY_ONCE,
+        frequency: null,
+        quantityMode: null,
+        quantity: 1,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 1,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+      };
+      const now = new Date('2026-10-10T12:00:00.000Z'); // 17:30 IST
+      const explicitDate = '2026-10-15';
+      const schedule = service.resolveScheduleFromQuote(
+        quote,
+        now,
+        explicitDate,
+      );
 
-        expect(schedule.start).toEqual(new Date("2026-10-15T00:00:00.000Z"));
-        expect(schedule.end).toEqual(new Date("2026-10-15T00:00:00.000Z"));
-        expect(schedule.frequency).toBe(DeliveryFrequency.DAILY);
-      });
-
-      it("anchors SEVEN_DAY_TRIAL on the admin-selected date and preserves 7-day duration", () => {
-        const quote = {
-          planType: PlanType.SEVEN_DAY_TRIAL,
-          frequency: null,
-          quantityMode: null,
-          quantity: 1,
-          quantityA: null,
-          quantityB: null,
-          deliveryOccurrences: 7,
-          billingPeriodStart: null,
-          billingPeriodEnd: null,
-        };
-        const now = new Date("2026-10-10T12:00:00.000Z");
-        const explicitDate = "2026-10-14";
-        const schedule = service.resolveScheduleFromQuote(quote, now, explicitDate);
-
-        expect(schedule.start).toEqual(new Date("2026-10-14T00:00:00.000Z"));
-        expect(schedule.end).toEqual(new Date("2026-10-20T00:00:00.000Z"));
-        expect(schedule.frequency).toBe(DeliveryFrequency.DAILY);
-      });
-
-      it("anchors MONTHLY on the admin-selected date with ALTERNATE_DAYS cadence", () => {
-        const quote = {
-          planType: PlanType.MONTHLY,
-          frequency: DeliveryFrequency.ALTERNATE_DAYS,
-          quantityMode: QuantityMode.FIXED,
-          quantity: 2,
-          quantityA: null,
-          quantityB: null,
-          deliveryOccurrences: 15,
-          billingPeriodStart: null,
-          billingPeriodEnd: null,
-        };
-        const now = new Date("2026-10-10T12:00:00.000Z");
-        const explicitDate = "2026-10-12";
-        const schedule = service.resolveScheduleFromQuote(quote, now, explicitDate);
-
-        expect(schedule.start).toEqual(new Date("2026-10-12T00:00:00.000Z"));
-        // (15 - 1) * 2 = 28 days -> 12 Oct + 28 days = 09 Nov
-        expect(schedule.end).toEqual(new Date("2026-11-09T00:00:00.000Z"));
-        expect(schedule.frequency).toBe(DeliveryFrequency.ALTERNATE_DAYS);
-      });
-
-      it("rejects an invalid date format", () => {
-        const quote = {
-          planType: PlanType.BUY_ONCE,
-          frequency: null,
-          quantityMode: null,
-          quantity: 1,
-          quantityA: null,
-          quantityB: null,
-          deliveryOccurrences: 1,
-          billingPeriodStart: null,
-          billingPeriodEnd: null,
-        };
-        expect(() =>
-          service.resolveScheduleFromQuote(quote, new Date(), "invalid-date"),
-        ).toThrow(BadRequestException);
-      });
-
-      it("rejects a past date relative to current IST date", () => {
-        const quote = {
-          planType: PlanType.BUY_ONCE,
-          frequency: null,
-          quantityMode: null,
-          quantity: 1,
-          quantityA: null,
-          quantityB: null,
-          deliveryOccurrences: 1,
-          billingPeriodStart: null,
-          billingPeriodEnd: null,
-        };
-        const now = new Date("2026-10-10T12:00:00.000Z"); // 10 Oct in IST
-        expect(() =>
-          service.resolveScheduleFromQuote(quote, now, "2026-10-09"),
-        ).toThrow("First delivery date cannot be in the past");
-      });
+      expect(schedule.start).toEqual(new Date('2026-10-15T00:00:00.000Z'));
+      expect(schedule.end).toEqual(new Date('2026-10-15T00:00:00.000Z'));
+      expect(schedule.frequency).toBe(DeliveryFrequency.DAILY);
     });
 
+    it('anchors SEVEN_DAY_TRIAL on the admin-selected date and preserves 7-day duration', () => {
+      const quote = {
+        planType: PlanType.SEVEN_DAY_TRIAL,
+        frequency: null,
+        quantityMode: null,
+        quantity: 1,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 7,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+      };
+      const now = new Date('2026-10-10T12:00:00.000Z');
+      const explicitDate = '2026-10-14';
+      const schedule = service.resolveScheduleFromQuote(
+        quote,
+        now,
+        explicitDate,
+      );
+
+      expect(schedule.start).toEqual(new Date('2026-10-14T00:00:00.000Z'));
+      expect(schedule.end).toEqual(new Date('2026-10-20T00:00:00.000Z'));
+      expect(schedule.frequency).toBe(DeliveryFrequency.DAILY);
+    });
+
+    it('anchors MONTHLY on the admin-selected date with ALTERNATE_DAYS cadence', () => {
+      const quote = {
+        planType: PlanType.MONTHLY,
+        frequency: DeliveryFrequency.ALTERNATE_DAYS,
+        quantityMode: QuantityMode.FIXED,
+        quantity: 2,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 15,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+      };
+      const now = new Date('2026-10-10T12:00:00.000Z');
+      const explicitDate = '2026-10-12';
+      const schedule = service.resolveScheduleFromQuote(
+        quote,
+        now,
+        explicitDate,
+      );
+
+      expect(schedule.start).toEqual(new Date('2026-10-12T00:00:00.000Z'));
+      // (15 - 1) * 2 = 28 days -> 12 Oct + 28 days = 09 Nov
+      expect(schedule.end).toEqual(new Date('2026-11-09T00:00:00.000Z'));
+      expect(schedule.frequency).toBe(DeliveryFrequency.ALTERNATE_DAYS);
+    });
+
+    it('rejects an invalid date format', () => {
+      const quote = {
+        planType: PlanType.BUY_ONCE,
+        frequency: null,
+        quantityMode: null,
+        quantity: 1,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 1,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+      };
+      expect(() =>
+        service.resolveScheduleFromQuote(quote, new Date(), 'invalid-date'),
+      ).toThrow(BadRequestException);
+    });
+
+    it('rejects a past date relative to current IST date', () => {
+      const quote = {
+        planType: PlanType.BUY_ONCE,
+        frequency: null,
+        quantityMode: null,
+        quantity: 1,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 1,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+      };
+      const now = new Date('2026-10-10T12:00:00.000Z'); // 10 Oct in IST
+      expect(() =>
+        service.resolveScheduleFromQuote(quote, now, '2026-10-09'),
+      ).toThrow('First delivery date cannot be in the past');
+    });
+  });
 });

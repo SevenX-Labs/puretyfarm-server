@@ -1,13 +1,13 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { IProfileStorageService } from "./profile-storage.interface";
-import * as fs from "fs/promises";
-import * as path from "path";
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { IProfileStorageService } from './profile-storage.interface';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 // All customer avatars live under this server-controlled prefix. The client
 // never supplies any part of the path, bucket, or filename.
-const AVATAR_PREFIX = "avatars/customers";
+const AVATAR_PREFIX = 'avatars/customers';
 
 @Injectable()
 export class ProfileStorageService implements IProfileStorageService {
@@ -16,19 +16,19 @@ export class ProfileStorageService implements IProfileStorageService {
   private readonly bucketName?: string;
   private readonly localUploadDir = path.resolve(
     process.cwd(),
-    "uploads",
-    "avatars",
+    'uploads',
+    'avatars',
   );
 
   constructor(private readonly configService: ConfigService) {
     const supabaseUrl =
-      this.configService?.get<string>("SUPABASE_URL") ||
+      this.configService?.get<string>('SUPABASE_URL') ||
       process.env.SUPABASE_URL;
     const supabaseKey =
-      this.configService?.get<string>("SUPABASE_SECRET_KEY") ||
+      this.configService?.get<string>('SUPABASE_SECRET_KEY') ||
       process.env.SUPABASE_SECRET_KEY;
     const bucket =
-      this.configService?.get<string>("SUPABASE_STORAGE_BUCKET") ||
+      this.configService?.get<string>('SUPABASE_STORAGE_BUCKET') ||
       process.env.SUPABASE_STORAGE_BUCKET;
 
     if (supabaseUrl && supabaseKey && bucket) {
@@ -41,7 +41,7 @@ export class ProfileStorageService implements IProfileStorageService {
       );
     } else {
       this.logger.warn(
-        "Supabase credentials not fully configured; using local storage fallback",
+        'Supabase credentials not fully configured; using local storage fallback',
       );
       this.ensureLocalUploadDir();
     }
@@ -51,14 +51,16 @@ export class ProfileStorageService implements IProfileStorageService {
     try {
       await fs.mkdir(this.localUploadDir, { recursive: true });
     } catch (error) {
-      this.logger.warn(`Failed to create local upload directory: ${String(error)}`);
+      this.logger.warn(
+        `Failed to create local upload directory: ${String(error)}`,
+      );
     }
   }
 
   private extensionFor(mimetype: string): string {
-    if (mimetype === "image/png") return ".png";
-    if (mimetype === "image/webp") return ".webp";
-    return ".jpg"; // image/jpeg
+    if (mimetype === 'image/png') return '.png';
+    if (mimetype === 'image/webp') return '.webp';
+    return '.jpg'; // image/jpeg
   }
 
   /**
@@ -77,9 +79,9 @@ export class ProfileStorageService implements IProfileStorageService {
     if (
       !objectPath ||
       !objectPath.startsWith(`${AVATAR_PREFIX}/`) ||
-      objectPath.includes("..")
+      objectPath.includes('..')
     ) {
-      throw new Error("Refusing to operate on an untrusted storage path");
+      throw new Error('Refusing to operate on an untrusted storage path');
     }
   }
 
@@ -138,7 +140,7 @@ export class ProfileStorageService implements IProfileStorageService {
       await fs.unlink(filePath);
     } catch (error: unknown) {
       const code = (error as { code?: string })?.code;
-      if (code !== "ENOENT") {
+      if (code !== 'ENOENT') {
         throw error;
       }
     }
@@ -157,7 +159,7 @@ export class ProfileStorageService implements IProfileStorageService {
 
       if (error || !data?.signedUrl) {
         throw new Error(
-          `Failed to create signed URL: ${error?.message ?? "unknown error"}`,
+          `Failed to create signed URL: ${error?.message ?? 'unknown error'}`,
         );
       }
       return data.signedUrl;

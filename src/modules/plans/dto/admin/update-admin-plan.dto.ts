@@ -1,15 +1,13 @@
-import { BadRequestException } from "@nestjs/common";
-import { plainToInstance } from "class-transformer";
-import { validate } from "class-validator";
-import { PlanType } from "../../plans.constants";
-import { UpdateBuyOncePlanDto } from "./update-buy-once-plan.dto";
-import { UpdateTrialPlanDto } from "./update-trial-plan.dto";
-import { UpdateMonthlyPlanDto } from "./update-monthly-plan.dto";
+import { BadRequestException } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { PlanType } from '../../plans.constants';
+import { UpdateBuyOncePlanDto } from './update-buy-once-plan.dto';
+import { UpdateTrialPlanDto } from './update-trial-plan.dto';
+import { UpdateMonthlyPlanDto } from './update-monthly-plan.dto';
 
 export type UpdateAdminPlanDto =
-  | UpdateBuyOncePlanDto
-  | UpdateTrialPlanDto
-  | UpdateMonthlyPlanDto;
+  UpdateBuyOncePlanDto | UpdateTrialPlanDto | UpdateMonthlyPlanDto;
 
 const DTO_BY_PLAN_TYPE = {
   [PlanType.BUY_ONCE]: UpdateBuyOncePlanDto,
@@ -29,11 +27,11 @@ export async function parseUpdateAdminPlanDto(
   planType: PlanType,
   body: unknown,
 ): Promise<UpdateAdminPlanDto> {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new BadRequestException("Request body must be a JSON object");
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new BadRequestException('Request body must be a JSON object');
   }
   if (Object.keys(body).length === 0) {
-    throw new BadRequestException("At least one field must be provided");
+    throw new BadRequestException('At least one field must be provided');
   }
 
   const dto = plainToInstance(DTO_BY_PLAN_TYPE[planType], body);
@@ -52,5 +50,5 @@ export async function parseUpdateAdminPlanDto(
   // overwrite stored values when merged for cross-field validation.
   return Object.fromEntries(
     Object.entries(dto).filter(([, v]) => v !== undefined),
-  ) as UpdateAdminPlanDto;
+  );
 }

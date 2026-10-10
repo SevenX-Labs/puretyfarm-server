@@ -10,13 +10,13 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-} from "@nestjs/common";
-import { AddressService } from "./address.service";
-import { CreateAddressDto } from "./dto/customer/create-address.dto";
-import { UpdateAddressDto } from "./dto/customer/update-address.dto";
-import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
-import { CurrentUser } from "../../common/decorators/current-user.decorator";
-import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
+} from '@nestjs/common';
+import { AddressService } from './address.service';
+import { CreateAddressDto } from './dto/customer/create-address.dto';
+import { UpdateAddressDto } from './dto/customer/update-address.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 
 /**
  * Customer saved-address APIs. Every endpoint requires a customer JWT and
@@ -24,17 +24,14 @@ import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
  * never trusted, and access to another user's address is never granted (IDOR
  * protection).
  */
-@Controller(["api/v1/customer/addresses", "customer/addresses"])
+@Controller(['api/v1/customer/addresses', 'customer/addresses'])
 @UseGuards(JwtAuthGuard)
 export class AddressController {
   constructor(private readonly addressService: AddressService) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async create(
-    @CurrentUser() user: JwtPayload,
-    @Body() dto: CreateAddressDto,
-  ) {
+  async create(@CurrentUser() user: JwtPayload, @Body() dto: CreateAddressDto) {
     return this.addressService.createAddress(user.sub, dto);
   }
 
@@ -44,30 +41,30 @@ export class AddressController {
     return this.addressService.getAddresses(user.sub);
   }
 
-  @Get(":id")
+  @Get(':id')
   @HttpCode(HttpStatus.OK)
   async findOne(
     @CurrentUser() user: JwtPayload,
-    @Param("id", new ParseUUIDPipe()) id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
   ) {
     return this.addressService.getAddress(user.sub, id);
   }
 
-  @Patch(":id")
+  @Patch(':id')
   @HttpCode(HttpStatus.OK)
   async update(
     @CurrentUser() user: JwtPayload,
-    @Param("id", new ParseUUIDPipe()) id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateAddressDto,
   ) {
     return this.addressService.updateAddress(user.sub, id, dto);
   }
 
-  @Delete(":id")
+  @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   async remove(
     @CurrentUser() user: JwtPayload,
-    @Param("id", new ParseUUIDPipe()) id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
   ) {
     await this.addressService.deleteAddress(user.sub, id);
   }

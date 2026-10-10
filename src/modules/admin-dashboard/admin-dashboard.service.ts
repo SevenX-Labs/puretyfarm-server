@@ -54,11 +54,20 @@ export class AdminDashboardService {
         from: this.formatDate(previousPeriod.from),
         to: this.formatDate(previousPeriod.to),
       },
-      customersNewChangePercent: this.percentChange(customers.new, prevCustomersNew),
+      customersNewChangePercent: this.percentChange(
+        customers.new,
+        prevCustomersNew,
+      ),
       ordersChangePercent: this.percentChange(orders.total, prevOrdersTotal),
       salesChangePercent: this.percentChange(sales.totalPaise, prevSalesTotal),
-      revenueChangePercent: this.percentChange(revenue.collectedPaise, prevRevenueCollected),
-      grossProfitChangePercent: this.percentChange(profit.grossProfitPaise, prevGrossProfit),
+      revenueChangePercent: this.percentChange(
+        revenue.collectedPaise,
+        prevRevenueCollected,
+      ),
+      grossProfitChangePercent: this.percentChange(
+        profit.grossProfitPaise,
+        prevGrossProfit,
+      ),
     };
 
     return {
@@ -117,26 +126,27 @@ export class AdminDashboardService {
   // active = customers with an ACTIVE plan selection OR a qualifying order in the period.
 
   private async getCustomerMetrics(period: DateRange) {
-    const [total, newCount, activePlanUserIds, orderUserIds] = await Promise.all([
-      this.prisma.user.count({ where: { role: 'CUSTOMER' } }),
-      this.getNewCustomerCount(period),
-      this.prisma.planSelection.findMany({
-        where: { status: 'ACTIVE' },
-        select: { userId: true },
-        distinct: ['userId'],
-      }),
-      this.prisma.order.findMany({
-        where: {
-          createdAt: { gte: period.from, lte: period.to },
-          user: { role: 'CUSTOMER' },
-          status: { notIn: ['CANCELLED', 'FAILED'] },
-        },
-        select: { userId: true },
-        distinct: ['userId'],
-      }),
-    ]);
+    const [total, newCount, activePlanUserIds, orderUserIds] =
+      await Promise.all([
+        this.prisma.user.count({ where: { role: 'CUSTOMER' } }),
+        this.getNewCustomerCount(period),
+        this.prisma.planSelection.findMany({
+          where: { status: 'ACTIVE' },
+          select: { userId: true },
+          distinct: ['userId'],
+        }),
+        this.prisma.order.findMany({
+          where: {
+            createdAt: { gte: period.from, lte: period.to },
+            user: { role: 'CUSTOMER' },
+            status: { notIn: ['CANCELLED', 'FAILED'] },
+          },
+          select: { userId: true },
+          distinct: ['userId'],
+        }),
+      ]);
 
-    const activePlanSet = new Set(activePlanUserIds.map(r => r.userId));
+    const activePlanSet = new Set(activePlanUserIds.map((r) => r.userId));
     const activeSet = new Set(activePlanSet);
     for (const r of orderUserIds) activeSet.add(r.userId);
 
@@ -219,9 +229,15 @@ export class AdminDashboardService {
     for (const g of planSalesGroups) {
       const amount = g._sum.paidAmountPaise || 0;
       switch (g.planType) {
-        case 'BUY_ONCE': buyOncePaise = amount; break;
-        case 'SEVEN_DAY_TRIAL': trialPaise = amount; break;
-        case 'MONTHLY': monthlyPaise = amount; break;
+        case 'BUY_ONCE':
+          buyOncePaise = amount;
+          break;
+        case 'SEVEN_DAY_TRIAL':
+          trialPaise = amount;
+          break;
+        case 'MONTHLY':
+          monthlyPaise = amount;
+          break;
       }
     }
 
@@ -398,13 +414,15 @@ export class AdminDashboardService {
         where: { status: 'ACTIVE' },
         _count: { id: true },
       }),
-      this.prisma.planSelection.groupBy({
-        by: ['userId'],
-        where: {
-          planType: 'BUY_ONCE',
-          status: { in: ['CONFIRMED', 'ACTIVE', 'COMPLETED'] },
-        },
-      }).then(r => r.length),
+      this.prisma.planSelection
+        .groupBy({
+          by: ['userId'],
+          where: {
+            planType: 'BUY_ONCE',
+            status: { in: ['CONFIRMED', 'ACTIVE', 'COMPLETED'] },
+          },
+        })
+        .then((r) => r.length),
       this.prisma.planSelection.count({
         where: {
           createdAt: { gte: period.from, lte: period.to },
@@ -448,9 +466,8 @@ export class AdminDashboardService {
     // Eligible = all deliveries (scheduled + delivered + skipped), excluding none
     // since the current schema only has SCHEDULED, SKIPPED, DELIVERED
     const eligible = scheduled + delivered + skipped;
-    const completionPercent = eligible > 0
-      ? Math.round((delivered / eligible) * 10000) / 100
-      : 0;
+    const completionPercent =
+      eligible > 0 ? Math.round((delivered / eligible) * 10000) / 100 : 0;
 
     return {
       scheduled,
@@ -515,9 +532,10 @@ export class AdminDashboardService {
     const productCostPaise = 0;
 
     const grossProfitPaise = salesPaise - productCostPaise - deliveryCostPaise;
-    const grossMarginPercent = salesPaise > 0
-      ? Math.round((grossProfitPaise / salesPaise) * 10000) / 100
-      : 0;
+    const grossMarginPercent =
+      salesPaise > 0
+        ? Math.round((grossProfitPaise / salesPaise) * 10000) / 100
+        : 0;
 
     return {
       salesPaise,
@@ -547,26 +565,30 @@ export class AdminDashboardService {
         _sum: { deliveryFeePaise: true },
       }),
     ]);
-    return (salesResult._sum.paidAmountPaise || 0) - (deliveryCostResult._sum.deliveryFeePaise || 0);
+    return (
+      (salesResult._sum.paidAmountPaise || 0) -
+      (deliveryCostResult._sum.deliveryFeePaise || 0)
+    );
   }
 
   // ── Alerts ──
 
   private async getAlerts() {
-    const [pendingCash, pendingWallet, pendingDelivery, failedOrders] = await Promise.all([
-      this.prisma.cashCollection.count({
-        where: { status: { in: ['PENDING', 'COLLECTED'] } },
-      }),
-      this.prisma.walletCreditRequest.count({
-        where: { status: 'PENDING' },
-      }),
-      this.prisma.manageDeliveryChangeRequest.count({
-        where: { status: 'PENDING' },
-      }),
-      this.prisma.order.count({
-        where: { status: 'FAILED' },
-      }),
-    ]);
+    const [pendingCash, pendingWallet, pendingDelivery, failedOrders] =
+      await Promise.all([
+        this.prisma.cashCollection.count({
+          where: { status: { in: ['PENDING', 'COLLECTED'] } },
+        }),
+        this.prisma.walletCreditRequest.count({
+          where: { status: 'PENDING' },
+        }),
+        this.prisma.manageDeliveryChangeRequest.count({
+          where: { status: 'PENDING' },
+        }),
+        this.prisma.order.count({
+          where: { status: 'FAILED' },
+        }),
+      ]);
 
     return {
       pendingCashCollections: pendingCash,
@@ -594,9 +616,14 @@ export class AdminDashboardService {
     // debits. It deliberately does NOT sum PLAN_SELECTION wallet debits or cash
     // collections directly (which would double-count cash plans, or re-include
     // a plan that was later cancelled).
-    const [salesByDay, orderRevenueByDay, profitDeliveryCostByDay, ordersByDay, deliveriesByDay] =
-      await Promise.all([
-        this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
+    const [
+      salesByDay,
+      orderRevenueByDay,
+      profitDeliveryCostByDay,
+      ordersByDay,
+      deliveriesByDay,
+    ] = await Promise.all([
+      this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
           SELECT DATE("paidAt") AS day, SUM("paidAmountPaise")::bigint AS total
           FROM plan_selections
           WHERE "paidAt" >= ${period.from} AND "paidAt" <= ${period.to}
@@ -604,7 +631,7 @@ export class AdminDashboardService {
             AND "paidAmountPaise" IS NOT NULL
           GROUP BY DATE("paidAt")
         `,
-        this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
+      this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
           SELECT DATE("createdAt") AS day, SUM("amountPaise")::bigint AS total
           FROM wallet_transactions
           WHERE type = 'DEBIT'
@@ -612,27 +639,27 @@ export class AdminDashboardService {
             AND "createdAt" >= ${period.from} AND "createdAt" <= ${period.to}
           GROUP BY DATE("createdAt")
         `,
-        this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
+      this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
           SELECT DATE("createdAt") AS day, SUM("deliveryFeePaise")::bigint AS total
           FROM orders
           WHERE "createdAt" >= ${period.from} AND "createdAt" <= ${period.to}
             AND status NOT IN ('CANCELLED', 'FAILED')
           GROUP BY DATE("createdAt")
         `,
-        this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+      this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
           SELECT DATE("createdAt") AS day, COUNT(*)::bigint AS count
           FROM orders
           WHERE "createdAt" >= ${period.from} AND "createdAt" <= ${period.to}
           GROUP BY DATE("createdAt")
         `,
-        this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+      this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
           SELECT "deliveryDate" AS day, COUNT(*)::bigint AS count
           FROM plan_deliveries
           WHERE "deliveryDate" >= ${period.from} AND "deliveryDate" <= ${period.to}
             AND status = 'DELIVERED'
           GROUP BY "deliveryDate"
         `,
-      ]);
+    ]);
 
     const salesMap = this.toDayMap(salesByDay, 'total');
     const orderRevenueMap = this.toDayMap(orderRevenueByDay, 'total');

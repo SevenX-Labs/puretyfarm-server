@@ -15,7 +15,7 @@
  */
 
 /** Asia/Kolkata, for API responses and log lines that name the timezone. */
-export const IST_TIMEZONE = "Asia/Kolkata";
+export const IST_TIMEZONE = 'Asia/Kolkata';
 
 /** IST is UTC+05:30 year-round (India observes no daylight saving). */
 export const IST_UTC_OFFSET_MINUTES = 330;
@@ -82,16 +82,17 @@ export const HH_MM_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
  */
 export function parseHhMmToMinutes(time?: string | null): number | null {
   if (!time || !HH_MM_PATTERN.test(time)) return null;
-  const [h, m] = time.split(":");
+  const [h, m] = time.split(':');
   return parseInt(h, 10) * 60 + parseInt(m, 10);
 }
 
 /** Renders minutes-since-midnight as 12-hour `h:mm AM/PM`. */
 export function formatMinutesTo12h(minutes: number): string {
-  const normalised = ((minutes % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  const normalised =
+    ((minutes % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
   const h24 = Math.floor(normalised / 60);
-  const mm = String(normalised % 60).padStart(2, "0");
-  return `${h24 % 12 || 12}:${mm} ${h24 >= 12 ? "PM" : "AM"}`;
+  const mm = String(normalised % 60).padStart(2, '0');
+  return `${h24 % 12 || 12}:${mm} ${h24 >= 12 ? 'PM' : 'AM'}`;
 }
 
 /** Renders a 24-hour `HH:MM` time as 12-hour `h:mm AM/PM`, or null if malformed. */

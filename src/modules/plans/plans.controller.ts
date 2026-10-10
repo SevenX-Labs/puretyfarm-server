@@ -6,21 +6,21 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-} from "@nestjs/common";
-import { PlansService } from "./plans.service";
-import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
-import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
-import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
-import { ConfirmPlanDto } from "./dto/customer/confirm-plan.dto";
-import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
-import { CurrentUser } from "../../common/decorators/current-user.decorator";
-import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
+} from '@nestjs/common';
+import { PlansService } from './plans.service';
+import { BuyOnceQuoteDto } from './dto/customer/buy-once-quote.dto';
+import { TrialQuoteDto } from './dto/customer/trial-quote.dto';
+import { MonthlyQuoteDto } from './dto/customer/monthly-quote.dto';
+import { ConfirmPlanDto } from './dto/customer/confirm-plan.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 
 /**
  * Customer-facing plan selection APIs. All endpoints require a CUSTOMER JWT.
  * Identity is always taken from JWT.sub — the body never supplies a userId.
  */
-@Controller(["api/v1/customer/plans", "customer/plans"])
+@Controller(['api/v1/customer/plans', 'customer/plans'])
 @UseGuards(JwtAuthGuard)
 export class PlansController {
   constructor(private readonly plansService: PlansService) {}
@@ -34,13 +34,13 @@ export class PlansController {
 
   // ── Buy Once ──────────────────────────────────────────────────
 
-  @Get("buy-once/eligibility")
+  @Get('buy-once/eligibility')
   @HttpCode(HttpStatus.OK)
   async buyOnceEligibility(@CurrentUser() user: JwtPayload) {
     return this.plansService.getBuyOnceEligibility(user.sub);
   }
 
-  @Post("buy-once/quote")
+  @Post('buy-once/quote')
   @HttpCode(HttpStatus.OK)
   async buyOnceQuote(
     @CurrentUser() user: JwtPayload,
@@ -51,13 +51,13 @@ export class PlansController {
 
   // ── 7-Day Trial ───────────────────────────────────────────────
 
-  @Get("trial/eligibility")
+  @Get('trial/eligibility')
   @HttpCode(HttpStatus.OK)
   async trialEligibility(@CurrentUser() user: JwtPayload) {
     return this.plansService.getTrialEligibility(user.sub);
   }
 
-  @Post("trial/quote")
+  @Post('trial/quote')
   @HttpCode(HttpStatus.OK)
   async trialQuote(
     @CurrentUser() user: JwtPayload,
@@ -68,13 +68,13 @@ export class PlansController {
 
   // ── Monthly ───────────────────────────────────────────────────
 
-  @Get("monthly")
+  @Get('monthly')
   @HttpCode(HttpStatus.OK)
   async monthly() {
     return this.plansService.getMonthlyInfo();
   }
 
-  @Post("monthly/quote")
+  @Post('monthly/quote')
   @HttpCode(HttpStatus.OK)
   async monthlyQuote(
     @CurrentUser() user: JwtPayload,
@@ -85,12 +85,9 @@ export class PlansController {
 
   // ── Confirm ───────────────────────────────────────────────────
 
-  @Post("confirm")
+  @Post('confirm')
   @HttpCode(HttpStatus.OK)
-  async confirm(
-    @CurrentUser() user: JwtPayload,
-    @Body() dto: ConfirmPlanDto,
-  ) {
+  async confirm(@CurrentUser() user: JwtPayload, @Body() dto: ConfirmPlanDto) {
     return this.plansService.confirmPlan(user.sub, dto);
   }
 }

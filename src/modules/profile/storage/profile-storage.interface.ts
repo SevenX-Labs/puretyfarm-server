@@ -16,5 +16,8 @@ export interface IProfileStorageService {
    * Generates a short-lived signed URL for a private object path so the
    * frontend can display it directly. The signed URL is never persisted.
    */
-  createSignedUrl(objectPath: string, expiresInSeconds: number): Promise<string>;
+  createSignedUrl(
+    objectPath: string,
+    expiresInSeconds: number,
+  ): Promise<string>;
 }

@@ -35,11 +35,9 @@ describe('OrderPaymentsController', () => {
         orderStatus: 'CONFIRMED',
       });
 
-      const result = await controller.payOrder(
-        mockUser,
-        'order-1',
-        { paymentMethod: OrderPaymentChoice.WALLET },
-      );
+      const result = await controller.payOrder(mockUser, 'order-1', {
+        paymentMethod: OrderPaymentChoice.WALLET,
+      });
 
       expect(mockPaymentsService.payOrderFromWallet).toHaveBeenCalledTimes(1);
       expect(mockPaymentsService.payOrderFromWallet).toHaveBeenCalledWith(
@@ -53,11 +51,9 @@ describe('OrderPaymentsController', () => {
   describe('payOrder with CASH', () => {
     it('throws BadRequestException and never calls wallet debit', async () => {
       await expect(
-        controller.payOrder(
-          mockUser,
-          'order-1',
-          { paymentMethod: OrderPaymentChoice.CASH },
-        ),
+        controller.payOrder(mockUser, 'order-1', {
+          paymentMethod: OrderPaymentChoice.CASH,
+        }),
       ).rejects.toThrow(BadRequestException);
 
       expect(mockPaymentsService.payOrderFromWallet).not.toHaveBeenCalled();
@@ -65,14 +61,14 @@ describe('OrderPaymentsController', () => {
 
     it('returns DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED error code', async () => {
       try {
-        await controller.payOrder(
-          mockUser,
-          'order-1',
-          { paymentMethod: OrderPaymentChoice.CASH },
-        );
+        await controller.payOrder(mockUser, 'order-1', {
+          paymentMethod: OrderPaymentChoice.CASH,
+        });
         fail('Expected BadRequestException');
       } catch (err: any) {
-        expect(err.getResponse().error).toBe('DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED');
+        expect(err.getResponse().error).toBe(
+          'DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED',
+        );
       }
     });
   });

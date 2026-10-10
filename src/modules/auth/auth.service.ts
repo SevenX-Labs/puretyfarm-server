@@ -1,4 +1,4 @@
-import { Fast2SmsService } from "../sms/fast2sms.service";
+import { Fast2SmsService } from '../sms/fast2sms.service';
 import { randomUUID } from 'crypto';
 import {
   Injectable,
@@ -731,7 +731,9 @@ export class AuthService {
     email?: string;
     password?: string;
   }): Promise<{ id: string; email: string; created: boolean }> {
-    const email = (options?.email || 'admin@puretyfarm.in').toLowerCase().trim();
+    const email = (options?.email || 'admin@puretyfarm.in')
+      .toLowerCase()
+      .trim();
     const password = options?.password || 'puretyfarm@2026';
 
     const existing = await this.prisma.admin.findUnique({

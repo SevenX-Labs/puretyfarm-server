@@ -72,9 +72,7 @@ describe('WalletService — payment-backed credits', () => {
           }
           return true;
         });
-        hits.forEach((w) =>
-          Object.assign(w, data, { updatedAt: new Date() }),
-        );
+        hits.forEach((w) => Object.assign(w, data, { updatedAt: new Date() }));
         return { count: hits.length };
       },
       findUnique: async ({ where }: any) => {

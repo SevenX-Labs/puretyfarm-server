@@ -29,7 +29,12 @@ const validDigest = createHash('sha256')
   .digest('hex');
 
 describe('PhonePeService', () => {
-  let client: jest.Mocked<Pick<PhonePeClient, 'createOrder' | 'getOrderStatus' | 'refund' | 'getRefundStatus'>>;
+  let client: jest.Mocked<
+    Pick<
+      PhonePeClient,
+      'createOrder' | 'getOrderStatus' | 'refund' | 'getRefundStatus'
+    >
+  >;
   let config: { get: jest.Mock };
   let service: PhonePeService;
 

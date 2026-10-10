@@ -1,11 +1,11 @@
-import { IsOptional, IsEnum, IsInt, Min, Max } from "class-validator";
-import { Type } from "class-transformer";
-import { WalletCreditRequestStatus } from "../../wallet.constants";
+import { IsOptional, IsEnum, IsInt, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
+import { WalletCreditRequestStatus } from '../../wallet.constants';
 
 export class ListCreditRequestsQueryDto {
   @IsOptional()
   @IsEnum(WalletCreditRequestStatus, {
-    message: `status must be one of: ${Object.values(WalletCreditRequestStatus).join(", ")}`,
+    message: `status must be one of: ${Object.values(WalletCreditRequestStatus).join(', ')}`,
   })
   status?: WalletCreditRequestStatus;
 

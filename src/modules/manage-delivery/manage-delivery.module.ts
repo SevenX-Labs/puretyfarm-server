@@ -1,10 +1,10 @@
-import { Module } from "@nestjs/common";
-import { ManageDeliveryService } from "./manage-delivery.service";
-import { ManageDeliveryController } from "./manage-delivery.controller";
-import { AdminManageDeliveryController } from "./admin-manage-delivery.controller";
-import { PrismaModule } from "../../prisma/prisma.module";
-import { AuthModule } from "../auth/auth.module";
-import { PlansModule } from "../plans/plans.module";
+import { Module } from '@nestjs/common';
+import { ManageDeliveryService } from './manage-delivery.service';
+import { ManageDeliveryController } from './manage-delivery.controller';
+import { AdminManageDeliveryController } from './admin-manage-delivery.controller';
+import { PrismaModule } from '../../prisma/prisma.module';
+import { AuthModule } from '../auth/auth.module';
+import { PlansModule } from '../plans/plans.module';
 
 @Module({
   // PlansModule provides PlansService, whose `materializeOrdersForSchedule` is

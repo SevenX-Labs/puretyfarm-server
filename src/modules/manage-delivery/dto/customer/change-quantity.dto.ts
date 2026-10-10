@@ -1,6 +1,6 @@
-import { IsInt, Min, Max } from "class-validator";
-import { Type } from "class-transformer";
-import { QUANTITY_MIN, QUANTITY_MAX } from "../../../plans/plans.constants";
+import { IsInt, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
+import { QUANTITY_MIN, QUANTITY_MAX } from '../../../plans/plans.constants';
 
 /**
  * Body for POST /customer/manage-delivery/change-quantity.
@@ -8,8 +8,12 @@ import { QUANTITY_MIN, QUANTITY_MAX } from "../../../plans/plans.constants";
  */
 export class ChangeQuantityDto {
   @Type(() => Number)
-  @IsInt({ message: "quantityLitres must be a whole number" })
-  @Min(QUANTITY_MIN, { message: `quantityLitres must be at least ${QUANTITY_MIN}` })
-  @Max(QUANTITY_MAX, { message: `quantityLitres must be at most ${QUANTITY_MAX}` })
+  @IsInt({ message: 'quantityLitres must be a whole number' })
+  @Min(QUANTITY_MIN, {
+    message: `quantityLitres must be at least ${QUANTITY_MIN}`,
+  })
+  @Max(QUANTITY_MAX, {
+    message: `quantityLitres must be at most ${QUANTITY_MAX}`,
+  })
   quantityLitres: number;
 }

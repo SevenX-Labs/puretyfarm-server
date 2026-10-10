@@ -156,7 +156,7 @@ function makeDb() {
         return { ...row };
       },
     },
-        order: {
+    order: {
       findUnique: async ({ where }: any) => {
         const row = db.orders.find((o) => o.id === where.id);
         return row ? { ...row } : null;
@@ -313,15 +313,15 @@ describe('PaymentsService', () => {
     return row;
   }
 
-    /** Seeds an order row directly. */
+  /** Seeds an order row directly. */
   function seedOrder(overrides: Row = {}) {
     const row = {
       id: randomUUID(),
       userId: USER_ID,
-      orderNumber: "PF10001",
+      orderNumber: 'PF10001',
       totalPaise: 50_000,
-      paymentStatus: "PENDING",
-      status: "CONFIRMED",
+      paymentStatus: 'PENDING',
+      status: 'CONFIRMED',
       createdAt: new Date(),
       updatedAt: new Date(),
       ...overrides,
@@ -428,9 +428,9 @@ describe('PaymentsService', () => {
       markRefundOutcome: jest.fn(async () => undefined),
       debitWalletWithin: jest.fn(async () => ({
         success: true,
-        walletId: "wallet-1",
+        walletId: 'wallet-1',
         balanceAfterPaise: 50_000,
-        transactionId: "txn-debit-1",
+        transactionId: 'txn-debit-1',
       })),
     };
 
@@ -576,7 +576,7 @@ describe('PaymentsService', () => {
       expect(result.checkout).toBeDefined();
       expect(provider.createPayment).toHaveBeenCalledWith(
         expect.objectContaining({
-          customerEmail: "",
+          customerEmail: '',
         }),
       );
     });
@@ -1071,10 +1071,9 @@ describe('PaymentsService', () => {
       // On the second call the payment is already REFUND_PENDING, so the
       // "no refundable SUCCESS payment" branch wins — same outcome: the
       // provider is NOT called a second time.
-      expect([
-        'REFUND_ALREADY_IN_PROGRESS',
-        'NO_REFUNDABLE_PAYMENT',
-      ]).toContain(second.reason);
+      expect(['REFUND_ALREADY_IN_PROGRESS', 'NO_REFUNDABLE_PAYMENT']).toContain(
+        second.reason,
+      );
       expect(provider.refundPayment).toHaveBeenCalledTimes(1);
     });
 
@@ -1790,7 +1789,11 @@ describe('PaymentsService', () => {
       };
       db.cashCollections.push(planRow);
 
-      const result = await service.confirmCashCollection(planRow.id, 'admin-1', { note: 'reconciled' });
+      const result = await service.confirmCashCollection(
+        planRow.id,
+        'admin-1',
+        { note: 'reconciled' },
+      );
 
       expect(result.success).toBe(true);
       expect(result.message).toBe('Cash payment confirmed.');
@@ -2019,121 +2022,142 @@ describe('PaymentsService', () => {
   //  ORDER PAYMENTS
   // ══════════════════════════════════════════════════════════════════
 
-  describe("payOrderFromWallet", () => {
-    it("debits wallet and marks order PAID in one atomic transaction", async () => {
+  describe('payOrderFromWallet', () => {
+    it('debits wallet and marks order PAID in one atomic transaction', async () => {
       const order = seedOrder({ totalPaise: 45_000 });
       const result = await service.payOrderFromWallet(USER_ID, order.id);
 
       expect(result.success).toBe(true);
-      expect(result.paymentStatus).toBe("PAID");
+      expect(result.paymentStatus).toBe('PAID');
       expect(wallet.debitWalletWithin).toHaveBeenCalledWith(
         expect.anything(),
         USER_ID,
         45_000,
-        "ORDER",
+        'ORDER',
         order.id,
         `Order payment (${order.id})`,
       );
       const updatedOrder = db.orders.find((o) => o.id === order.id);
-      expect(updatedOrder?.paymentStatus).toBe("PAID");
+      expect(updatedOrder?.paymentStatus).toBe('PAID');
     });
 
-    it("404s if order does not exist", async () => {
+    it('404s if order does not exist', async () => {
       await expect(
-        service.payOrderFromWallet(USER_ID, "nonexistent-id"),
+        service.payOrderFromWallet(USER_ID, 'nonexistent-id'),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("404s if order belongs to another user", async () => {
-      const order = seedOrder({ userId: "someone-else" });
+    it('404s if order belongs to another user', async () => {
+      const order = seedOrder({ userId: 'someone-else' });
       await expect(
         service.payOrderFromWallet(USER_ID, order.id),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("409s if order is already PAID", async () => {
-      const order = seedOrder({ paymentStatus: "PAID" });
+    it('409s if order is already PAID', async () => {
+      const order = seedOrder({ paymentStatus: 'PAID' });
       await expect(
         service.payOrderFromWallet(USER_ID, order.id),
       ).rejects.toThrow(ConflictException);
     });
   });
 
-  describe("createOrderPayment", () => {
-    it("creates a PENDING payment linked to the order and returns checkout", async () => {
+  describe('createOrderPayment', () => {
+    it('creates a PENDING payment linked to the order and returns checkout', async () => {
       const order = seedOrder({ totalPaise: 60_000 });
-      const result = await service.createOrderPayment(USER_ID, order.id, "idem-order-1");
+      const result = await service.createOrderPayment(
+        USER_ID,
+        order.id,
+        'idem-order-1',
+      );
 
       expect(result.orderId).toBe(order.id);
       expect(result.checkout).toBeDefined();
 
       const created = db.payments.find((p) => p.orderId === order.id);
       expect(created).toBeDefined();
-      expect(created?.purpose).toBe("ORDER");
+      expect(created?.purpose).toBe('ORDER');
       expect(created?.amountPaise).toBe(60_000);
       expect(created?.status).toBe(PaymentTransactionStatus.PENDING);
     });
 
-    it("404s if order does not exist", async () => {
+    it('404s if order does not exist', async () => {
       await expect(
-        service.createOrderPayment(USER_ID, "nonexistent-order", "idem-order-1"),
+        service.createOrderPayment(
+          USER_ID,
+          'nonexistent-order',
+          'idem-order-1',
+        ),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("409s if order is already PAID", async () => {
-      const order = seedOrder({ paymentStatus: "PAID" });
+    it('409s if order is already PAID', async () => {
+      const order = seedOrder({ paymentStatus: 'PAID' });
       await expect(
-        service.createOrderPayment(USER_ID, order.id, "idem-order-1"),
+        service.createOrderPayment(USER_ID, order.id, 'idem-order-1'),
       ).rejects.toThrow(ConflictException);
     });
 
-    it("replays existing payment on idempotent retry with same key", async () => {
+    it('replays existing payment on idempotent retry with same key', async () => {
       const order = seedOrder({ totalPaise: 60_000 });
-      const first = await service.createOrderPayment(USER_ID, order.id, "idem-key");
-      const second = await service.createOrderPayment(USER_ID, order.id, "idem-key");
+      const first = await service.createOrderPayment(
+        USER_ID,
+        order.id,
+        'idem-key',
+      );
+      const second = await service.createOrderPayment(
+        USER_ID,
+        order.id,
+        'idem-key',
+      );
 
       expect(second.replayed).toBe(true);
       expect(second.payment.id).toBe(first.payment.id);
     });
   });
 
-  describe("applySuccess for ORDER purpose", () => {
-    it("transitions Order to PAID on verified PayU success", async () => {
+  describe('applySuccess for ORDER purpose', () => {
+    it('transitions Order to PAID on verified PayU success', async () => {
       const order = seedOrder({ totalPaise: 100_000 });
       const payment = seedPayment({
-        purpose: "ORDER",
+        purpose: 'ORDER',
         orderId: order.id,
         amountPaise: 100_000,
-        transactionId: "PFTEST0",
+        transactionId: 'PFTEST0',
       });
 
       const outcome = await service.applyVerifiedOutcome(
-        verification({ transactionId: payment.transactionId, amountPaise: 100_000 }),
-        "CALLBACK_SUCCESS",
+        verification({
+          transactionId: payment.transactionId,
+          amountPaise: 100_000,
+        }),
+        'CALLBACK_SUCCESS',
       );
 
-      expect(outcome.outcome).toBe("APPLIED");
+      expect(outcome.outcome).toBe('APPLIED');
       expect(outcome.status).toBe(PaymentTransactionStatus.SUCCESS);
       const updatedOrder = db.orders.find((o) => o.id === order.id);
-      expect(updatedOrder?.paymentStatus).toBe("PAID");
+      expect(updatedOrder?.paymentStatus).toBe('PAID');
     });
 
-    it("routes late PayU success to REFUND_PENDING if order was already PAID", async () => {
-      const order = seedOrder({ totalPaise: 100_000, paymentStatus: "PAID" });
+    it('routes late PayU success to REFUND_PENDING if order was already PAID', async () => {
+      const order = seedOrder({ totalPaise: 100_000, paymentStatus: 'PAID' });
       const payment = seedPayment({
-        purpose: "ORDER",
+        purpose: 'ORDER',
         orderId: order.id,
         amountPaise: 100_000,
-        transactionId: "PFTEST0",
+        transactionId: 'PFTEST0',
       });
 
       const outcome = await service.applyVerifiedOutcome(
-        verification({ transactionId: payment.transactionId, amountPaise: 100_000 }),
-        "CALLBACK_SUCCESS",
+        verification({
+          transactionId: payment.transactionId,
+          amountPaise: 100_000,
+        }),
+        'CALLBACK_SUCCESS',
       );
 
       expect(outcome.status).toBe(PaymentTransactionStatus.REFUND_PENDING);
     });
   });
-
 });

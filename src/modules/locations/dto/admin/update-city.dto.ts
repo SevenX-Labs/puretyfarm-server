@@ -1,8 +1,14 @@
-import { IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
-import { Transform } from "class-transformer";
+import {
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
+import { Transform } from 'class-transformer';
 
 const trim = ({ value }: { value: unknown }) =>
-  typeof value === "string" ? value.trim() : value;
+  typeof value === 'string' ? value.trim() : value;
 
 /**
  * Body for PATCH /admin/locations/cities/:cityId. Both fields optional; the
@@ -12,12 +18,12 @@ const trim = ({ value }: { value: unknown }) =>
 export class UpdateCityDto {
   @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: "name must not be empty" })
+  @IsNotEmpty({ message: 'name must not be empty' })
   @MaxLength(100)
   @Transform(trim)
   name?: string;
 
   @IsOptional()
-  @IsBoolean({ message: "isActive must be a boolean" })
+  @IsBoolean({ message: 'isActive must be a boolean' })
   isActive?: boolean;
 }

@@ -2,28 +2,28 @@ jest.mock('@nestjs/config', () => ({
   ConfigService: jest.fn().mockImplementation(() => ({ get: jest.fn() })),
 }));
 
-import { Test, TestingModule } from "@nestjs/testing";
-import { OrdersService } from "./orders.service";
-import { PrismaService } from "../../prisma/prisma.service";
+import { Test, TestingModule } from '@nestjs/testing';
+import { OrdersService } from './orders.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import {
   BadRequestException,
   NotFoundException,
   ConflictException,
-} from "@nestjs/common";
-import { OrderStatus, PaymentStatus } from "./orders.constants";
+} from '@nestjs/common';
+import { OrderStatus, PaymentStatus } from './orders.constants';
 import {
   PlanType,
   DeliveryFrequency,
   QuantityMode,
   DeliveryStatus,
   PlanSelectionStatus,
-} from "../plans/plans.constants";
-import { resolveFirstDeliveryDate, toDateOnly } from "../plans/plans.service";
-import { IST_UTC_OFFSET_MINUTES } from "../../common/utils/ist-date.util";
+} from '../plans/plans.constants';
+import { resolveFirstDeliveryDate, toDateOnly } from '../plans/plans.service';
+import { IST_UTC_OFFSET_MINUTES } from '../../common/utils/ist-date.util';
 
-const USER = "user-1";
-const OTHER_USER = "user-2";
-const ADMIN = "admin-1";
+const USER = 'user-1';
+const OTHER_USER = 'user-2';
+const ADMIN = 'admin-1';
 
 /** The UTC instant at which it is `hh:mm` IST on the given Indian date. */
 function istInstantUtc(
@@ -53,7 +53,7 @@ function plusDays(n: number): Date {
 }
 
 const planConfig = {
-  id: "config-1",
+  id: 'config-1',
   planType: PlanType.MONTHLY,
   isActive: true,
   actualPricePerLitre: 9000,
@@ -61,14 +61,14 @@ const planConfig = {
   quantityMin: 1,
   quantityMax: 5,
   deliveryFeePaise: 2000,
-  deliveryStartTime: "08:00",
-  deliveryEndTime: "10:00",
+  deliveryStartTime: '08:00',
+  deliveryEndTime: '10:00',
   maxUsages: 7,
   trialDurationDays: 7,
 };
 
 const selection = {
-  id: "sel-1",
+  id: 'sel-1',
   userId: USER,
   planType: PlanType.MONTHLY,
   status: PlanSelectionStatus.ACTIVE,
@@ -82,8 +82,8 @@ const selection = {
 };
 
 const delivery = {
-  id: "del-1",
-  selectionId: "sel-1",
+  id: 'del-1',
+  selectionId: 'sel-1',
   userId: USER,
   deliveryDate: plusDays(1),
   occurrence: 1,
@@ -92,28 +92,28 @@ const delivery = {
 };
 
 const address = {
-  id: "addr-1",
+  id: 'addr-1',
   userId: USER,
-  fullName: "Test User",
-  mobile: "9999999999",
-  houseNumber: "42",
-  buildingName: "Test Bldg",
-  streetName: "Main St",
-  landmark: "Near Park",
-  state: "Maharashtra",
-  city: "Mumbai",
-  area: "Andheri",
-  pincode: "400001",
+  fullName: 'Test User',
+  mobile: '9999999999',
+  houseNumber: '42',
+  buildingName: 'Test Bldg',
+  streetName: 'Main St',
+  landmark: 'Near Park',
+  state: 'Maharashtra',
+  city: 'Mumbai',
+  area: 'Andheri',
+  pincode: '400001',
   latitude: null,
   longitude: null,
 };
 
 const existingOrder = {
-  id: "order-1",
-  orderNumber: "PF10001",
+  id: 'order-1',
+  orderNumber: 'PF10001',
   userId: USER,
-  planSelectionId: "sel-1",
-  planDeliveryId: "del-1",
+  planSelectionId: 'sel-1',
+  planDeliveryId: 'del-1',
   planType: PlanType.MONTHLY,
   status: OrderStatus.DELIVERED,
   paymentStatus: PaymentStatus.PAID,
@@ -123,8 +123,8 @@ const existingOrder = {
   deliveryFeePaise: 2000,
   totalPaise: 18000,
   deliveryDate: plusDays(1),
-  deliveryStartTime: "08:00",
-  deliveryEndTime: "10:00",
+  deliveryStartTime: '08:00',
+  deliveryEndTime: '10:00',
   addressSnapshot: address,
   actualPricePerLitrePaise: 9000,
   sellingPricePerLitrePaise: 8000,
@@ -133,10 +133,10 @@ const existingOrder = {
   updatedAt: new Date(),
   items: [
     {
-      id: "item-1",
-      orderId: "order-1",
+      id: 'item-1',
+      orderId: 'order-1',
       productId: null,
-      productNameSnapshot: "Milk",
+      productNameSnapshot: 'Milk',
       quantity: 2,
       unitPricePaise: 8000,
       discountPaise: 2000,
@@ -145,16 +145,16 @@ const existingOrder = {
     },
   ],
   invoice: {
-    id: "inv-1",
-    invoiceNumber: "INV-10001",
-    orderId: "order-1",
+    id: 'inv-1',
+    invoiceNumber: 'INV-10001',
+    orderId: 'order-1',
     financialSnapshot: {},
     addressSnapshot: address,
     issuedAt: new Date(),
   },
 };
 
-describe("OrdersService", () => {
+describe('OrdersService', () => {
   let service: OrdersService;
 
   const mockPrisma: any = {
@@ -179,7 +179,11 @@ describe("OrdersService", () => {
       update: jest.fn(),
       updateMany: jest.fn(),
     },
-    planSelection: { findFirst: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
+    planSelection: {
+      findFirst: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
     planConfig: { findUnique: jest.fn() },
     customerAddress: { findFirst: jest.fn() },
     // Present only so the completion tests can assert they are never written.
@@ -199,7 +203,11 @@ describe("OrdersService", () => {
     mockPrisma.planDelivery.findFirst.mockResolvedValue(delivery);
     mockPrisma.customerAddress.findFirst.mockResolvedValue(address);
     mockPrisma.order.findUnique.mockResolvedValue(null);
-    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
+    mockPrisma.order.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.planDelivery.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) =>
+      fn(mockPrisma),
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -214,97 +222,133 @@ describe("OrdersService", () => {
   //  ORDER CREATION
   // ══════════════════════════════════════════════════════════════
 
-  describe("createOrder", () => {
+  describe('createOrder', () => {
     beforeEach(() => {
       mockPrisma.order.create.mockResolvedValue({
         ...existingOrder,
-        id: "new-order",
+        id: 'new-order',
         status: OrderStatus.CONFIRMED,
       });
       mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
     });
 
-    it("creates an order from a SCHEDULED PlanDelivery", async () => {
+    it('creates an order from a SCHEDULED PlanDelivery', async () => {
       const res = await service.createOrder(USER, {
-        planDeliveryId: "del-1",
-        addressId: "addr-1",
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
       });
       expect(res.success).toBe(true);
       expect(mockPrisma.order.create).toHaveBeenCalled();
     });
 
-    it("snapshots delivery fee from PlanConfig (not from client)", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+    it('snapshots delivery fee from PlanConfig (not from client)', async () => {
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
       expect(createCall.data.deliveryFeePaise).toBe(2000);
     });
 
-    it("snapshots delivery time from PlanConfig", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+    it('snapshots delivery time from PlanConfig', async () => {
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
-      expect(createCall.data.deliveryStartTime).toBe("08:00");
-      expect(createCall.data.deliveryEndTime).toBe("10:00");
+      expect(createCall.data.deliveryStartTime).toBe('08:00');
+      expect(createCall.data.deliveryEndTime).toBe('10:00');
     });
 
-    it("snapshots the address at order time", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+    it('snapshots the address at order time', async () => {
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
-      expect(createCall.data.addressSnapshot.fullName).toBe("Test User");
-      expect(createCall.data.addressSnapshot.city).toBe("Mumbai");
+      expect(createCall.data.addressSnapshot.fullName).toBe('Test User');
+      expect(createCall.data.addressSnapshot.city).toBe('Mumbai');
     });
 
-    it("snapshots price per litre from PlanConfig", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+    it('snapshots price per litre from PlanConfig', async () => {
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
       expect(createCall.data.actualPricePerLitrePaise).toBe(9000);
       expect(createCall.data.sellingPricePerLitrePaise).toBe(8000);
     });
 
-    it("creates an invoice alongside the order", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+    it('creates an invoice alongside the order', async () => {
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       expect(mockPrisma.invoice.create).toHaveBeenCalled();
     });
 
-    it("prevents duplicate order for the same PlanDelivery", async () => {
+    it('prevents duplicate order for the same PlanDelivery', async () => {
       mockPrisma.order.findUnique.mockResolvedValue(existingOrder);
       await expect(
-        service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" }),
+        service.createOrder(USER, {
+          planDeliveryId: 'del-1',
+          addressId: 'addr-1',
+        }),
       ).rejects.toThrow(ConflictException);
     });
 
-    it("rejects if delivery does not belong to user (IDOR)", async () => {
+    it('rejects if delivery does not belong to user (IDOR)', async () => {
       mockPrisma.planDelivery.findFirst.mockResolvedValue(null);
       await expect(
-        service.createOrder(USER, { planDeliveryId: "del-other", addressId: "addr-1" }),
+        service.createOrder(USER, {
+          planDeliveryId: 'del-other',
+          addressId: 'addr-1',
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects if delivery is not SCHEDULED", async () => {
+    it('rejects if delivery is not SCHEDULED', async () => {
       mockPrisma.planDelivery.findFirst.mockResolvedValue({
         ...delivery,
         status: DeliveryStatus.SKIPPED,
       });
       await expect(
-        service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" }),
+        service.createOrder(USER, {
+          planDeliveryId: 'del-1',
+          addressId: 'addr-1',
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects if address does not belong to user", async () => {
+    it('rejects if address does not belong to user', async () => {
       mockPrisma.customerAddress.findFirst.mockResolvedValue(null);
       await expect(
-        service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-other" }),
+        service.createOrder(USER, {
+          planDeliveryId: 'del-1',
+          addressId: 'addr-other',
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects if PlanConfig is inactive", async () => {
-      mockPrisma.planConfig.findUnique.mockResolvedValue({ ...planConfig, isActive: false });
+    it('rejects if PlanConfig is inactive', async () => {
+      mockPrisma.planConfig.findUnique.mockResolvedValue({
+        ...planConfig,
+        isActive: false,
+      });
       await expect(
-        service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" }),
+        service.createOrder(USER, {
+          planDeliveryId: 'del-1',
+          addressId: 'addr-1',
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("calculates total = subtotal + deliveryFee (integer paise)", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+    it('calculates total = subtotal + deliveryFee (integer paise)', async () => {
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
       const expected = 8000 * 2 + 2000; // selling * qty + fee
       expect(createCall.data.totalPaise).toBe(expected);
@@ -316,8 +360,8 @@ describe("OrdersService", () => {
   //  CUSTOMER — LIST ORDERS
   // ══════════════════════════════════════════════════════════════
 
-  describe("getCustomerOrders", () => {
-    it("scopes to the authenticated user", async () => {
+  describe('getCustomerOrders', () => {
+    it('scopes to the authenticated user', async () => {
       mockPrisma.order.findMany.mockResolvedValue([]);
       mockPrisma.order.count.mockResolvedValue(0);
 
@@ -329,7 +373,7 @@ describe("OrdersService", () => {
       );
     });
 
-    it("returns paginated results", async () => {
+    it('returns paginated results', async () => {
       mockPrisma.order.findMany.mockResolvedValue([]);
       mockPrisma.order.count.mockResolvedValue(25);
 
@@ -339,7 +383,7 @@ describe("OrdersService", () => {
       expect(res.pagination.totalPages).toBe(3);
     });
 
-    it("applies status filter", async () => {
+    it('applies status filter', async () => {
       mockPrisma.order.findMany.mockResolvedValue([]);
       mockPrisma.order.count.mockResolvedValue(0);
 
@@ -356,17 +400,17 @@ describe("OrdersService", () => {
   //  CUSTOMER — GET ONE ORDER
   // ══════════════════════════════════════════════════════════════
 
-  describe("getCustomerOrder", () => {
-    it("returns order for the authenticated user", async () => {
+  describe('getCustomerOrder', () => {
+    it('returns order for the authenticated user', async () => {
       mockPrisma.order.findFirst.mockResolvedValue(existingOrder);
-      const res = await service.getCustomerOrder(USER, "order-1");
-      expect(res.orderNumber).toBe("PF10001");
+      const res = await service.getCustomerOrder(USER, 'order-1');
+      expect(res.orderNumber).toBe('PF10001');
     });
 
-    it("throws NotFound when order belongs to another user (IDOR)", async () => {
+    it('throws NotFound when order belongs to another user (IDOR)', async () => {
       mockPrisma.order.findFirst.mockResolvedValue(null);
       await expect(
-        service.getCustomerOrder(USER, "order-other"),
+        service.getCustomerOrder(USER, 'order-other'),
       ).rejects.toThrow(NotFoundException);
     });
   });
@@ -375,25 +419,28 @@ describe("OrdersService", () => {
   //  CUSTOMER — INVOICE
   // ══════════════════════════════════════════════════════════════
 
-  describe("getCustomerInvoice", () => {
-    it("returns invoice for own order", async () => {
+  describe('getCustomerInvoice', () => {
+    it('returns invoice for own order', async () => {
       mockPrisma.order.findFirst.mockResolvedValue(existingOrder);
-      const res = await service.getCustomerInvoice(USER, "order-1");
-      expect(res.invoiceNumber).toBe("INV-10001");
+      const res = await service.getCustomerInvoice(USER, 'order-1');
+      expect(res.invoiceNumber).toBe('INV-10001');
     });
 
     it("throws NotFound for another user's order", async () => {
       mockPrisma.order.findFirst.mockResolvedValue(null);
       await expect(
-        service.getCustomerInvoice(USER, "order-other"),
+        service.getCustomerInvoice(USER, 'order-other'),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("throws NotFound when order has no invoice", async () => {
-      mockPrisma.order.findFirst.mockResolvedValue({ ...existingOrder, invoice: null });
-      await expect(
-        service.getCustomerInvoice(USER, "order-1"),
-      ).rejects.toThrow(NotFoundException);
+    it('throws NotFound when order has no invoice', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({
+        ...existingOrder,
+        invoice: null,
+      });
+      await expect(service.getCustomerInvoice(USER, 'order-1')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -401,98 +448,107 @@ describe("OrdersService", () => {
   //  REORDER
   // ══════════════════════════════════════════════════════════════
 
-  describe("reorder", () => {
+  describe('reorder', () => {
     beforeEach(() => {
       mockPrisma.order.findFirst.mockResolvedValue(existingOrder);
       mockPrisma.order.create.mockResolvedValue({
         ...existingOrder,
-        id: "reorder-1",
-        orderNumber: "PF10002",
-        reorderedFromOrderId: "order-1",
+        id: 'reorder-1',
+        orderNumber: 'PF10002',
+        reorderedFromOrderId: 'order-1',
         status: OrderStatus.PENDING,
       });
       mockPrisma.invoice.create.mockResolvedValue({
         ...existingOrder.invoice,
-        id: "inv-2",
-        invoiceNumber: "INV-10002",
+        id: 'inv-2',
+        invoiceNumber: 'INV-10002',
       });
     });
 
-    it("creates a new order using CURRENT pricing", async () => {
-      const res = await service.reorder(USER, "order-1", { addressId: "addr-1" });
+    it('creates a new order using CURRENT pricing', async () => {
+      const res = await service.reorder(USER, 'order-1', {
+        addressId: 'addr-1',
+      });
       expect(res.success).toBe(true);
       const createCall = mockPrisma.order.create.mock.calls[0][0];
-      expect(createCall.data.sellingPricePerLitrePaise).toBe(planConfig.sellingPricePerLitre);
-      expect(createCall.data.deliveryFeePaise).toBe(planConfig.deliveryFeePaise);
+      expect(createCall.data.sellingPricePerLitrePaise).toBe(
+        planConfig.sellingPricePerLitre,
+      );
+      expect(createCall.data.deliveryFeePaise).toBe(
+        planConfig.deliveryFeePaise,
+      );
     });
 
-    it("uses CURRENT delivery fee", async () => {
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+    it('uses CURRENT delivery fee', async () => {
+      await service.reorder(USER, 'order-1', { addressId: 'addr-1' });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
       expect(createCall.data.deliveryFeePaise).toBe(2000);
     });
 
-    it("uses CURRENT delivery time", async () => {
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+    it('uses CURRENT delivery time', async () => {
+      await service.reorder(USER, 'order-1', { addressId: 'addr-1' });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
-      expect(createCall.data.deliveryStartTime).toBe("08:00");
-      expect(createCall.data.deliveryEndTime).toBe("10:00");
+      expect(createCall.data.deliveryStartTime).toBe('08:00');
+      expect(createCall.data.deliveryEndTime).toBe('10:00');
     });
 
-    it("stores reference to original order", async () => {
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+    it('stores reference to original order', async () => {
+      await service.reorder(USER, 'order-1', { addressId: 'addr-1' });
       const createCall = mockPrisma.order.create.mock.calls[0][0];
-      expect(createCall.data.reorderedFromOrderId).toBe("order-1");
+      expect(createCall.data.reorderedFromOrderId).toBe('order-1');
     });
 
     it("rejects reorder of another user's order", async () => {
       mockPrisma.order.findFirst.mockResolvedValue(null);
       await expect(
-        service.reorder(USER, "order-other", { addressId: "addr-1" }),
+        service.reorder(USER, 'order-other', { addressId: 'addr-1' }),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("rejects reorder of pending order", async () => {
+    it('rejects reorder of pending order', async () => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
         status: OrderStatus.PENDING,
       });
       await expect(
-        service.reorder(USER, "order-1", { addressId: "addr-1" }),
+        service.reorder(USER, 'order-1', { addressId: 'addr-1' }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects reorder of cancelled order", async () => {
+    it('rejects reorder of cancelled order', async () => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
         status: OrderStatus.CANCELLED,
       });
       await expect(
-        service.reorder(USER, "order-1", { addressId: "addr-1" }),
+        service.reorder(USER, 'order-1', { addressId: 'addr-1' }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects reorder of failed order", async () => {
+    it('rejects reorder of failed order', async () => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
         status: OrderStatus.FAILED,
       });
       await expect(
-        service.reorder(USER, "order-1", { addressId: "addr-1" }),
+        service.reorder(USER, 'order-1', { addressId: 'addr-1' }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects if plan type is no longer active", async () => {
-      mockPrisma.planConfig.findUnique.mockResolvedValue({ ...planConfig, isActive: false });
+    it('rejects if plan type is no longer active', async () => {
+      mockPrisma.planConfig.findUnique.mockResolvedValue({
+        ...planConfig,
+        isActive: false,
+      });
       await expect(
-        service.reorder(USER, "order-1", { addressId: "addr-1" }),
+        service.reorder(USER, 'order-1', { addressId: 'addr-1' }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("does not modify original order", async () => {
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+    it('does not modify original order', async () => {
+      await service.reorder(USER, 'order-1', { addressId: 'addr-1' });
       expect(mockPrisma.order.update).not.toHaveBeenCalledWith(
-        expect.objectContaining({ where: { id: "order-1" } }),
+        expect.objectContaining({ where: { id: 'order-1' } }),
       );
     });
   });
@@ -501,16 +557,16 @@ describe("OrdersService", () => {
   //  ADMIN — LIST ORDERS
   // ══════════════════════════════════════════════════════════════
 
-  describe("getAdminOrders", () => {
-    it("returns paginated results with customer info", async () => {
+  describe('getAdminOrders', () => {
+    it('returns paginated results with customer info', async () => {
       mockPrisma.order.findMany.mockResolvedValue([
         {
           ...existingOrder,
           user: {
             id: USER,
-            mobile: "9999999999",
-            email: "test@test.com",
-            customerProfile: { firstName: "Test", lastName: "User" },
+            mobile: '9999999999',
+            email: 'test@test.com',
+            customerProfile: { firstName: 'Test', lastName: 'User' },
           },
         },
       ]);
@@ -518,10 +574,10 @@ describe("OrdersService", () => {
 
       const res = await service.getAdminOrders({});
       expect(res.data).toHaveLength(1);
-      expect(res.data[0].customer.name).toBe("Test User");
+      expect(res.data[0].customer.name).toBe('Test User');
     });
 
-    it("filters by status", async () => {
+    it('filters by status', async () => {
       mockPrisma.order.findMany.mockResolvedValue([]);
       mockPrisma.order.count.mockResolvedValue(0);
 
@@ -533,7 +589,7 @@ describe("OrdersService", () => {
       );
     });
 
-    it("filters by payment status", async () => {
+    it('filters by payment status', async () => {
       mockPrisma.order.findMany.mockResolvedValue([]);
       mockPrisma.order.count.mockResolvedValue(0);
 
@@ -550,26 +606,28 @@ describe("OrdersService", () => {
   //  ADMIN — GET ONE ORDER
   // ══════════════════════════════════════════════════════════════
 
-  describe("getAdminOrder", () => {
-    it("returns full order detail", async () => {
+  describe('getAdminOrder', () => {
+    it('returns full order detail', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...existingOrder,
         user: {
           id: USER,
-          mobile: "9999999999",
-          email: "test@test.com",
-          customerProfile: { firstName: "Test", lastName: "User" },
+          mobile: '9999999999',
+          email: 'test@test.com',
+          customerProfile: { firstName: 'Test', lastName: 'User' },
         },
       });
 
-      const res = await service.getAdminOrder("order-1");
-      expect(res.orderNumber).toBe("PF10001");
-      expect(res.customer.name).toBe("Test User");
+      const res = await service.getAdminOrder('order-1');
+      expect(res.orderNumber).toBe('PF10001');
+      expect(res.customer.name).toBe('Test User');
     });
 
-    it("throws NotFound for nonexistent order", async () => {
+    it('throws NotFound for nonexistent order', async () => {
       mockPrisma.order.findUnique.mockResolvedValue(null);
-      await expect(service.getAdminOrder("nonexistent")).rejects.toThrow(NotFoundException);
+      await expect(service.getAdminOrder('nonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -577,74 +635,78 @@ describe("OrdersService", () => {
   //  ADMIN — UPDATE STATUS
   // ══════════════════════════════════════════════════════════════
 
-  describe("updateOrderStatus", () => {
-    it("allows valid status transition PENDING → CONFIRMED", async () => {
-      mockPrisma.order.findUnique.mockResolvedValue({
-        ...existingOrder,
-        status: OrderStatus.PENDING,
-      });
-      mockPrisma.order.update.mockResolvedValue({
-        ...existingOrder,
-        status: OrderStatus.CONFIRMED,
-        items: existingOrder.items,
-        invoice: existingOrder.invoice,
-      });
+  describe('updateOrderStatus', () => {
+    it('allows valid status transition PENDING → CONFIRMED', async () => {
+      mockPrisma.order.findUnique
+        .mockResolvedValueOnce({
+          ...existingOrder,
+          status: OrderStatus.PENDING,
+        })
+        .mockResolvedValueOnce({
+          ...existingOrder,
+          status: OrderStatus.CONFIRMED,
+          items: existingOrder.items,
+          invoice: existingOrder.invoice,
+        });
 
-      const res = await service.updateOrderStatus("order-1", {
+      const res = await service.updateOrderStatus('order-1', {
         status: OrderStatus.CONFIRMED,
       });
       expect(res.success).toBe(true);
       expect(res.order.status).toBe(OrderStatus.CONFIRMED);
     });
 
-    it("allows CONFIRMED → PROCESSING", async () => {
-      mockPrisma.order.findUnique.mockResolvedValue({
-        ...existingOrder,
-        status: OrderStatus.CONFIRMED,
-      });
-      mockPrisma.order.update.mockResolvedValue({
-        ...existingOrder,
-        status: OrderStatus.PROCESSING,
-        items: existingOrder.items,
-        invoice: existingOrder.invoice,
-      });
+    it('allows CONFIRMED → PROCESSING', async () => {
+      mockPrisma.order.findUnique
+        .mockResolvedValueOnce({
+          ...existingOrder,
+          status: OrderStatus.CONFIRMED,
+        })
+        .mockResolvedValueOnce({
+          ...existingOrder,
+          status: OrderStatus.PROCESSING,
+          items: existingOrder.items,
+          invoice: existingOrder.invoice,
+        });
 
-      const res = await service.updateOrderStatus("order-1", {
+      const res = await service.updateOrderStatus('order-1', {
         status: OrderStatus.PROCESSING,
       });
       expect(res.order.status).toBe(OrderStatus.PROCESSING);
     });
 
-    it("rejects invalid transition DELIVERED → PENDING", async () => {
+    it('rejects invalid transition DELIVERED → PENDING', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...existingOrder,
         status: OrderStatus.DELIVERED,
       });
 
       await expect(
-        service.updateOrderStatus("order-1", { status: OrderStatus.PENDING }),
+        service.updateOrderStatus('order-1', { status: OrderStatus.PENDING }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects invalid transition CANCELLED → CONFIRMED", async () => {
+    it('rejects invalid transition CANCELLED → CONFIRMED', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...existingOrder,
         status: OrderStatus.CANCELLED,
       });
 
       await expect(
-        service.updateOrderStatus("order-1", { status: OrderStatus.CONFIRMED }),
+        service.updateOrderStatus('order-1', { status: OrderStatus.CONFIRMED }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("throws NotFound for nonexistent order", async () => {
+    it('throws NotFound for nonexistent order', async () => {
       mockPrisma.order.findUnique.mockResolvedValue(null);
       await expect(
-        service.updateOrderStatus("nonexistent", { status: OrderStatus.CONFIRMED }),
+        service.updateOrderStatus('nonexistent', {
+          status: OrderStatus.CONFIRMED,
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("does not modify pricing/snapshots on status update", async () => {
+    it('does not modify pricing/snapshots on status update', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...existingOrder,
         status: OrderStatus.PENDING,
@@ -656,8 +718,10 @@ describe("OrdersService", () => {
         invoice: existingOrder.invoice,
       });
 
-      await service.updateOrderStatus("order-1", { status: OrderStatus.CONFIRMED });
-      const updateCall = mockPrisma.order.update.mock.calls[0][0];
+      await service.updateOrderStatus('order-1', {
+        status: OrderStatus.CONFIRMED,
+      });
+      const updateCall = mockPrisma.order.updateMany.mock.calls[0][0];
       expect(updateCall.data).toEqual({ status: OrderStatus.CONFIRMED });
     });
   });
@@ -665,37 +729,46 @@ describe("OrdersService", () => {
   //  DELIVERY WINDOW SNAPSHOT & ORDER CUT-OFF
   // ══════════════════════════════════════════════════════════════
 
-  describe("delivery window on the order snapshot", () => {
+  describe('delivery window on the order snapshot', () => {
     beforeEach(() => {
       mockPrisma.order.create.mockResolvedValue({
         ...existingOrder,
-        id: "new-order",
+        id: 'new-order',
       });
       mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
     });
 
-    it("snapshots the configured window verbatim", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+    it('snapshots the configured window verbatim', async () => {
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const data = mockPrisma.order.create.mock.calls[0][0].data;
-      expect(data.deliveryStartTime).toBe("08:00");
-      expect(data.deliveryEndTime).toBe("10:00");
+      expect(data.deliveryStartTime).toBe('08:00');
+      expect(data.deliveryEndTime).toBe('10:00');
     });
 
-    it("snapshots null — never a fabricated window — when the plan has none", async () => {
+    it('snapshots null — never a fabricated window — when the plan has none', async () => {
       mockPrisma.planConfig.findUnique.mockResolvedValue({
         ...planConfig,
         deliveryStartTime: null,
         deliveryEndTime: null,
       });
 
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const data = mockPrisma.order.create.mock.calls[0][0].data;
       expect(data.deliveryStartTime).toBeNull();
       expect(data.deliveryEndTime).toBeNull();
     });
 
     it("createOrder keeps the delivery's own scheduled date", async () => {
-      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+      await service.createOrder(USER, {
+        planDeliveryId: 'del-1',
+        addressId: 'addr-1',
+      });
       const data = mockPrisma.order.create.mock.calls[0][0].data;
       // The date comes from the already-materialised PlanDelivery, which the
       // cut-off was applied to when the plan was confirmed. Re-applying it here
@@ -706,29 +779,29 @@ describe("OrdersService", () => {
     it("exposes the saved snapshot on read, without substituting today's config", async () => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
-        deliveryStartTime: "05:00",
-        deliveryEndTime: "07:00",
+        deliveryStartTime: '05:00',
+        deliveryEndTime: '07:00',
       });
 
-      const res = await service.getCustomerOrder(USER, "order-1");
-      expect(res.deliveryStartTime).toBe("05:00");
-      expect(res.deliveryEndTime).toBe("07:00");
+      const res = await service.getCustomerOrder(USER, 'order-1');
+      expect(res.deliveryStartTime).toBe('05:00');
+      expect(res.deliveryEndTime).toBe('07:00');
     });
 
-    it("reports a null window on read rather than inventing one", async () => {
+    it('reports a null window on read rather than inventing one', async () => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
         deliveryStartTime: null,
         deliveryEndTime: null,
       });
 
-      const res = await service.getCustomerOrder(USER, "order-1");
+      const res = await service.getCustomerOrder(USER, 'order-1');
       expect(res.deliveryStartTime).toBeNull();
       expect(res.deliveryEndTime).toBeNull();
     });
   });
 
-  describe("reorder delivery date (23:00 IST cut-off)", () => {
+  describe('reorder delivery date (23:00 IST cut-off)', () => {
     beforeEach(() => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
@@ -736,55 +809,57 @@ describe("OrdersService", () => {
       });
       mockPrisma.order.create.mockResolvedValue({
         ...existingOrder,
-        id: "new-order",
+        id: 'new-order',
       });
       mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
     });
 
     async function reorderDeliveryDate(): Promise<Date> {
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+      await service.reorder(USER, 'order-1', { addressId: 'addr-1' });
       return mockPrisma.order.create.mock.calls[0][0].data.deliveryDate;
     }
 
-    it("assigns a delivery date instead of leaving it null", async () => {
+    it('assigns a delivery date instead of leaving it null', async () => {
       const deliveryDate = await reorderDeliveryDate();
       expect(deliveryDate).toBeInstanceOf(Date);
       expect(deliveryDate).toEqual(resolveFirstDeliveryDate());
     });
 
-    it("never leaves the date null, which is what made the UI show createdAt", async () => {
+    it('never leaves the date null, which is what made the UI show createdAt', async () => {
       const deliveryDate = await reorderDeliveryDate();
       expect(deliveryDate).not.toBeNull();
       expect(deliveryDate).not.toBeUndefined();
     });
 
-    it("is strictly in the future (never the reorder day itself)", async () => {
+    it('is strictly in the future (never the reorder day itself)', async () => {
       const deliveryDate = await reorderDeliveryDate();
-      expect(deliveryDate.getTime()).toBeGreaterThan(toDateOnly(new Date()).getTime());
+      expect(deliveryDate.getTime()).toBeGreaterThan(
+        toDateOnly(new Date()).getTime(),
+      );
     });
 
-    it("22:59 IST reorders for the next day", async () => {
+    it('22:59 IST reorders for the next day', async () => {
       jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 10, 22, 59));
       try {
-        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-11");
+        expect(isoDay(await reorderDeliveryDate())).toBe('2026-10-11');
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it("exactly 23:00 IST reorders for the day after next", async () => {
+    it('exactly 23:00 IST reorders for the day after next', async () => {
       jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 10, 23, 0));
       try {
-        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-12");
+        expect(isoDay(await reorderDeliveryDate())).toBe('2026-10-12');
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it("23:01 IST reorders for the day after next", async () => {
+    it('23:01 IST reorders for the day after next', async () => {
       jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 10, 23, 1));
       try {
-        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-12");
+        expect(isoDay(await reorderDeliveryDate())).toBe('2026-10-12');
       } finally {
         jest.useRealTimers();
       }
@@ -795,28 +870,28 @@ describe("OrdersService", () => {
       try {
         mockPrisma.planConfig.findUnique.mockResolvedValue({
           ...planConfig,
-          deliveryStartTime: "16:00",
-          deliveryEndTime: "18:00",
+          deliveryStartTime: '16:00',
+          deliveryEndTime: '18:00',
         });
         // Noon IST is well before the 23:00 cut-off, so the window — whatever
         // it is — does not change the date.
-        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-11");
+        expect(isoDay(await reorderDeliveryDate())).toBe('2026-10-11');
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it("rolls over a month end", async () => {
+    it('rolls over a month end', async () => {
       jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 31, 23, 30));
       try {
-        expect(isoDay(await reorderDeliveryDate())).toBe("2026-11-02");
+        expect(isoDay(await reorderDeliveryDate())).toBe('2026-11-02');
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it("does not touch wallet, payment or cash records", async () => {
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+    it('does not touch wallet, payment or cash records', async () => {
+      await service.reorder(USER, 'order-1', { addressId: 'addr-1' });
       expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
       expect(mockPrisma.wallet.updateMany).not.toHaveBeenCalled();
       expect(mockPrisma.walletTransaction.create).not.toHaveBeenCalled();
@@ -825,8 +900,8 @@ describe("OrdersService", () => {
       expect(mockPrisma.cashCollection.update).not.toHaveBeenCalled();
     });
 
-    it("creates exactly one order and one invoice", async () => {
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+    it('creates exactly one order and one invoice', async () => {
+      await service.reorder(USER, 'order-1', { addressId: 'addr-1' });
       expect(mockPrisma.order.create).toHaveBeenCalledTimes(1);
       expect(mockPrisma.invoice.create).toHaveBeenCalledTimes(1);
     });
@@ -836,7 +911,7 @@ describe("OrdersService", () => {
   //  ADMIN — COMPLETE ORDER
   // ══════════════════════════════════════════════════════════════
 
-  describe("completeOrder", () => {
+  describe('completeOrder', () => {
     /** A DELIVERED order whose single PlanDelivery already fell due. */
     const deliveredOrder = {
       ...existingOrder,
@@ -874,7 +949,7 @@ describe("OrdersService", () => {
       mockPrisma.order.updateMany.mockResolvedValue({ count: 1 });
     });
 
-    it("completes an eligible DELIVERED order", async () => {
+    it('completes an eligible DELIVERED order', async () => {
       const completedAt = new Date();
       mockPrisma.order.findUnique
         .mockResolvedValueOnce(deliveredOrder)
@@ -884,7 +959,7 @@ describe("OrdersService", () => {
           completedAt,
         });
 
-      const res = await service.completeOrder("order-1");
+      const res = await service.completeOrder('order-1');
 
       expect(res.success).toBe(true);
       expect(res.alreadyCompleted).toBe(false);
@@ -892,19 +967,22 @@ describe("OrdersService", () => {
       expect(res.order.completedAt).toEqual(completedAt);
     });
 
-    it("persists COMPLETED and completedAt, guarded on the current status", async () => {
-      await service.completeOrder("order-1");
+    it('persists COMPLETED and completedAt, guarded on the current status', async () => {
+      await service.completeOrder('order-1');
 
       expect(mockPrisma.order.updateMany).toHaveBeenCalledTimes(1);
       const call = mockPrisma.order.updateMany.mock.calls[0][0];
-      expect(call.where).toEqual({ id: "order-1", status: OrderStatus.DELIVERED });
+      expect(call.where).toEqual({
+        id: 'order-1',
+        status: OrderStatus.DELIVERED,
+      });
       expect(call.data.status).toBe(OrderStatus.COMPLETED);
       expect(call.data.completedAt).toBeInstanceOf(Date);
     });
 
-    it("throws NotFound for a nonexistent order", async () => {
+    it('throws NotFound for a nonexistent order', async () => {
       mockPrisma.order.findUnique.mockResolvedValue(null);
-      await expect(service.completeOrder("nonexistent")).rejects.toThrow(
+      await expect(service.completeOrder('nonexistent')).rejects.toThrow(
         NotFoundException,
       );
       expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
@@ -917,23 +995,23 @@ describe("OrdersService", () => {
       OrderStatus.OUT_FOR_DELIVERY,
       OrderStatus.CANCELLED,
       OrderStatus.FAILED,
-    ])("refuses to complete an order that is %s", async (status) => {
+    ])('refuses to complete an order that is %s', async (status) => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
         status,
       });
-      await expect(service.completeOrder("order-1")).rejects.toThrow(
+      await expect(service.completeOrder('order-1')).rejects.toThrow(
         BadRequestException,
       );
       expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
     });
 
-    it("does not mark an undelivered order delivered to make completion succeed", async () => {
+    it('does not mark an undelivered order delivered to make completion succeed', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
         status: OrderStatus.OUT_FOR_DELIVERY,
       });
-      await expect(service.completeOrder("order-1")).rejects.toThrow(
+      await expect(service.completeOrder('order-1')).rejects.toThrow(
         BadRequestException,
       );
       expect(mockPrisma.order.update).not.toHaveBeenCalled();
@@ -941,7 +1019,7 @@ describe("OrdersService", () => {
       expectNoFinancialOrScheduleWrites();
     });
 
-    it("is idempotent: an already-completed order is a no-op success", async () => {
+    it('is idempotent: an already-completed order is a no-op success', async () => {
       const completedAt = plusDays(-1);
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
@@ -949,7 +1027,7 @@ describe("OrdersService", () => {
         completedAt,
       });
 
-      const res = await service.completeOrder("order-1");
+      const res = await service.completeOrder('order-1');
 
       expect(res.success).toBe(true);
       expect(res.alreadyCompleted).toBe(true);
@@ -960,7 +1038,7 @@ describe("OrdersService", () => {
       expectNoFinancialOrScheduleWrites();
     });
 
-    it("treats a concurrent completion as success rather than a conflict", async () => {
+    it('treats a concurrent completion as success rather than a conflict', async () => {
       mockPrisma.order.updateMany.mockResolvedValue({ count: 0 });
       mockPrisma.order.findUnique
         .mockResolvedValueOnce(deliveredOrder)
@@ -970,11 +1048,11 @@ describe("OrdersService", () => {
           completedAt: new Date(),
         });
 
-      const res = await service.completeOrder("order-1");
+      const res = await service.completeOrder('order-1');
       expect(res.alreadyCompleted).toBe(true);
     });
 
-    it("throws Conflict when the order moved to some other status mid-flight", async () => {
+    it('throws Conflict when the order moved to some other status mid-flight', async () => {
       mockPrisma.order.updateMany.mockResolvedValue({ count: 0 });
       mockPrisma.order.findUnique
         .mockResolvedValueOnce(deliveredOrder)
@@ -983,14 +1061,14 @@ describe("OrdersService", () => {
           status: OrderStatus.CANCELLED,
         });
 
-      await expect(service.completeOrder("order-1")).rejects.toThrow(
+      await expect(service.completeOrder('order-1')).rejects.toThrow(
         ConflictException,
       );
     });
 
     // ── Delivery constraints ──────────────────────────────────────
 
-    it("refuses to complete an order whose delivery was SKIPPED", async () => {
+    it('refuses to complete an order whose delivery was SKIPPED', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
         planDelivery: {
@@ -998,13 +1076,13 @@ describe("OrdersService", () => {
           status: DeliveryStatus.SKIPPED,
         },
       });
-      await expect(service.completeOrder("order-1")).rejects.toThrow(
+      await expect(service.completeOrder('order-1')).rejects.toThrow(
         BadRequestException,
       );
       expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
     });
 
-    it("refuses to complete an order whose delivery is still in the future", async () => {
+    it('refuses to complete an order whose delivery is still in the future', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
         planDelivery: {
@@ -1013,13 +1091,13 @@ describe("OrdersService", () => {
           status: DeliveryStatus.SCHEDULED,
         },
       });
-      await expect(service.completeOrder("order-1")).rejects.toThrow(
+      await expect(service.completeOrder('order-1')).rejects.toThrow(
         BadRequestException,
       );
       expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
     });
 
-    it("accepts a delivery dated today", async () => {
+    it('accepts a delivery dated today', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
         planDelivery: {
@@ -1028,7 +1106,7 @@ describe("OrdersService", () => {
           status: DeliveryStatus.SCHEDULED,
         },
       });
-      const res = await service.completeOrder("order-1");
+      const res = await service.completeOrder('order-1');
       expect(res.success).toBe(true);
     });
 
@@ -1037,12 +1115,12 @@ describe("OrdersService", () => {
         ...deliveredOrder,
         planDelivery: null,
       });
-      await expect(service.completeOrder("order-1")).rejects.toThrow(
+      await expect(service.completeOrder('order-1')).rejects.toThrow(
         ConflictException,
       );
     });
 
-    it("completes a BUY_ONCE order that has no delivery record", async () => {
+    it('completes a BUY_ONCE order that has no delivery record', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
         planType: PlanType.BUY_ONCE,
@@ -1050,7 +1128,7 @@ describe("OrdersService", () => {
         planDeliveryId: null,
         planDelivery: null,
       });
-      const res = await service.completeOrder("order-1");
+      const res = await service.completeOrder('order-1');
       expect(res.success).toBe(true);
       expect(mockPrisma.order.updateMany).toHaveBeenCalledTimes(1);
     });
@@ -1058,7 +1136,7 @@ describe("OrdersService", () => {
     // ── No side effects ───────────────────────────────────────────
 
     it("leaves the plan's other scheduled deliveries untouched", async () => {
-      await service.completeOrder("order-1");
+      await service.completeOrder('order-1');
       // Only the one order row is written; the schedule is never queried in
       // bulk, so Trial / Monthly future deliveries cannot be affected.
       expect(mockPrisma.planDelivery.update).not.toHaveBeenCalled();
@@ -1068,26 +1146,26 @@ describe("OrdersService", () => {
       expect(mockPrisma.planSelection.updateMany).not.toHaveBeenCalled();
     });
 
-    it("does not touch wallet, payment, cash or invoice records", async () => {
-      await service.completeOrder("order-1");
+    it('does not touch wallet, payment, cash or invoice records', async () => {
+      await service.completeOrder('order-1');
       expectNoFinancialOrScheduleWrites();
     });
 
     it("does not change the order's money or payment status", async () => {
-      await service.completeOrder("order-1");
+      await service.completeOrder('order-1');
       const data = mockPrisma.order.updateMany.mock.calls[0][0].data;
-      expect(Object.keys(data).sort()).toEqual(["completedAt", "status"]);
+      expect(Object.keys(data).sort()).toEqual(['completedAt', 'status']);
     });
 
-    it("does not create a replacement order", async () => {
-      await service.completeOrder("order-1");
+    it('does not create a replacement order', async () => {
+      await service.completeOrder('order-1');
       expect(mockPrisma.order.create).not.toHaveBeenCalled();
     });
 
     // ── Routed through the generic status endpoint ─────────────────
 
-    it("updateOrderStatus(COMPLETED) delegates to the guarded completion path", async () => {
-      const res = await service.updateOrderStatus("order-1", {
+    it('updateOrderStatus(COMPLETED) delegates to the guarded completion path', async () => {
+      const res = await service.updateOrderStatus('order-1', {
         status: OrderStatus.COMPLETED,
       });
       expect(res.success).toBe(true);
@@ -1097,7 +1175,7 @@ describe("OrdersService", () => {
       expect(mockPrisma.order.updateMany).toHaveBeenCalledTimes(1);
     });
 
-    it("updateOrderStatus(COMPLETED) still enforces delivery eligibility", async () => {
+    it('updateOrderStatus(COMPLETED) still enforces delivery eligibility', async () => {
       mockPrisma.order.findUnique.mockResolvedValue({
         ...deliveredOrder,
         planDelivery: {
@@ -1106,7 +1184,7 @@ describe("OrdersService", () => {
         },
       });
       await expect(
-        service.updateOrderStatus("order-1", { status: OrderStatus.COMPLETED }),
+        service.updateOrderStatus('order-1', { status: OrderStatus.COMPLETED }),
       ).rejects.toThrow(BadRequestException);
     });
   });
@@ -1115,7 +1193,7 @@ describe("OrdersService", () => {
   //  COMPLETED STATUS VISIBILITY
   // ══════════════════════════════════════════════════════════════
 
-  describe("COMPLETED status is reported back by every read path", () => {
+  describe('COMPLETED status is reported back by every read path', () => {
     const completedAt = new Date();
     const completed = {
       ...existingOrder,
@@ -1123,13 +1201,13 @@ describe("OrdersService", () => {
       completedAt,
       user: {
         id: USER,
-        mobile: "9999999999",
+        mobile: '9999999999',
         email: null,
-        customerProfile: { firstName: "Test", lastName: "User" },
+        customerProfile: { firstName: 'Test', lastName: 'User' },
       },
     };
 
-    it("customer order list reports COMPLETED", async () => {
+    it('customer order list reports COMPLETED', async () => {
       mockPrisma.order.findMany.mockResolvedValue([completed]);
       mockPrisma.order.count.mockResolvedValue(1);
 
@@ -1138,14 +1216,14 @@ describe("OrdersService", () => {
       expect(res.data[0].completedAt).toEqual(completedAt);
     });
 
-    it("customer order details report COMPLETED", async () => {
+    it('customer order details report COMPLETED', async () => {
       mockPrisma.order.findFirst.mockResolvedValue(completed);
-      const res = await service.getCustomerOrder(USER, "order-1");
+      const res = await service.getCustomerOrder(USER, 'order-1');
       expect(res.status).toBe(OrderStatus.COMPLETED);
       expect(res.completedAt).toEqual(completedAt);
     });
 
-    it("admin order list reports COMPLETED", async () => {
+    it('admin order list reports COMPLETED', async () => {
       mockPrisma.order.findMany.mockResolvedValue([completed]);
       mockPrisma.order.count.mockResolvedValue(1);
 
@@ -1154,27 +1232,29 @@ describe("OrdersService", () => {
       expect(res.data[0].completedAt).toEqual(completedAt);
     });
 
-    it("admin order details report COMPLETED", async () => {
+    it('admin order details report COMPLETED', async () => {
       mockPrisma.order.findUnique.mockResolvedValue(completed);
-      const res = await service.getAdminOrder("order-1");
+      const res = await service.getAdminOrder('order-1');
       expect(res.status).toBe(OrderStatus.COMPLETED);
       expect(res.completedAt).toEqual(completedAt);
     });
 
-    it("a COMPLETED order is still eligible for reorder", async () => {
+    it('a COMPLETED order is still eligible for reorder', async () => {
       mockPrisma.order.findFirst.mockResolvedValue(completed);
       mockPrisma.order.create.mockResolvedValue({
         ...existingOrder,
-        id: "new-order",
+        id: 'new-order',
         status: OrderStatus.PENDING,
       });
       mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
 
-      const res = await service.reorder(USER, "order-1", { addressId: "addr-1" });
+      const res = await service.reorder(USER, 'order-1', {
+        addressId: 'addr-1',
+      });
       expect(res.success).toBe(true);
     });
 
-    it("customer list passes a COMPLETED status filter straight through", async () => {
+    it('customer list passes a COMPLETED status filter straight through', async () => {
       mockPrisma.order.findMany.mockResolvedValue([]);
       mockPrisma.order.count.mockResolvedValue(0);
 
@@ -1184,7 +1264,7 @@ describe("OrdersService", () => {
       );
     });
 
-    it("admin list passes a COMPLETED status filter straight through", async () => {
+    it('admin list passes a COMPLETED status filter straight through', async () => {
       mockPrisma.order.findMany.mockResolvedValue([]);
       mockPrisma.order.count.mockResolvedValue(0);
 

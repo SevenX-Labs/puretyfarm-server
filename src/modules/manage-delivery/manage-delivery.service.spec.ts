@@ -1,17 +1,17 @@
-jest.mock("@nestjs/config", () => ({
+jest.mock('@nestjs/config', () => ({
   ConfigService: jest.fn().mockImplementation(() => ({ get: jest.fn() })),
 }));
 
-import { Test, TestingModule } from "@nestjs/testing";
-import { ManageDeliveryService } from "./manage-delivery.service";
-import { PlansService } from "../plans/plans.service";
-import { PrismaService } from "../../prisma/prisma.service";
+import { Test, TestingModule } from '@nestjs/testing';
+import { ManageDeliveryService } from './manage-delivery.service';
+import { PlansService } from '../plans/plans.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import {
   BadRequestException,
   NotFoundException,
   ConflictException,
   NotImplementedException,
-} from "@nestjs/common";
+} from '@nestjs/common';
 import {
   PlanType,
   DeliveryFrequency,
@@ -20,7 +20,7 @@ import {
   PlanSelectionStatus,
   ChangeRequestType,
   ChangeRequestStatus,
-} from "../plans/plans.constants";
+} from '../plans/plans.constants';
 
 // ── Date helpers ──
 function dateOnly(d: Date): Date {
@@ -33,14 +33,18 @@ function plusDays(n: number): Date {
   return d;
 }
 
-describe("ManageDeliveryService", () => {
+describe('ManageDeliveryService', () => {
   let service: ManageDeliveryService;
 
-  const USER = "user-1";
-  const ADMIN = "admin-1";
+  const USER = 'user-1';
+  const ADMIN = 'admin-1';
 
   const mockPrisma: any = {
-    planSelection: { findFirst: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
+    planSelection: {
+      findFirst: jest.fn(),
+      update: jest.fn(),
+      findUnique: jest.fn(),
+    },
     planDelivery: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -77,12 +81,12 @@ describe("ManageDeliveryService", () => {
     sellingPricePerLitrePaise: 8000,
     actualPricePerLitrePaise: 9000,
     deliveryFeePaise: 0,
-    deliveryStartTime: "06:00",
-    deliveryEndTime: "09:00",
+    deliveryStartTime: '06:00',
+    deliveryEndTime: '09:00',
   };
 
   const monthlySelection = {
-    id: "sel-1",
+    id: 'sel-1',
     userId: USER,
     planType: PlanType.MONTHLY,
     status: PlanSelectionStatus.CONFIRMED,
@@ -96,10 +100,34 @@ describe("ManageDeliveryService", () => {
   };
 
   const deliveries = [
-    { id: "d-past", deliveryDate: plusDays(-2), occurrence: 1, quantityLitres: 2, status: DeliveryStatus.DELIVERED },
-    { id: "d-today", deliveryDate: plusDays(0), occurrence: 3, quantityLitres: 2, status: DeliveryStatus.SCHEDULED },
-    { id: "d1", deliveryDate: plusDays(1), occurrence: 4, quantityLitres: 2, status: DeliveryStatus.SCHEDULED },
-    { id: "d2", deliveryDate: plusDays(2), occurrence: 5, quantityLitres: 2, status: DeliveryStatus.SCHEDULED },
+    {
+      id: 'd-past',
+      deliveryDate: plusDays(-2),
+      occurrence: 1,
+      quantityLitres: 2,
+      status: DeliveryStatus.DELIVERED,
+    },
+    {
+      id: 'd-today',
+      deliveryDate: plusDays(0),
+      occurrence: 3,
+      quantityLitres: 2,
+      status: DeliveryStatus.SCHEDULED,
+    },
+    {
+      id: 'd1',
+      deliveryDate: plusDays(1),
+      occurrence: 4,
+      quantityLitres: 2,
+      status: DeliveryStatus.SCHEDULED,
+    },
+    {
+      id: 'd2',
+      deliveryDate: plusDays(2),
+      occurrence: 5,
+      quantityLitres: 2,
+      status: DeliveryStatus.SCHEDULED,
+    },
   ];
 
   beforeEach(async () => {
@@ -141,15 +169,15 @@ describe("ManageDeliveryService", () => {
   //  GET
   // ══════════════════════════════════════════════════════════════
 
-  describe("getManageDelivery", () => {
-    it("returns the active plan and only upcoming deliveries", async () => {
+  describe('getManageDelivery', () => {
+    it('returns the active plan and only upcoming deliveries', async () => {
       const res = await service.getManageDelivery(USER);
       expect(res.activePlan.planType).toBe(PlanType.MONTHLY);
       expect(res.activePlan.quantityLitres).toBe(2);
       expect(res.upcomingDeliveries).toHaveLength(3);
     });
 
-    it("marks only strictly-future scheduled deliveries as modifiable", async () => {
+    it('marks only strictly-future scheduled deliveries as modifiable', async () => {
       const res = await service.getManageDelivery(USER);
       const todayView = res.upcomingDeliveries.find(
         (d) => d.date === TODAY.toISOString().slice(0, 10),
@@ -161,16 +189,20 @@ describe("ManageDeliveryService", () => {
       expect(futureView.canSkip).toBe(true);
     });
 
-    it("scopes lookup to authenticated user", async () => {
+    it('scopes lookup to authenticated user', async () => {
       await service.getManageDelivery(USER);
       expect(mockPrisma.planSelection.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining({ userId: USER }) }),
+        expect.objectContaining({
+          where: expect.objectContaining({ userId: USER }),
+        }),
       );
     });
 
-    it("throws NotFound when no active plan", async () => {
+    it('throws NotFound when no active plan', async () => {
       mockPrisma.planSelection.findFirst.mockResolvedValue(null);
-      await expect(service.getManageDelivery(USER)).rejects.toThrow(NotFoundException);
+      await expect(service.getManageDelivery(USER)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -178,46 +210,57 @@ describe("ManageDeliveryService", () => {
   //  1. SKIP — applies immediately
   // ══════════════════════════════════════════════════════════════
 
-  describe("skipDelivery", () => {
-    it("skips a future delivery immediately (no approval)", async () => {
+  describe('skipDelivery', () => {
+    it('skips a future delivery immediately (no approval)', async () => {
       mockPrisma.planDelivery.findFirst.mockResolvedValue(deliveries[2]);
       const res = await service.skipDelivery(USER, {
         deliveryDate: plusDays(1).toISOString().slice(0, 10),
       });
       expect(res.success).toBe(true);
-      expect(res.message).toBe("Delivery skipped successfully.");
+      expect(res.message).toBe('Delivery skipped successfully.');
       expect(mockPrisma.planDelivery.updateMany).toHaveBeenCalledWith({
-        where: { id: "d1", status: DeliveryStatus.SCHEDULED },
+        where: { id: 'd1', status: DeliveryStatus.SCHEDULED },
         data: { status: DeliveryStatus.SKIPPED },
       });
     });
 
-    it("rejects a past date", async () => {
+    it('rejects a past date', async () => {
       await expect(
-        service.skipDelivery(USER, { deliveryDate: plusDays(-1).toISOString().slice(0, 10) }),
+        service.skipDelivery(USER, {
+          deliveryDate: plusDays(-1).toISOString().slice(0, 10),
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
     it("rejects today's delivery", async () => {
       await expect(
-        service.skipDelivery(USER, { deliveryDate: TODAY.toISOString().slice(0, 10) }),
+        service.skipDelivery(USER, {
+          deliveryDate: TODAY.toISOString().slice(0, 10),
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("is race-safe: concurrent skip fails cleanly", async () => {
+    it('is race-safe: concurrent skip fails cleanly', async () => {
       mockPrisma.planDelivery.findFirst.mockResolvedValue(deliveries[2]);
       mockPrisma.planDelivery.updateMany.mockResolvedValueOnce({ count: 0 });
       await expect(
-        service.skipDelivery(USER, { deliveryDate: plusDays(1).toISOString().slice(0, 10) }),
+        service.skipDelivery(USER, {
+          deliveryDate: plusDays(1).toISOString().slice(0, 10),
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("scopes delivery lookup to authenticated user (IDOR protection)", async () => {
+    it('scopes delivery lookup to authenticated user (IDOR protection)', async () => {
       mockPrisma.planDelivery.findFirst.mockResolvedValue(deliveries[2]);
-      await service.skipDelivery(USER, { deliveryDate: plusDays(1).toISOString().slice(0, 10) });
+      await service.skipDelivery(USER, {
+        deliveryDate: plusDays(1).toISOString().slice(0, 10),
+      });
       expect(mockPrisma.planDelivery.findFirst).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ userId: USER, selectionId: "sel-1" }),
+          where: expect.objectContaining({
+            userId: USER,
+            selectionId: 'sel-1',
+          }),
         }),
       );
     });
@@ -227,19 +270,24 @@ describe("ManageDeliveryService", () => {
   //  2. PAUSE — applies immediately
   // ══════════════════════════════════════════════════════════════
 
-  describe("pauseDelivery (approval-gated request)", () => {
+  describe('pauseDelivery (approval-gated request)', () => {
     beforeEach(() => {
       mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue(null);
       mockPrisma.manageDeliveryChangeRequest.create.mockImplementation(
-        ({ data }: any) => ({ id: "req-pause", createdAt: new Date(), ...data }),
+        ({ data }: any) => ({
+          id: 'req-pause',
+          createdAt: new Date(),
+          ...data,
+        }),
       );
     });
 
-    it("creates a PENDING PAUSE request and changes nothing live", async () => {
+    it('creates a PENDING PAUSE request and changes nothing live', async () => {
       const res = await service.pauseDelivery(USER, {});
 
       expect(res.success).toBe(true);
-      const call = mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
+      const call =
+        mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
       expect(call.data.requestType).toBe(ChangeRequestType.PAUSE);
       expect(call.data.status).toBe(ChangeRequestStatus.PENDING);
 
@@ -249,25 +297,28 @@ describe("ManageDeliveryService", () => {
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
     });
 
-    it("persists a validated resumeDate on the request", async () => {
+    it('persists a validated resumeDate on the request', async () => {
       const resumeDate = plusDays(3).toISOString().slice(0, 10);
       await service.pauseDelivery(USER, { resumeDate });
-      const call = mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
+      const call =
+        mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
       expect(call.data.requestedConfiguration.resumeDate).toBe(resumeDate);
     });
 
-    it("rejects a past resumeDate", async () => {
+    it('rejects a past resumeDate', async () => {
       await expect(
         service.pauseDelivery(USER, {
           resumeDate: plusDays(-1).toISOString().slice(0, 10),
         }),
       ).rejects.toThrow(BadRequestException);
-      expect(mockPrisma.manageDeliveryChangeRequest.create).not.toHaveBeenCalled();
+      expect(
+        mockPrisma.manageDeliveryChangeRequest.create,
+      ).not.toHaveBeenCalled();
     });
 
-    it("refuses a second pause request while one is pending", async () => {
+    it('refuses a second pause request while one is pending', async () => {
       mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue({
-        id: "req-existing",
+        id: 'req-existing',
         status: ChangeRequestStatus.PENDING,
       });
       await expect(service.pauseDelivery(USER, {})).rejects.toThrow(
@@ -276,15 +327,19 @@ describe("ManageDeliveryService", () => {
     });
   });
 
-  describe("resumeDelivery (approval-gated request)", () => {
+  describe('resumeDelivery (approval-gated request)', () => {
     beforeEach(() => {
       mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue(null);
       mockPrisma.manageDeliveryChangeRequest.create.mockImplementation(
-        ({ data }: any) => ({ id: "req-resume", createdAt: new Date(), ...data }),
+        ({ data }: any) => ({
+          id: 'req-resume',
+          createdAt: new Date(),
+          ...data,
+        }),
       );
     });
 
-    it("creates a PENDING RESUME request for a PAUSED plan", async () => {
+    it('creates a PENDING RESUME request for a PAUSED plan', async () => {
       mockPrisma.planSelection.findFirst.mockResolvedValue({
         ...selection,
         status: PlanSelectionStatus.PAUSED,
@@ -292,14 +347,15 @@ describe("ManageDeliveryService", () => {
 
       const res = await service.resumeDelivery(USER);
       expect(res.success).toBe(true);
-      const call = mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
+      const call =
+        mockPrisma.manageDeliveryChangeRequest.create.mock.calls[0][0];
       expect(call.data.requestType).toBe(ChangeRequestType.RESUME);
       expect(call.data.status).toBe(ChangeRequestStatus.PENDING);
       // Status stays PAUSED until an admin approves.
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
     });
 
-    it("rejects a resume when no paused plan exists", async () => {
+    it('rejects a resume when no paused plan exists', async () => {
       mockPrisma.planSelection.findFirst.mockResolvedValue(null);
       await expect(service.resumeDelivery(USER)).rejects.toThrow(
         NotFoundException,
@@ -311,28 +367,30 @@ describe("ManageDeliveryService", () => {
   //  3. CHANGE QUANTITY — creates PENDING request
   // ══════════════════════════════════════════════════════════════
 
-  describe("changeQuantity", () => {
-    it("creates a PENDING request instead of modifying active schedule", async () => {
+  describe('changeQuantity', () => {
+    it('creates a PENDING request instead of modifying active schedule', async () => {
       const mockRequest = {
-        id: "req-1",
+        id: 'req-1',
         requestType: ChangeRequestType.CHANGE_QUANTITY,
         status: ChangeRequestStatus.PENDING,
       };
-      mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue(mockRequest);
+      mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue(
+        mockRequest,
+      );
 
       const res = await service.changeQuantity(USER, { quantityLitres: 3 });
 
       expect(res.success).toBe(true);
-      expect(res.message).toContain("submitted for admin approval");
+      expect(res.message).toContain('submitted for admin approval');
       expect(res.request.type).toBe(ChangeRequestType.CHANGE_QUANTITY);
       expect(res.request.status).toBe(ChangeRequestStatus.PENDING);
       expect(res.request.currentQuantity).toBe(2);
       expect(res.request.requestedQuantity).toBe(3);
     });
 
-    it("does NOT modify PlanDelivery rows", async () => {
+    it('does NOT modify PlanDelivery rows', async () => {
       mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue({
-        id: "req-1",
+        id: 'req-1',
         requestType: ChangeRequestType.CHANGE_QUANTITY,
         status: ChangeRequestStatus.PENDING,
       });
@@ -344,9 +402,9 @@ describe("ManageDeliveryService", () => {
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
     });
 
-    it("rejects duplicate pending quantity request", async () => {
+    it('rejects duplicate pending quantity request', async () => {
       mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue({
-        id: "existing",
+        id: 'existing',
         status: ChangeRequestStatus.PENDING,
       });
 
@@ -360,10 +418,10 @@ describe("ManageDeliveryService", () => {
   //  4. CHANGE FREQUENCY — creates PENDING request
   // ══════════════════════════════════════════════════════════════
 
-  describe("changeFrequency", () => {
-    it("creates a PENDING request", async () => {
+  describe('changeFrequency', () => {
+    it('creates a PENDING request', async () => {
       mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue({
-        id: "req-2",
+        id: 'req-2',
         requestType: ChangeRequestType.CHANGE_FREQUENCY,
         status: ChangeRequestStatus.PENDING,
       });
@@ -373,13 +431,13 @@ describe("ManageDeliveryService", () => {
       });
 
       expect(res.success).toBe(true);
-      expect(res.message).toContain("submitted for admin approval");
+      expect(res.message).toContain('submitted for admin approval');
       expect(res.request.type).toBe(ChangeRequestType.CHANGE_FREQUENCY);
     });
 
-    it("does NOT modify active schedule", async () => {
+    it('does NOT modify active schedule', async () => {
       mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue({
-        id: "req-2",
+        id: 'req-2',
         requestType: ChangeRequestType.CHANGE_FREQUENCY,
         status: ChangeRequestStatus.PENDING,
       });
@@ -393,29 +451,33 @@ describe("ManageDeliveryService", () => {
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
     });
 
-    it("rejects non-monthly plan", async () => {
+    it('rejects non-monthly plan', async () => {
       mockPrisma.planSelection.findFirst.mockResolvedValue({
         ...monthlySelection,
         planType: PlanType.SEVEN_DAY_TRIAL,
       });
       await expect(
-        service.changeFrequency(USER, { frequency: DeliveryFrequency.ALTERNATE_DAYS }),
+        service.changeFrequency(USER, {
+          frequency: DeliveryFrequency.ALTERNATE_DAYS,
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects same frequency", async () => {
+    it('rejects same frequency', async () => {
       await expect(
         service.changeFrequency(USER, { frequency: DeliveryFrequency.DAILY }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects duplicate pending frequency request", async () => {
+    it('rejects duplicate pending frequency request', async () => {
       mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue({
-        id: "existing",
+        id: 'existing',
         status: ChangeRequestStatus.PENDING,
       });
       await expect(
-        service.changeFrequency(USER, { frequency: DeliveryFrequency.ALTERNATE_DAYS }),
+        service.changeFrequency(USER, {
+          frequency: DeliveryFrequency.ALTERNATE_DAYS,
+        }),
       ).rejects.toThrow(ConflictException);
     });
   });
@@ -424,32 +486,34 @@ describe("ManageDeliveryService", () => {
   //  5. CHANGE PLAN — creates PENDING request
   // ══════════════════════════════════════════════════════════════
 
-  describe("changePlan", () => {
-    it("creates a PENDING request", async () => {
+  describe('changePlan', () => {
+    it('creates a PENDING request', async () => {
       mockPrisma.planConfig.findUnique.mockResolvedValue({
         planType: PlanType.BUY_ONCE,
         isActive: true,
       });
       mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue({
-        id: "req-3",
+        id: 'req-3',
         requestType: ChangeRequestType.CHANGE_PLAN,
         status: ChangeRequestStatus.PENDING,
       });
 
-      const res = await service.changePlan(USER, { planType: PlanType.BUY_ONCE });
+      const res = await service.changePlan(USER, {
+        planType: PlanType.BUY_ONCE,
+      });
 
       expect(res.success).toBe(true);
-      expect(res.message).toContain("submitted for admin approval");
+      expect(res.message).toContain('submitted for admin approval');
       expect(res.request.type).toBe(ChangeRequestType.CHANGE_PLAN);
     });
 
-    it("does NOT modify active plan", async () => {
+    it('does NOT modify active plan', async () => {
       mockPrisma.planConfig.findUnique.mockResolvedValue({
         planType: PlanType.BUY_ONCE,
         isActive: true,
       });
       mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue({
-        id: "req-3",
+        id: 'req-3',
         requestType: ChangeRequestType.CHANGE_PLAN,
         status: ChangeRequestStatus.PENDING,
       });
@@ -459,13 +523,13 @@ describe("ManageDeliveryService", () => {
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
     });
 
-    it("rejects same plan type", async () => {
+    it('rejects same plan type', async () => {
       await expect(
         service.changePlan(USER, { planType: PlanType.MONTHLY }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects inactive target plan", async () => {
+    it('rejects inactive target plan', async () => {
       mockPrisma.planConfig.findUnique.mockResolvedValue({
         planType: PlanType.BUY_ONCE,
         isActive: false,
@@ -475,7 +539,7 @@ describe("ManageDeliveryService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects nonexistent target plan", async () => {
+    it('rejects nonexistent target plan', async () => {
       mockPrisma.planConfig.findUnique.mockResolvedValue(null);
       await expect(
         service.changePlan(USER, { planType: PlanType.BUY_ONCE }),
@@ -487,11 +551,11 @@ describe("ManageDeliveryService", () => {
   //  CUSTOMER — VIEW REQUESTS
   // ══════════════════════════════════════════════════════════════
 
-  describe("getCustomerRequests", () => {
-    it("returns formatted requests scoped to the user", async () => {
+  describe('getCustomerRequests', () => {
+    it('returns formatted requests scoped to the user', async () => {
       mockPrisma.manageDeliveryChangeRequest.findMany.mockResolvedValue([
         {
-          id: "req-1",
+          id: 'req-1',
           requestType: ChangeRequestType.CHANGE_QUANTITY,
           status: ChangeRequestStatus.PENDING,
           currentConfiguration: { quantity: 2 },
@@ -504,41 +568,43 @@ describe("ManageDeliveryService", () => {
 
       const res = await service.getCustomerRequests(USER);
       expect(res).toHaveLength(1);
-      expect(res[0].message).toContain("pending admin approval");
+      expect(res[0].message).toContain('pending admin approval');
     });
 
-    it("scopes to the authenticated user only", async () => {
+    it('scopes to the authenticated user only', async () => {
       mockPrisma.manageDeliveryChangeRequest.findMany.mockResolvedValue([]);
       await service.getCustomerRequests(USER);
-      expect(mockPrisma.manageDeliveryChangeRequest.findMany).toHaveBeenCalledWith(
+      expect(
+        mockPrisma.manageDeliveryChangeRequest.findMany,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({ where: { userId: USER } }),
       );
     });
   });
 
-  describe("getCustomerRequest", () => {
-    it("returns a single request for the user", async () => {
+  describe('getCustomerRequest', () => {
+    it('returns a single request for the user', async () => {
       mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue({
-        id: "req-1",
+        id: 'req-1',
         requestType: ChangeRequestType.CHANGE_QUANTITY,
         status: ChangeRequestStatus.REJECTED,
         currentConfiguration: { quantity: 2 },
         requestedConfiguration: { quantity: 3 },
         createdAt: new Date(),
         reviewedAt: new Date(),
-        adminNote: "Capacity exceeded",
+        adminNote: 'Capacity exceeded',
       });
 
-      const res = await service.getCustomerRequest(USER, "req-1");
-      expect(res.id).toBe("req-1");
-      expect(res.message).toContain("rejected");
-      expect(res.reason).toBe("Capacity exceeded");
+      const res = await service.getCustomerRequest(USER, 'req-1');
+      expect(res.id).toBe('req-1');
+      expect(res.message).toContain('rejected');
+      expect(res.reason).toBe('Capacity exceeded');
     });
 
-    it("throws NotFound when request belongs to another user", async () => {
+    it('throws NotFound when request belongs to another user', async () => {
       mockPrisma.manageDeliveryChangeRequest.findFirst.mockResolvedValue(null);
       await expect(
-        service.getCustomerRequest(USER, "req-other"),
+        service.getCustomerRequest(USER, 'req-other'),
       ).rejects.toThrow(NotFoundException);
     });
   });
@@ -547,11 +613,11 @@ describe("ManageDeliveryService", () => {
   //  ADMIN — APPROVE
   // ══════════════════════════════════════════════════════════════
 
-  describe("approveRequest", () => {
+  describe('approveRequest', () => {
     const pendingRequest = {
-      id: "req-1",
+      id: 'req-1',
       userId: USER,
-      planSelectionId: "sel-1",
+      planSelectionId: 'sel-1',
       requestType: ChangeRequestType.CHANGE_QUANTITY,
       status: ChangeRequestStatus.APPROVED,
       currentConfiguration: { quantity: 2 },
@@ -560,14 +626,18 @@ describe("ManageDeliveryService", () => {
       reviewedAt: expect.any(Date),
     };
 
-    it("blocks CHANGE_QUANTITY approval and leaves the plan untouched", async () => {
+    it('blocks CHANGE_QUANTITY approval and leaves the plan untouched', async () => {
       // Quantity-change approval is temporarily disabled pending a prepaid-plan
       // billing/refund/settlement policy. Approval must throw (rolling the
       // transaction back so the request stays PENDING) and apply nothing.
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
-      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(pendingRequest);
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
+      });
+      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(
+        pendingRequest,
+      );
 
-      await expect(service.approveRequest(ADMIN, "req-1")).rejects.toThrow(
+      await expect(service.approveRequest(ADMIN, 'req-1')).rejects.toThrow(
         NotImplementedException,
       );
 
@@ -577,10 +647,12 @@ describe("ManageDeliveryService", () => {
       expect(mockPrisma.planDelivery.updateMany).not.toHaveBeenCalled();
     });
 
-    it("blocks CHANGE_PLAN approval and leaves the plan untouched", async () => {
+    it('blocks CHANGE_PLAN approval and leaves the plan untouched', async () => {
       // Plan-type changes are temporarily disabled until pricing, duration,
       // end-date, quantity-limit, delivery and financial-snapshot rules exist.
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
+      });
       mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue({
         ...pendingRequest,
         requestType: ChangeRequestType.CHANGE_PLAN,
@@ -588,21 +660,27 @@ describe("ManageDeliveryService", () => {
         requestedConfiguration: { planType: PlanType.BUY_ONCE },
       });
 
-      await expect(service.approveRequest(ADMIN, "req-1")).rejects.toThrow(
+      await expect(service.approveRequest(ADMIN, 'req-1')).rejects.toThrow(
         NotImplementedException,
       );
 
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
     });
 
-    it("performs atomic PENDING→APPROVED transition (race-safe)", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
-      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(pendingRequest);
+    it('performs atomic PENDING→APPROVED transition (race-safe)', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
+      });
+      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(
+        pendingRequest,
+      );
 
-      await service.approveRequest(ADMIN, "req-1");
+      await service.approveRequest(ADMIN, 'req-1');
 
-      expect(mockPrisma.manageDeliveryChangeRequest.updateMany).toHaveBeenCalledWith({
-        where: { id: "req-1", status: ChangeRequestStatus.PENDING },
+      expect(
+        mockPrisma.manageDeliveryChangeRequest.updateMany,
+      ).toHaveBeenCalledWith({
+        where: { id: 'req-1', status: ChangeRequestStatus.PENDING },
         data: expect.objectContaining({
           status: ChangeRequestStatus.APPROVED,
           adminId: ADMIN,
@@ -610,48 +688,60 @@ describe("ManageDeliveryService", () => {
       });
     });
 
-    it("rejects approval of already-approved request", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+    it('rejects approval of already-approved request', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 0,
+      });
       mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue({
         ...pendingRequest,
         status: ChangeRequestStatus.APPROVED,
       });
 
-      await expect(
-        service.approveRequest(ADMIN, "req-1"),
-      ).rejects.toThrow(ConflictException);
+      await expect(service.approveRequest(ADMIN, 'req-1')).rejects.toThrow(
+        ConflictException,
+      );
     });
 
-    it("rejects approval of already-rejected request", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+    it('rejects approval of already-rejected request', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 0,
+      });
       mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue({
         ...pendingRequest,
         status: ChangeRequestStatus.REJECTED,
       });
 
-      await expect(
-        service.approveRequest(ADMIN, "req-1"),
-      ).rejects.toThrow(ConflictException);
+      await expect(service.approveRequest(ADMIN, 'req-1')).rejects.toThrow(
+        ConflictException,
+      );
     });
 
-    it("throws NotFound for nonexistent request", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+    it('throws NotFound for nonexistent request', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 0,
+      });
       mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.approveRequest(ADMIN, "nonexistent"),
+        service.approveRequest(ADMIN, 'nonexistent'),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("stores adminId from function arg (not from request body)", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
-      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(pendingRequest);
+    it('stores adminId from function arg (not from request body)', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
+      });
+      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(
+        pendingRequest,
+      );
 
-      await service.approveRequest("admin-specific-id", "req-1");
+      await service.approveRequest('admin-specific-id', 'req-1');
 
-      expect(mockPrisma.manageDeliveryChangeRequest.updateMany).toHaveBeenCalledWith(
+      expect(
+        mockPrisma.manageDeliveryChangeRequest.updateMany,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ adminId: "admin-specific-id" }),
+          data: expect.objectContaining({ adminId: 'admin-specific-id' }),
         }),
       );
     });
@@ -661,7 +751,7 @@ describe("ManageDeliveryService", () => {
   //  RESUME — price-snapshot reconciliation (no silent repricing)
   // ══════════════════════════════════════════════════════════════
 
-  describe("approveRequest — RESUME price snapshot", () => {
+  describe('approveRequest — RESUME price snapshot', () => {
     const pausedSelection = {
       ...monthlySelection,
       status: PlanSelectionStatus.PAUSED,
@@ -669,9 +759,9 @@ describe("ManageDeliveryService", () => {
     };
 
     const resumeRequest = {
-      id: "req-resume",
+      id: 'req-resume',
       userId: USER,
-      planSelectionId: "sel-1",
+      planSelectionId: 'sel-1',
       requestType: ChangeRequestType.RESUME,
       status: ChangeRequestStatus.APPROVED,
       currentConfiguration: {},
@@ -679,37 +769,45 @@ describe("ManageDeliveryService", () => {
     };
 
     beforeEach(() => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
-      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(resumeRequest);
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
+      });
+      mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(
+        resumeRequest,
+      );
       mockPrisma.planSelection.findUnique.mockResolvedValue(pausedSelection);
     });
 
     it("materialises top-up orders at the subscription's locked-in price", async () => {
       mockPrisma.order.findFirst.mockResolvedValue(ESTABLISHED_SNAPSHOT);
 
-      await service.approveRequest(ADMIN, "req-resume");
+      await service.approveRequest(ADMIN, 'req-resume');
 
       // The established snapshot — not the current PlanConfig — is passed to
       // the single pricing path, so an admin price edit cannot reprice a
       // prepaid subscription on resume.
-      expect(mockPlansService.materializeOrdersForSchedule).toHaveBeenCalledWith(
+      expect(
+        mockPlansService.materializeOrdersForSchedule,
+      ).toHaveBeenCalledWith(
         expect.anything(),
-        "sel-1",
+        'sel-1',
         USER,
         PlanType.MONTHLY,
         ESTABLISHED_SNAPSHOT,
       );
     });
 
-    it("blocks the resume when no price snapshot can be established", async () => {
+    it('blocks the resume when no price snapshot can be established', async () => {
       // No prior order carries a price snapshot: the subscription's locked-in
       // price is unknown, so the resume is blocked instead of guessing a price.
       mockPrisma.order.findFirst.mockResolvedValue(null);
 
-      await expect(service.approveRequest(ADMIN, "req-resume")).rejects.toThrow(
+      await expect(service.approveRequest(ADMIN, 'req-resume')).rejects.toThrow(
         ConflictException,
       );
-      expect(mockPlansService.materializeOrdersForSchedule).not.toHaveBeenCalled();
+      expect(
+        mockPlansService.materializeOrdersForSchedule,
+      ).not.toHaveBeenCalled();
     });
   });
 
@@ -717,65 +815,79 @@ describe("ManageDeliveryService", () => {
   //  ADMIN — REJECT
   // ══════════════════════════════════════════════════════════════
 
-  describe("rejectRequest", () => {
-    it("rejects with a note and does NOT modify active config", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
+  describe('rejectRequest', () => {
+    it('rejects with a note and does NOT modify active config', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
+      });
 
-      const res = await service.rejectRequest(ADMIN, "req-1", {
-        note: "Capacity exceeded",
+      const res = await service.rejectRequest(ADMIN, 'req-1', {
+        note: 'Capacity exceeded',
       });
 
       expect(res.success).toBe(true);
       expect(res.request.status).toBe(ChangeRequestStatus.REJECTED);
-      expect(res.request.adminNote).toBe("Capacity exceeded");
+      expect(res.request.adminNote).toBe('Capacity exceeded');
       // Must NOT touch the active plan/schedule.
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
       expect(mockPrisma.planDelivery.updateMany).not.toHaveBeenCalled();
     });
 
-    it("stores the admin note", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
-
-      await service.rejectRequest(ADMIN, "req-1", {
-        note: "Area capacity full",
+    it('stores the admin note', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
       });
 
-      expect(mockPrisma.manageDeliveryChangeRequest.updateMany).toHaveBeenCalledWith(
+      await service.rejectRequest(ADMIN, 'req-1', {
+        note: 'Area capacity full',
+      });
+
+      expect(
+        mockPrisma.manageDeliveryChangeRequest.updateMany,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ adminNote: "Area capacity full" }),
+          data: expect.objectContaining({ adminNote: 'Area capacity full' }),
         }),
       );
     });
 
-    it("prevents rejecting a non-PENDING request", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+    it('prevents rejecting a non-PENDING request', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 0,
+      });
       mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue({
-        id: "req-1",
+        id: 'req-1',
         status: ChangeRequestStatus.APPROVED,
       });
 
       await expect(
-        service.rejectRequest(ADMIN, "req-1", { note: "reason" }),
+        service.rejectRequest(ADMIN, 'req-1', { note: 'reason' }),
       ).rejects.toThrow(ConflictException);
     });
 
-    it("throws NotFound for nonexistent request", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+    it('throws NotFound for nonexistent request', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 0,
+      });
       mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.rejectRequest(ADMIN, "nonexistent", { note: "reason" }),
+        service.rejectRequest(ADMIN, 'nonexistent', { note: 'reason' }),
       ).rejects.toThrow(NotFoundException);
     });
 
-    it("adminId comes from JWT.sub, not request body", async () => {
-      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({ count: 1 });
+    it('adminId comes from JWT.sub, not request body', async () => {
+      mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+        count: 1,
+      });
 
-      await service.rejectRequest("admin-xyz", "req-1", { note: "reason" });
+      await service.rejectRequest('admin-xyz', 'req-1', { note: 'reason' });
 
-      expect(mockPrisma.manageDeliveryChangeRequest.updateMany).toHaveBeenCalledWith(
+      expect(
+        mockPrisma.manageDeliveryChangeRequest.updateMany,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ adminId: "admin-xyz" }),
+          data: expect.objectContaining({ adminId: 'admin-xyz' }),
         }),
       );
     });
@@ -785,11 +897,11 @@ describe("ManageDeliveryService", () => {
   //  ADMIN — LIST REQUESTS
   // ══════════════════════════════════════════════════════════════
 
-  describe("getAdminRequests", () => {
-    it("returns paginated requests with customer info", async () => {
+  describe('getAdminRequests', () => {
+    it('returns paginated requests with customer info', async () => {
       mockPrisma.manageDeliveryChangeRequest.findMany.mockResolvedValue([
         {
-          id: "req-1",
+          id: 'req-1',
           requestType: ChangeRequestType.CHANGE_QUANTITY,
           status: ChangeRequestStatus.PENDING,
           currentConfiguration: {},
@@ -799,9 +911,9 @@ describe("ManageDeliveryService", () => {
           createdAt: new Date(),
           user: {
             id: USER,
-            mobile: "9999999999",
-            email: "test@test.com",
-            customerProfile: { firstName: "Test", lastName: "User" },
+            mobile: '9999999999',
+            email: 'test@test.com',
+            customerProfile: { firstName: 'Test', lastName: 'User' },
           },
         },
       ]);
@@ -809,19 +921,23 @@ describe("ManageDeliveryService", () => {
 
       const res = await service.getAdminRequests({});
       expect(res.data).toHaveLength(1);
-      expect(res.data[0].customer.name).toBe("Test User");
+      expect(res.data[0].customer.name).toBe('Test User');
       expect(res.pagination.total).toBe(1);
     });
 
-    it("filters by status", async () => {
+    it('filters by status', async () => {
       mockPrisma.manageDeliveryChangeRequest.findMany.mockResolvedValue([]);
       mockPrisma.manageDeliveryChangeRequest.count.mockResolvedValue(0);
 
       await service.getAdminRequests({ status: ChangeRequestStatus.PENDING });
 
-      expect(mockPrisma.manageDeliveryChangeRequest.findMany).toHaveBeenCalledWith(
+      expect(
+        mockPrisma.manageDeliveryChangeRequest.findMany,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ status: ChangeRequestStatus.PENDING }),
+          where: expect.objectContaining({
+            status: ChangeRequestStatus.PENDING,
+          }),
         }),
       );
     });
@@ -831,10 +947,10 @@ describe("ManageDeliveryService", () => {
   //  CHANGE SCHEDULE (legacy endpoint, now creates request)
   // ══════════════════════════════════════════════════════════════
 
-  describe("changeSchedule", () => {
-    it("creates a PENDING request instead of modifying schedule directly", async () => {
+  describe('changeSchedule', () => {
+    it('creates a PENDING request instead of modifying schedule directly', async () => {
       mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue({
-        id: "req-sch",
+        id: 'req-sch',
         requestType: ChangeRequestType.CHANGE_FREQUENCY,
         status: ChangeRequestStatus.PENDING,
       });
@@ -846,12 +962,12 @@ describe("ManageDeliveryService", () => {
       });
 
       expect(res.success).toBe(true);
-      expect(res.message).toContain("submitted for admin approval");
+      expect(res.message).toContain('submitted for admin approval');
       expect(mockPrisma.planDelivery.deleteMany).not.toHaveBeenCalled();
       expect(mockPrisma.planDelivery.createMany).not.toHaveBeenCalled();
     });
 
-    it("rejects non-monthly plan", async () => {
+    it('rejects non-monthly plan', async () => {
       mockPrisma.planSelection.findFirst.mockResolvedValue({
         ...monthlySelection,
         planType: PlanType.SEVEN_DAY_TRIAL,
@@ -865,7 +981,7 @@ describe("ManageDeliveryService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("rejects ALTERNATING config missing quantityB", async () => {
+    it('rejects ALTERNATING config missing quantityB', async () => {
       await expect(
         service.changeSchedule(USER, {
           frequency: DeliveryFrequency.DAILY,

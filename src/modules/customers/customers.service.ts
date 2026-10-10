@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ProfileStorageService } from '../profile/storage/profile-storage.service';
 import { SIGNED_URL_EXPIRY_SECONDS } from '../profile/profile.service';
@@ -114,7 +110,10 @@ export class CustomersService {
    */
   async getCustomers(query: QueryCustomersDto): Promise<CustomerListResponse> {
     const page = Math.max(1, Math.floor(Number(query.page) || 1));
-    const limit = Math.min(100, Math.max(1, Math.floor(Number(query.limit) || 20)));
+    const limit = Math.min(
+      100,
+      Math.max(1, Math.floor(Number(query.limit) || 20)),
+    );
     const skip = (page - 1) * limit;
 
     const trimmedSearch = query.search?.trim();
@@ -145,7 +144,12 @@ export class CustomersService {
           customerProfile: {
             AND: [
               { firstName: { contains: parts[0], mode: 'insensitive' } },
-              { lastName: { contains: parts.slice(1).join(' '), mode: 'insensitive' } },
+              {
+                lastName: {
+                  contains: parts.slice(1).join(' '),
+                  mode: 'insensitive',
+                },
+              },
             ],
           },
         });

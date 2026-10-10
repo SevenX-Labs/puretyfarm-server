@@ -4,32 +4,39 @@ import {
   NotFoundException,
   ConflictException,
   Logger,
-} from "@nestjs/common";
-import { PrismaService } from "../../prisma/prisma.service";
+} from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
 import {
   OrderStatus,
   PaymentStatus,
   ALLOWED_STATUS_TRANSITIONS,
   REORDER_ELIGIBLE_STATUSES,
   COMPLETION_ELIGIBLE_STATUSES,
-} from "./orders.constants";
+} from './orders.constants';
 import {
   generateOrderNumber,
   generateInvoiceNumber,
-} from "./order-number.util";
+} from './order-number.util';
 import {
   PlanType,
   DeliveryStatus,
   PlanSelectionStatus,
-} from "../plans/plans.constants";
-import { CreateOrderDto } from "./dto/customer/create-order.dto";
-import { ReorderDto } from "./dto/customer/reorder.dto";
-import { CustomerListOrdersQueryDto } from "./dto/customer/list-orders-query.dto";
-import { AdminListOrdersQueryDto } from "./dto/admin/list-orders-query.dto";
-import { UpdateOrderStatusDto } from "./dto/admin/update-order-status.dto";
-import { toDateOnly, resolveFirstDeliveryDate } from "../plans/plans.service";
+  QUANTITY_MIN,
+  QUANTITY_MAX,
+} from '../plans/plans.constants';
+import { CreateOrderDto } from './dto/customer/create-order.dto';
+import { ReorderDto } from './dto/customer/reorder.dto';
+import { CustomerListOrdersQueryDto } from './dto/customer/list-orders-query.dto';
+import { AdminListOrdersQueryDto } from './dto/admin/list-orders-query.dto';
+import { UpdateOrderStatusDto } from './dto/admin/update-order-status.dto';
+import { BulkUpdateOrderStatusDto } from './dto/admin/bulk-update-order-status.dto';
+import { BulkUpdateOrderQuantityDto } from './dto/admin/bulk-update-order-quantity.dto';
+import { toDateOnly, resolveFirstDeliveryDate } from '../plans/plans.service';
 
-const ACTIVE_STATUSES = [PlanSelectionStatus.CONFIRMED, PlanSelectionStatus.ACTIVE];
+const ACTIVE_STATUSES = [
+  PlanSelectionStatus.CONFIRMED,
+  PlanSelectionStatus.ACTIVE,
+];
 
 @Injectable()
 export class OrdersService {
@@ -58,7 +65,9 @@ export class OrdersService {
       where: { id: addressId, userId },
     });
     if (!address) {
-      throw new BadRequestException("Address not found or does not belong to you");
+      throw new BadRequestException(
+        'Address not found or does not belong to you',
+      );
     }
     return {
       fullName: address.fullName,
@@ -87,10 +96,14 @@ export class OrdersService {
         where: { id: dto.planDeliveryId, userId },
       });
       if (!delivery) {
-        throw new BadRequestException("Delivery not found or does not belong to you");
+        throw new BadRequestException(
+          'Delivery not found or does not belong to you',
+        );
       }
       if (delivery.status !== DeliveryStatus.SCHEDULED) {
-        throw new BadRequestException("This delivery is not in a schedulable state");
+        throw new BadRequestException(
+          'This delivery is not in a schedulable state',
+        );
       }
 
       // 2. Verify no order already exists for this delivery (DB unique + app check).
@@ -98,31 +111,41 @@ export class OrdersService {
         where: { planDeliveryId: delivery.id },
       });
       if (existingOrder) {
-        throw new ConflictException("An order already exists for this delivery");
+        throw new ConflictException(
+          'An order already exists for this delivery',
+        );
       }
 
       // 3. Get the PlanSelection.
       const selection = await tx.planSelection.findFirst({
-        where: { id: delivery.selectionId, userId, status: { in: ACTIVE_STATUSES } },
+        where: {
+          id: delivery.selectionId,
+          userId,
+          status: { in: ACTIVE_STATUSES },
+        },
       });
       if (!selection) {
-        throw new BadRequestException("No active plan found for this delivery");
+        throw new BadRequestException('No active plan found for this delivery');
       }
 
       // Prepaid plan: the plan payment covers all deliveries, so the order
       // is born PAID. The customer is never charged again for this delivery.
-      const isPrepaid = selection.paidAmountPaise != null && selection.paidAmountPaise > 0;
+      const isPrepaid =
+        selection.paidAmountPaise != null && selection.paidAmountPaise > 0;
 
       // 4. Get the PlanConfig for pricing & delivery config.
       const config = await tx.planConfig.findUnique({
         where: { planType: selection.planType },
       });
       if (!config || !config.isActive) {
-        throw new BadRequestException("Plan configuration is not available");
+        throw new BadRequestException('Plan configuration is not available');
       }
 
       // 5. Build address snapshot.
-      const addressSnapshot = await this.buildAddressSnapshot(userId, dto.addressId);
+      const addressSnapshot = await this.buildAddressSnapshot(
+        userId,
+        dto.addressId,
+      );
 
       // 6. Calculate financials (all in paise).
       const quantityLitres = delivery.quantityLitres;
@@ -162,7 +185,7 @@ export class OrdersService {
           sellingPricePerLitrePaise: unitPricePaise,
           items: {
             create: {
-              productNameSnapshot: "Milk",
+              productNameSnapshot: 'Milk',
               quantity: quantityLitres,
               unitPricePaise,
               discountPaise: itemDiscount > 0 ? itemDiscount : 0,
@@ -201,7 +224,7 @@ export class OrdersService {
 
       return {
         success: true,
-        message: "Order created successfully.",
+        message: 'Order created successfully.',
         order: this.formatOrderResponse(order, order.items, invoice),
       };
     });
@@ -218,7 +241,8 @@ export class OrdersService {
     const where: any = { userId };
     if (query.status) where.status = query.status;
     if (query.planType) where.planType = query.planType;
-    if (query.orderNumber) where.orderNumber = { contains: query.orderNumber, mode: "insensitive" };
+    if (query.orderNumber)
+      where.orderNumber = { contains: query.orderNumber, mode: 'insensitive' };
     if (query.startDate || query.endDate) {
       where.createdAt = {};
       if (query.startDate) where.createdAt.gte = new Date(query.startDate);
@@ -232,7 +256,7 @@ export class OrdersService {
     const [orders, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
         include: { items: true, invoice: true },
@@ -255,7 +279,7 @@ export class OrdersService {
       where: { id: orderId, userId },
       include: { items: true, invoice: true },
     });
-    if (!order) throw new NotFoundException("Order not found");
+    if (!order) throw new NotFoundException('Order not found');
     return this.formatOrderResponse(order, order.items, order.invoice);
   }
 
@@ -268,8 +292,9 @@ export class OrdersService {
       where: { id: orderId, userId },
       include: { invoice: true },
     });
-    if (!order) throw new NotFoundException("Order not found");
-    if (!order.invoice) throw new NotFoundException("Invoice not found for this order");
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.invoice)
+      throw new NotFoundException('Invoice not found for this order');
 
     return {
       invoiceNumber: order.invoice.invoiceNumber,
@@ -291,10 +316,10 @@ export class OrdersService {
         where: { id: orderId, userId },
         include: { items: true },
       });
-      if (!original) throw new NotFoundException("Order not found");
+      if (!original) throw new NotFoundException('Order not found');
 
       if (!REORDER_ELIGIBLE_STATUSES.includes(original.status as OrderStatus)) {
-        throw new BadRequestException("This order is not eligible for reorder");
+        throw new BadRequestException('This order is not eligible for reorder');
       }
 
       // 2. Get current PlanConfig for current pricing.
@@ -302,15 +327,21 @@ export class OrdersService {
         where: { planType: original.planType },
       });
       if (!config || !config.isActive) {
-        throw new BadRequestException("The plan type for this order is no longer available");
+        throw new BadRequestException(
+          'The plan type for this order is no longer available',
+        );
       }
 
       // 3. Build address snapshot with current address.
-      const addressSnapshot = await this.buildAddressSnapshot(userId, dto.addressId);
+      const addressSnapshot = await this.buildAddressSnapshot(
+        userId,
+        dto.addressId,
+      );
 
       // 4. Recalculate using CURRENT configuration.
       const originalItem = original.items[0];
-      if (!originalItem) throw new BadRequestException("Original order has no items");
+      if (!originalItem)
+        throw new BadRequestException('Original order has no items');
 
       const quantityLitres = originalItem.quantity;
       const unitPricePaise = config.sellingPricePerLitre;
@@ -326,12 +357,15 @@ export class OrdersService {
       // or after 23:00 IST. Previously no deliveryDate was set at all, which
       // left the UI rendering the creation date as if it were the delivery day.
       const deliveryDate = resolveFirstDeliveryDate();
-      if (!(deliveryDate instanceof Date) || Number.isNaN(deliveryDate.getTime())) {
+      if (
+        !(deliveryDate instanceof Date) ||
+        Number.isNaN(deliveryDate.getTime())
+      ) {
         // Unreachable with a sane clock, but a reorder must never be persisted
         // without a delivery date — that is what produced the createdAt
         // fallback in the first place.
         throw new BadRequestException(
-          "Could not determine a delivery date for this reorder. Please try again.",
+          'Could not determine a delivery date for this reorder. Please try again.',
         );
       }
 
@@ -398,7 +432,7 @@ export class OrdersService {
 
       return {
         success: true,
-        message: "Reorder created successfully.",
+        message: 'Reorder created successfully.',
         order: this.formatOrderResponse(newOrder, newOrder.items, invoice),
       };
     });
@@ -416,7 +450,8 @@ export class OrdersService {
     if (query.status) where.status = query.status;
     if (query.paymentStatus) where.paymentStatus = query.paymentStatus;
     if (query.planType) where.planType = query.planType;
-    if (query.orderNumber) where.orderNumber = { contains: query.orderNumber, mode: "insensitive" };
+    if (query.orderNumber)
+      where.orderNumber = { contains: query.orderNumber, mode: 'insensitive' };
     if (query.startDate || query.endDate) {
       where.createdAt = {};
       if (query.startDate) where.createdAt.gte = new Date(query.startDate);
@@ -429,13 +464,23 @@ export class OrdersService {
     if (query.customerSearch) {
       where.user = {
         OR: [
-          { mobile: { contains: query.customerSearch, mode: "insensitive" } },
-          { email: { contains: query.customerSearch, mode: "insensitive" } },
+          { mobile: { contains: query.customerSearch, mode: 'insensitive' } },
+          { email: { contains: query.customerSearch, mode: 'insensitive' } },
           {
             customerProfile: {
               OR: [
-                { firstName: { contains: query.customerSearch, mode: "insensitive" } },
-                { lastName: { contains: query.customerSearch, mode: "insensitive" } },
+                {
+                  firstName: {
+                    contains: query.customerSearch,
+                    mode: 'insensitive',
+                  },
+                },
+                {
+                  lastName: {
+                    contains: query.customerSearch,
+                    mode: 'insensitive',
+                  },
+                },
               ],
             },
           },
@@ -446,12 +491,13 @@ export class OrdersService {
     const [orders, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
         include: {
           items: true,
           invoice: true,
+          planDelivery: true,
           user: {
             select: {
               id: true,
@@ -501,7 +547,7 @@ export class OrdersService {
         },
       },
     });
-    if (!order) throw new NotFoundException("Order not found");
+    if (!order) throw new NotFoundException('Order not found');
 
     return {
       ...this.formatOrderResponse(order, order.items, order.invoice),
@@ -531,7 +577,7 @@ export class OrdersService {
 
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id: orderId } });
-      if (!order) throw new NotFoundException("Order not found");
+      if (!order) throw new NotFoundException('Order not found');
 
       const allowed = ALLOWED_STATUS_TRANSITIONS[order.status] ?? [];
       if (!allowed.includes(dto.status)) {
@@ -548,7 +594,7 @@ export class OrdersService {
       });
       if (claimed.count === 0) {
         throw new ConflictException(
-          "This order changed while it was being updated. Reload it and try again.",
+          'This order changed while it was being updated. Reload it and try again.',
         );
       }
 
@@ -602,9 +648,326 @@ export class OrdersService {
         success: true,
         message: `Order status updated to ${dto.status}.`,
         deliverySynced,
-        order: this.formatOrderResponse(updated, updated!.items, updated!.invoice),
+        order: this.formatOrderResponse(
+          updated,
+          updated!.items,
+          updated!.invoice,
+        ),
       };
     });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ADMIN — BULK UPDATE ORDER STATUS (e.g. MARK AS DELIVERED)
+  // ══════════════════════════════════════════════════════════════════
+
+  async bulkUpdateOrderStatus(dto: BulkUpdateOrderStatusDto) {
+    const results: Array<{
+      orderId: string;
+      orderNumber: string;
+      success: boolean;
+      status?: OrderStatus;
+      reason?: string;
+    }> = [];
+
+    for (const orderId of dto.orderIds) {
+      try {
+        const order = await this.prisma.order.findUnique({
+          where: { id: orderId },
+          include: { planDelivery: true },
+        });
+
+        if (!order) {
+          results.push({
+            orderId,
+            orderNumber: 'UNKNOWN',
+            success: false,
+            reason: 'Order not found',
+          });
+          continue;
+        }
+
+        // Idempotency: if already in target status
+        if (order.status === dto.status) {
+          results.push({
+            orderId,
+            orderNumber: order.orderNumber,
+            success: false,
+            reason: `Order is already ${dto.status}`,
+          });
+          continue;
+        }
+
+        // Ineligible terminal statuses
+        if (
+          order.status === OrderStatus.CANCELLED ||
+          order.status === OrderStatus.FAILED ||
+          order.status === OrderStatus.COMPLETED
+        ) {
+          results.push({
+            orderId,
+            orderNumber: order.orderNumber,
+            success: false,
+            reason: `Cannot update: order is ${order.status}`,
+          });
+          continue;
+        }
+
+        // For DELIVERED: Guard against skipped or already delivered PlanDelivery
+        if (dto.status === OrderStatus.DELIVERED && order.planDelivery) {
+          if (order.planDelivery.status === DeliveryStatus.SKIPPED) {
+            results.push({
+              orderId,
+              orderNumber: order.orderNumber,
+              success: false,
+              reason: 'Associated delivery was SKIPPED by customer/admin',
+            });
+            continue;
+          }
+          if (order.planDelivery.status === DeliveryStatus.DELIVERED) {
+            results.push({
+              orderId,
+              orderNumber: order.orderNumber,
+              success: false,
+              reason: 'Associated delivery is already marked as DELIVERED',
+            });
+            continue;
+          }
+        }
+
+        // Enforce valid transitions:
+        // For DELIVERED, allow transition from OUT_FOR_DELIVERY, CONFIRMED, or PROCESSING
+        const isBulkDeliveryEligible =
+          dto.status === OrderStatus.DELIVERED &&
+          [
+            OrderStatus.OUT_FOR_DELIVERY,
+            OrderStatus.CONFIRMED,
+            OrderStatus.PROCESSING,
+          ].includes(order.status as OrderStatus);
+
+        const allowedTransitions =
+          ALLOWED_STATUS_TRANSITIONS[order.status] ?? [];
+        if (
+          !isBulkDeliveryEligible &&
+          !allowedTransitions.includes(dto.status)
+        ) {
+          results.push({
+            orderId,
+            orderNumber: order.orderNumber,
+            success: false,
+            reason: `Cannot transition from ${order.status} to ${dto.status}`,
+          });
+          continue;
+        }
+
+        // Execute status update inside a single-order transaction
+        await this.prisma.$transaction(async (tx) => {
+          const claimed = await tx.order.updateMany({
+            where: { id: orderId, status: order.status },
+            data: { status: dto.status },
+          });
+
+          if (claimed.count === 0) {
+            throw new ConflictException('Order was modified concurrently');
+          }
+
+          // If marking DELIVERED, synchronize PlanDelivery while strictly guarding on SCHEDULED.
+          // Preserves original scheduled deliveryDate without modification.
+          if (dto.status === OrderStatus.DELIVERED && order.planDeliveryId) {
+            await tx.planDelivery.updateMany({
+              where: {
+                id: order.planDeliveryId,
+                status: DeliveryStatus.SCHEDULED,
+              },
+              data: { status: DeliveryStatus.DELIVERED },
+            });
+          }
+        });
+
+        results.push({
+          orderId,
+          orderNumber: order.orderNumber,
+          success: true,
+          status: dto.status,
+        });
+      } catch (err: any) {
+        results.push({
+          orderId,
+          orderNumber: 'ERROR',
+          success: false,
+          reason: err?.message || 'Failed to update order status',
+        });
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+    return {
+      totalCount: dto.orderIds.length,
+      successCount,
+      failureCount: dto.orderIds.length - successCount,
+      results,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ADMIN — BULK UPDATE ORDER QUANTITY (UPCOMING DELIVERIES)
+  // ══════════════════════════════════════════════════════════════════
+
+  async bulkUpdateOrderQuantity(dto: BulkUpdateOrderQuantityDto) {
+    if (dto.quantity < QUANTITY_MIN || dto.quantity > QUANTITY_MAX) {
+      throw new BadRequestException(
+        `Quantity must be between ${QUANTITY_MIN} and ${QUANTITY_MAX} litres`,
+      );
+    }
+
+    const results: Array<{
+      orderId: string;
+      orderNumber: string;
+      success: boolean;
+      oldQuantity?: number;
+      newQuantity?: number;
+      reason?: string;
+    }> = [];
+
+    for (const orderId of dto.orderIds) {
+      try {
+        const order = await this.prisma.order.findUnique({
+          where: { id: orderId },
+          include: { items: true, planDelivery: true },
+        });
+
+        if (!order) {
+          results.push({
+            orderId,
+            orderNumber: 'UNKNOWN',
+            success: false,
+            reason: 'Order not found',
+          });
+          continue;
+        }
+
+        // Terminal or delivered orders cannot be edited
+        if (
+          [
+            OrderStatus.DELIVERED,
+            OrderStatus.COMPLETED,
+            OrderStatus.CANCELLED,
+            OrderStatus.FAILED,
+          ].includes(order.status as OrderStatus)
+        ) {
+          results.push({
+            orderId,
+            orderNumber: order.orderNumber,
+            success: false,
+            reason: `Cannot edit quantity: order is already ${order.status}`,
+          });
+          continue;
+        }
+
+        // If backed by plan delivery, verify not skipped or delivered
+        if (order.planDelivery) {
+          if (order.planDelivery.status === DeliveryStatus.SKIPPED) {
+            results.push({
+              orderId,
+              orderNumber: order.orderNumber,
+              success: false,
+              reason: 'Cannot edit quantity: delivery was SKIPPED',
+            });
+            continue;
+          }
+          if (order.planDelivery.status === DeliveryStatus.DELIVERED) {
+            results.push({
+              orderId,
+              orderNumber: order.orderNumber,
+              success: false,
+              reason: 'Cannot edit quantity: delivery is already DELIVERED',
+            });
+            continue;
+          }
+        }
+
+        if (!order.items || order.items.length === 0) {
+          results.push({
+            orderId,
+            orderNumber: order.orderNumber,
+            success: false,
+            reason: 'Order has no line items to update',
+          });
+          continue;
+        }
+
+        const primaryItem = order.items[0];
+        const oldQuantity = primaryItem.quantity;
+
+        if (oldQuantity === dto.quantity) {
+          results.push({
+            orderId,
+            orderNumber: order.orderNumber,
+            success: true,
+            oldQuantity,
+            newQuantity: dto.quantity,
+          });
+          continue;
+        }
+
+        await this.prisma.$transaction(async (tx) => {
+          // 1. Update linked PlanDelivery quantityLitres if present
+          if (order.planDeliveryId) {
+            await tx.planDelivery.updateMany({
+              where: {
+                id: order.planDeliveryId,
+                status: DeliveryStatus.SCHEDULED,
+              },
+              data: { quantityLitres: dto.quantity },
+            });
+          }
+
+          // 2. Update OrderItem quantity and item total
+          const newTotalPaise = dto.quantity * primaryItem.unitPricePaise;
+          await tx.orderItem.update({
+            where: { id: primaryItem.id },
+            data: {
+              quantity: dto.quantity,
+              totalPaise: newTotalPaise,
+            },
+          });
+
+          // 3. Update Order financial snapshot (preserving deliveryFee)
+          const newSubtotal = newTotalPaise;
+          const newTotal = newSubtotal + order.deliveryFeePaise;
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              subtotalPaise: newSubtotal,
+              totalPaise: newTotal,
+            },
+          });
+        });
+
+        results.push({
+          orderId,
+          orderNumber: order.orderNumber,
+          success: true,
+          oldQuantity,
+          newQuantity: dto.quantity,
+        });
+      } catch (err: any) {
+        results.push({
+          orderId,
+          orderNumber: 'ERROR',
+          success: false,
+          reason: err?.message || 'Failed to update quantity',
+        });
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+    return {
+      totalCount: dto.orderIds.length,
+      successCount,
+      failureCount: dto.orderIds.length - successCount,
+      results,
+    };
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -639,14 +1002,14 @@ export class OrdersService {
         where: { id: orderId },
         include: { planDelivery: true, items: true, invoice: true },
       });
-      if (!order) throw new NotFoundException("Order not found");
+      if (!order) throw new NotFoundException('Order not found');
 
       // Idempotency: already completed is a success, not a conflict, and must
       // not refresh completedAt — the first completion is the real one.
       if (order.status === OrderStatus.COMPLETED) {
         return {
           success: true,
-          message: "Order is already completed.",
+          message: 'Order is already completed.',
           alreadyCompleted: true,
           order: this.formatOrderResponse(order, order.items, order.invoice),
         };
@@ -665,7 +1028,7 @@ export class OrdersService {
         const delivery = order.planDelivery;
         if (!delivery) {
           throw new ConflictException(
-            "The delivery record for this order is missing, so it cannot be completed.",
+            'The delivery record for this order is missing, so it cannot be completed.',
           );
         }
         if (delivery.status === DeliveryStatus.SKIPPED) {
@@ -697,13 +1060,17 @@ export class OrdersService {
         if (latest?.status === OrderStatus.COMPLETED) {
           return {
             success: true,
-            message: "Order is already completed.",
+            message: 'Order is already completed.',
             alreadyCompleted: true,
-            order: this.formatOrderResponse(latest, latest.items, latest.invoice),
+            order: this.formatOrderResponse(
+              latest,
+              latest.items,
+              latest.invoice,
+            ),
           };
         }
         throw new ConflictException(
-          "This order changed while it was being completed. Reload it and try again.",
+          'This order changed while it was being completed. Reload it and try again.',
         );
       }
 
@@ -714,14 +1081,18 @@ export class OrdersService {
 
       this.logger.log(
         `ORDER COMPLETED orderId=${orderId} orderNumber=${order.orderNumber} ` +
-          `planType=${order.planType} planDeliveryId=${order.planDeliveryId ?? "none"}`,
+          `planType=${order.planType} planDeliveryId=${order.planDeliveryId ?? 'none'}`,
       );
 
       return {
         success: true,
-        message: "Order marked as completed.",
+        message: 'Order marked as completed.',
         alreadyCompleted: false,
-        order: this.formatOrderResponse(updated, updated!.items, updated!.invoice),
+        order: this.formatOrderResponse(
+          updated,
+          updated!.items,
+          updated!.invoice,
+        ),
       };
     });
   }
@@ -761,6 +1132,13 @@ export class OrdersService {
       actualPricePerLitrePaise: order.actualPricePerLitrePaise,
       sellingPricePerLitrePaise: order.sellingPricePerLitrePaise,
       reorderedFromOrderId: order.reorderedFromOrderId,
+      planDelivery: order.planDelivery
+        ? {
+            id: order.planDelivery.id,
+            status: order.planDelivery.status,
+            quantityLitres: order.planDelivery.quantityLitres,
+          }
+        : null,
       completedAt: order.completedAt ?? null,
       invoice: invoice
         ? {

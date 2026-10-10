@@ -10,21 +10,21 @@ import {
   UploadedFile,
   HttpCode,
   HttpStatus,
-} from "@nestjs/common";
-import { FileInterceptor } from "@nestjs/platform-express";
-import { ProfileService } from "./profile.service";
-import { CustomerCreateProfileDto } from "./dto/customer/customer-create-profile.dto";
-import { CustomerUpdateProfileDto } from "./dto/customer/customer-update-profile.dto";
-import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
-import { CurrentUser } from "../../common/decorators/current-user.decorator";
-import type { JwtPayload } from "../../common/interfaces/jwt-payload.interface";
-import { avatarMulterOptions } from "./utils/avatar-upload.options";
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ProfileService } from './profile.service';
+import { CustomerCreateProfileDto } from './dto/customer/customer-create-profile.dto';
+import { CustomerUpdateProfileDto } from './dto/customer/customer-update-profile.dto';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
+import { avatarMulterOptions } from './utils/avatar-upload.options';
 
-@Controller(["api/v1/customer/profile", "customer/profile"])
+@Controller(['api/v1/customer/profile', 'customer/profile'])
 export class ProfileController {
   constructor(private readonly profileService: ProfileService) {}
 
-  @Post("create-profile")
+  @Post('create-profile')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async createProfile(
@@ -34,14 +34,14 @@ export class ProfileController {
     return this.profileService.createCustomerProfile(user.sub, dto);
   }
 
-  @Get("me")
+  @Get('me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getMe(@CurrentUser() user: JwtPayload) {
     return this.profileService.getCustomerProfile(user.sub);
   }
 
-  @Patch("update-profile")
+  @Patch('update-profile')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async updateProfile(
@@ -51,9 +51,9 @@ export class ProfileController {
     return this.profileService.updateCustomerProfile(user.sub, dto);
   }
 
-  @Post("update-avatar")
+  @Post('update-avatar')
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor("avatar", avatarMulterOptions))
+  @UseInterceptors(FileInterceptor('avatar', avatarMulterOptions))
   @HttpCode(HttpStatus.OK)
   async updateAvatar(
     @CurrentUser() user: JwtPayload,
@@ -62,7 +62,7 @@ export class ProfileController {
     return this.profileService.updateCustomerAvatar(user.sub, file);
   }
 
-  @Delete("remove-avatar")
+  @Delete('remove-avatar')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async removeAvatar(@CurrentUser() user: JwtPayload) {
