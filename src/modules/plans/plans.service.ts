@@ -972,16 +972,20 @@ export class PlansService {
       if (dto.paymentMethod === PlanPaymentMethod.WALLET) {
         // Check balance before attempting debit for a clearer error.
         const wallet = await tx.wallet.findUnique({ where: { userId } });
-        if (!wallet || wallet.balancePaise < paymentAmount) {
+        const currentBalancePaise = wallet?.balancePaise ?? 0;
+        if (!wallet || currentBalancePaise < paymentAmount) {
+          const shortfallPaise = paymentAmount - currentBalancePaise;
+          const shortfallRupees = Math.ceil(shortfallPaise / 100);
           // Rollback: delete the PENDING_PAYMENT selection so it doesn't
           // block future attempts via the partial unique index.
           await tx.planSelection.delete({ where: { id: selection.id } });
           throw new BadRequestException({
             error: 'INSUFFICIENT_WALLET_BALANCE',
-            message: 'Insufficient wallet balance',
-            currentBalancePaise: wallet?.balancePaise ?? 0,
+            message: `Insufficient wallet balance. Please top up your wallet by ₹${shortfallRupees} first or choose Doorstep Cash.`,
+            currentBalancePaise,
             requiredPaise: paymentAmount,
-            shortfallPaise: paymentAmount - (wallet?.balancePaise ?? 0),
+            shortfallPaise,
+            shortfallRupees,
           });
         }
 
