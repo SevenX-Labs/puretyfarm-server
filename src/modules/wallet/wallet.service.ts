@@ -538,6 +538,7 @@ export class WalletService {
 
     const where: any = {};
     if (query.status) where.status = query.status;
+    if (query.source) where.source = query.source;
     if (query.startDate || query.endDate) {
       where.createdAt = {};
       if (query.startDate) where.createdAt.gte = new Date(query.startDate);
@@ -610,6 +611,7 @@ export class WalletService {
         status: r.status,
         refundStatus: r.refundStatus,
         autoApproved: r.autoApproved,
+        source: r.source,
         adminNote: r.adminNote,
         reviewedAt: r.reviewedAt,
         completedAt: r.completedAt,
@@ -674,6 +676,7 @@ export class WalletService {
       status: request.status,
       refundStatus: request.refundStatus,
       autoApproved: request.autoApproved,
+      source: request.source,
       adminNote: request.adminNote,
       reviewedByAdminId: request.reviewedByAdminId,
       reviewedAt: request.reviewedAt,
