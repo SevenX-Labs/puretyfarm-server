@@ -453,6 +453,10 @@ enum OrderStatus {
   PROCESSING
   OUT_FOR_DELIVERY
   DELIVERED
+  /// Admin-closed terminal state, reachable only from DELIVERED. Distinct from
+  /// DELIVERED (the goods arrived) because closing the order is an accounting
+  /// act: it carries no payment, wallet or delivery side effects of its own.
+  COMPLETED
   CANCELLED
   FAILED
 }
@@ -497,6 +501,9 @@ model Order {
 
   /// If this order was created from a reorder, reference the original.
   reorderedFromOrderId String?
+
+  /// When an admin marked this order COMPLETED. Null for every other status.
+  completedAt          DateTime?
 
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt

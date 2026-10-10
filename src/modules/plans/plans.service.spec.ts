@@ -9,6 +9,10 @@ import {
   calculateTotalLitres,
   generateDeliveryDates,
   quantityForOccurrence,
+  parseDeliveryTimeMinutes,
+  formatDeliveryTime12h,
+  resolveFirstDeliveryDate,
+  toDateOnly,
 } from "./plans.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
@@ -24,6 +28,8 @@ import {
   PlanSelectionStatus,
   QUOTE_EXPIRY_MINUTES,
   TRIAL_DURATION_DAYS,
+  DEFAULT_DELIVERY_START_TIME,
+  DEFAULT_DELIVERY_END_TIME,
 } from "./plans.constants";
 import { PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
 import { WalletTransactionReferenceType } from "../wallet/wallet.constants";
@@ -865,6 +871,236 @@ describe("PlansService", () => {
         new Date(2028, 1, 29),
       );
       expect(dates).toHaveLength(29); // 2028 is a leap year
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  //  DELIVERY WINDOW & DAILY CUT-OFF
+  // ══════════════════════════════════════════════════════════════
+
+  describe("parseDeliveryTimeMinutes", () => {
+    it("parses a well-formed 24h time to minutes since midnight", () => {
+      expect(parseDeliveryTimeMinutes("06:00")).toBe(360);
+      expect(parseDeliveryTimeMinutes("11:00")).toBe(660);
+      expect(parseDeliveryTimeMinutes("00:00")).toBe(0);
+      expect(parseDeliveryTimeMinutes("23:59")).toBe(1439);
+    });
+
+    it("returns null rather than coercing malformed input to midnight", () => {
+      for (const bad of [null, undefined, "", "6:00", "24:00", "11:60", "11", "abc"]) {
+        expect(parseDeliveryTimeMinutes(bad as any)).toBeNull();
+      }
+    });
+  });
+
+  describe("formatDeliveryTime12h", () => {
+    it("renders morning and afternoon times with the right meridiem", () => {
+      expect(formatDeliveryTime12h("06:00")).toBe("6:00 AM");
+      expect(formatDeliveryTime12h("11:00")).toBe("11:00 AM");
+      expect(formatDeliveryTime12h("11:30")).toBe("11:30 AM");
+      expect(formatDeliveryTime12h("13:05")).toBe("1:05 PM");
+    });
+
+    it("renders both midnight and noon as 12, not 0", () => {
+      expect(formatDeliveryTime12h("00:00")).toBe("12:00 AM");
+      expect(formatDeliveryTime12h("12:00")).toBe("12:00 PM");
+    });
+
+    it("returns null for malformed input", () => {
+      expect(formatDeliveryTime12h("nope")).toBeNull();
+      expect(formatDeliveryTime12h(null)).toBeNull();
+    });
+  });
+
+  describe("resolveFirstDeliveryDate (daily cut-off)", () => {
+    /** A local-time instant on 10 Oct 2026. */
+    function at(hour: number, minute = 0): Date {
+      return new Date(2026, 9, 10, hour, minute, 0, 0);
+    }
+    const TODAY = toDateOnly(at(0));
+    const TOMORROW = new Date(TODAY);
+    TOMORROW.setUTCDate(TOMORROW.getUTCDate() + 1);
+
+    it("keeps today while the window is still open", () => {
+      expect(resolveFirstDeliveryDate(at(5), "11:00")).toEqual(TODAY);
+      expect(resolveFirstDeliveryDate(at(8, 30), "11:00")).toEqual(TODAY);
+      expect(resolveFirstDeliveryDate(at(10, 59), "11:00")).toEqual(TODAY);
+    });
+
+    it("rolls to tomorrow once the window has closed", () => {
+      // The reported case: ordering at 12 PM against an 06:00–11:00 window.
+      expect(resolveFirstDeliveryDate(at(12), "11:00")).toEqual(TOMORROW);
+      expect(resolveFirstDeliveryDate(at(23, 59), "11:00")).toEqual(TOMORROW);
+    });
+
+    it("treats the window end itself as closed", () => {
+      expect(resolveFirstDeliveryDate(at(11), "11:00")).toEqual(TOMORROW);
+    });
+
+    it("follows the admin's configured window, not a hardcoded hour", () => {
+      // A later window keeps a noon order on today.
+      expect(resolveFirstDeliveryDate(at(12), "18:00")).toEqual(TODAY);
+      // An earlier window pushes an 08:00 order to tomorrow.
+      expect(resolveFirstDeliveryDate(at(8), "07:30")).toEqual(TOMORROW);
+    });
+
+    it("falls back to the default window when none is configured", () => {
+      // Default end is 11:00, so the cut-off still applies — leaving the field
+      // blank must not disable the rule.
+      expect(resolveFirstDeliveryDate(at(12), null)).toEqual(TOMORROW);
+      expect(resolveFirstDeliveryDate(at(9), undefined)).toEqual(TODAY);
+      expect(resolveFirstDeliveryDate(at(12), "garbage")).toEqual(TOMORROW);
+    });
+
+    it("rolls across a month boundary correctly", () => {
+      const lastDayNoon = new Date(2026, 9, 31, 12, 0, 0, 0);
+      expect(
+        resolveFirstDeliveryDate(lastDayNoon, "11:00").toISOString().slice(0, 10),
+      ).toBe("2026-11-01");
+    });
+
+    it("returns a date-only value (UTC midnight)", () => {
+      const d = resolveFirstDeliveryDate(at(12), "11:00");
+      expect(d.getUTCHours()).toBe(0);
+      expect(d.getUTCMinutes()).toBe(0);
+      expect(d.getUTCSeconds()).toBe(0);
+      expect(d.getUTCMilliseconds()).toBe(0);
+    });
+  });
+
+  describe("resolveScheduleFromQuote applies the cut-off", () => {
+    const buyOnceQuote = {
+      planType: PlanType.BUY_ONCE,
+      frequency: null,
+      quantityMode: null,
+      quantity: 2,
+      quantityA: null,
+      quantityB: null,
+      deliveryOccurrences: 1,
+      billingPeriodStart: null,
+      billingPeriodEnd: null,
+    };
+
+    const trialQuote = {
+      ...buyOnceQuote,
+      planType: PlanType.SEVEN_DAY_TRIAL,
+      deliveryOccurrences: TRIAL_DURATION_DAYS,
+    };
+
+    // "23:59" is open at every wall-clock time and "00:01" is closed at every
+    // wall-clock time, so these assertions never straddle a real cut-off.
+    const ALWAYS_OPEN = "23:59";
+    const ALWAYS_CLOSED = "00:01";
+
+    it("BUY_ONCE starts today while the window is open", () => {
+      const schedule = service.resolveScheduleFromQuote(buyOnceQuote, ALWAYS_OPEN);
+      expect(schedule.start).toEqual(toDateOnly(new Date()));
+      // One delivery only: start and end are the same day.
+      expect(schedule.end).toEqual(schedule.start);
+    });
+
+    it("BUY_ONCE starts tomorrow once the window has closed", () => {
+      const schedule = service.resolveScheduleFromQuote(buyOnceQuote, ALWAYS_CLOSED);
+      const tomorrow = toDateOnly(new Date());
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+      expect(schedule.start).toEqual(tomorrow);
+      expect(schedule.end).toEqual(schedule.start);
+    });
+
+    it("SEVEN_DAY_TRIAL spans its full duration from the first deliverable date", () => {
+      const schedule = service.resolveScheduleFromQuote(trialQuote, ALWAYS_OPEN);
+      const start = toDateOnly(new Date());
+      expect(schedule.start).toEqual(start);
+      const expectedEnd = new Date(start);
+      expectedEnd.setUTCDate(expectedEnd.getUTCDate() + (TRIAL_DURATION_DAYS - 1));
+      expect(schedule.end).toEqual(expectedEnd);
+      expect(
+        generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
+      ).toHaveLength(TRIAL_DURATION_DAYS);
+    });
+
+    it("a window that is already closed shifts the trial a day later", () => {
+      const open = service.resolveScheduleFromQuote(trialQuote, ALWAYS_OPEN);
+      const closed = service.resolveScheduleFromQuote(trialQuote, ALWAYS_CLOSED);
+      const dayMs = 24 * 60 * 60 * 1000;
+      expect(closed.start.getTime() - open.start.getTime()).toBe(dayMs);
+      // The duration is preserved; only the window moves.
+      expect(closed.end.getTime() - closed.start.getTime()).toBe(
+        open.end.getTime() - open.start.getTime(),
+      );
+    });
+
+    it("MONTHLY keeps the immutable billing period from the quote", () => {
+      const billingStart = new Date(Date.UTC(2026, 9, 10));
+      const billingEnd = new Date(Date.UTC(2026, 9, 31));
+      const schedule = service.resolveScheduleFromQuote(
+        {
+          ...buyOnceQuote,
+          planType: PlanType.MONTHLY,
+          frequency: DeliveryFrequency.DAILY,
+          quantityMode: QuantityMode.FIXED,
+          billingPeriodStart: billingStart,
+          billingPeriodEnd: billingEnd,
+        },
+        // Even with a long-closed window, the priced billing period wins:
+        // the quote's occurrence count is what the customer paid for.
+        "00:01",
+      );
+      expect(schedule.start).toEqual(billingStart);
+      expect(schedule.end).toEqual(billingEnd);
+    });
+  });
+
+  describe("delivery window validation", () => {
+    const base = {
+      actualPricePerLitre: 9500,
+      sellingPricePerLitre: 8500,
+      quantityMin: 1,
+      quantityMax: 5,
+      dailyEnabled: true,
+      alternateDaysEnabled: true,
+      fixedQuantityEnabled: true,
+      alternatingQuantityEnabled: true,
+    };
+
+    it("accepts a window whose start precedes its end", () => {
+      expect(() =>
+        service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
+          ...base,
+          deliveryStartTime: DEFAULT_DELIVERY_START_TIME,
+          deliveryEndTime: DEFAULT_DELIVERY_END_TIME,
+        }),
+      ).not.toThrow();
+    });
+
+    it("rejects an inverted window", () => {
+      expect(() =>
+        service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
+          ...base,
+          deliveryStartTime: "11:00",
+          deliveryEndTime: "06:00",
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it("rejects a zero-length window, which would defer every order forever", () => {
+      expect(() =>
+        service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
+          ...base,
+          deliveryStartTime: "06:00",
+          deliveryEndTime: "06:00",
+        }),
+      ).toThrow(BadRequestException);
+    });
+
+    it("skips the rule when either side is unset (PATCH of one field only)", () => {
+      expect(() =>
+        service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
+          ...base,
+          deliveryStartTime: "06:00",
+          deliveryEndTime: null,
+        }),
+      ).not.toThrow();
     });
   });
 

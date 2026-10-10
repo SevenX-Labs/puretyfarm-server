@@ -8,6 +8,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  ParseUUIDPipe,
 } from "@nestjs/common";
 import { OrdersService } from "./orders.service";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -40,5 +41,16 @@ export class AdminOrdersController {
     @Body() dto: UpdateOrderStatusDto,
   ) {
     return this.ordersService.updateOrderStatus(id, dto);
+  }
+
+  /**
+   * Closes a delivered order. Takes no body: the target status is the route,
+   * and every eligibility rule is decided server-side from the order and its
+   * delivery, never from the caller.
+   */
+  @Patch(":orderId/complete")
+  @HttpCode(HttpStatus.OK)
+  async completeOrder(@Param("orderId", new ParseUUIDPipe()) orderId: string) {
+    return this.ordersService.completeOrder(orderId);
   }
 }

@@ -20,12 +20,17 @@ All endpoints require a valid **Customer JWT** (`Authorization: Bearer <token>`)
 ## Order Lifecycle
 
 ```
-PENDING → CONFIRMED → PROCESSING → OUT_FOR_DELIVERY → DELIVERED
+PENDING → CONFIRMED → PROCESSING → OUT_FOR_DELIVERY → DELIVERED → COMPLETED
    ↓          ↓            ↓
 CANCELLED  CANCELLED   CANCELLED / FAILED
 ```
 
-Customers cannot change order status. Status is managed by Admin.
+`COMPLETED` is the terminal status an admin sets once a delivered order is
+closed out. Completed orders expose a `completedAt` timestamp; every other
+status returns `completedAt: null`.
+
+Customers cannot change order status — including completion. Status is managed
+by Admin and the server's persisted value is the only source of truth.
 
 ## Supported Plan Types
 
@@ -60,7 +65,12 @@ Delivery fee is **Admin-controlled** via PlanConfig (`deliveryFeePaise`). The cu
 
 ## Delivery Time Rules
 
-Delivery window (`deliveryStartTime`, `deliveryEndTime`) is **Admin-controlled** via PlanConfig. Snapshotted onto the Order at creation time. Format: `HH:MM` (24h).
+Delivery window (`deliveryStartTime`, `deliveryEndTime`) is **Admin-controlled** via PlanConfig. Snapshotted onto the Order at creation time. Format: `HH:MM` (24h); clients render it as 12h AM/PM.
+
+`deliveryEndTime` doubles as the daily cut-off. A plan confirmed — or an order
+reordered — after today's window has closed is scheduled for the next day, so a
+customer ordering at 12:00 against an `06:00`–`11:00` window gets tomorrow's
+delivery, not a slot that has already passed.
 
 ## Address Snapshot Rules
 
@@ -68,7 +78,7 @@ The customer's delivery address is snapshotted as JSON at order creation. If the
 
 ## Reorder Rules
 
-- Only **DELIVERED** orders are eligible for reorder
+- Only **DELIVERED** and **COMPLETED** orders are eligible for reorder
 - Uses **current** Admin pricing, delivery fee, and delivery time (not historical)
 - Creates a completely new Order; the original remains unchanged
 - Stores `reorderedFromOrderId` referencing the original

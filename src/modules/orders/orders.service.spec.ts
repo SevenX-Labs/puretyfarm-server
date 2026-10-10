@@ -13,7 +13,10 @@ import {
   QuantityMode,
   DeliveryStatus,
   PlanSelectionStatus,
+  DEFAULT_DELIVERY_START_TIME,
+  DEFAULT_DELIVERY_END_TIME,
 } from "../plans/plans.constants";
+import { resolveFirstDeliveryDate } from "../plans/plans.service";
 
 const USER = "user-1";
 const OTHER_USER = "user-2";
@@ -142,16 +145,28 @@ describe("OrdersService", () => {
       findMany: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     orderItem: {},
     invoice: {
       count: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
     },
-    planDelivery: { findFirst: jest.fn() },
-    planSelection: { findFirst: jest.fn() },
+    planDelivery: {
+      findFirst: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    planSelection: { findFirst: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
     planConfig: { findUnique: jest.fn() },
     customerAddress: { findFirst: jest.fn() },
+    // Present only so the completion tests can assert they are never written.
+    wallet: { update: jest.fn(), updateMany: jest.fn() },
+    walletTransaction: { create: jest.fn() },
+    payment: { update: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
+    cashCollection: { update: jest.fn(), updateMany: jest.fn() },
     $transaction: jest.fn(),
   };
 
@@ -624,6 +639,434 @@ describe("OrdersService", () => {
       await service.updateOrderStatus("order-1", { status: OrderStatus.CONFIRMED });
       const updateCall = mockPrisma.order.update.mock.calls[0][0];
       expect(updateCall.data).toEqual({ status: OrderStatus.CONFIRMED });
+    });
+  });
+  // ══════════════════════════════════════════════════════════════
+  //  DELIVERY WINDOW SNAPSHOT & CUT-OFF
+  // ══════════════════════════════════════════════════════════════
+
+  describe("delivery window on the order snapshot", () => {
+    beforeEach(() => {
+      mockPrisma.order.create.mockResolvedValue({
+        ...existingOrder,
+        id: "new-order",
+      });
+      mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
+    });
+
+    it("falls back to the default window when the plan has none configured", async () => {
+      mockPrisma.planConfig.findUnique.mockResolvedValue({
+        ...planConfig,
+        deliveryStartTime: null,
+        deliveryEndTime: null,
+      });
+
+      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+      const data = mockPrisma.order.create.mock.calls[0][0].data;
+      expect(data.deliveryStartTime).toBe(DEFAULT_DELIVERY_START_TIME);
+      expect(data.deliveryEndTime).toBe(DEFAULT_DELIVERY_END_TIME);
+    });
+
+    it("createOrder keeps the delivery's own scheduled date, cut-off or not", async () => {
+      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+      const data = mockPrisma.order.create.mock.calls[0][0].data;
+      // The date comes from the already-materialised PlanDelivery, which the
+      // cut-off was applied to when the plan was confirmed.
+      expect(data.deliveryDate).toEqual(delivery.deliveryDate);
+    });
+
+    it("reorder schedules the first deliverable date instead of leaving it null", async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({
+        ...existingOrder,
+        status: OrderStatus.DELIVERED,
+      });
+
+      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+      const data = mockPrisma.order.create.mock.calls[0][0].data;
+      expect(data.deliveryDate).toEqual(
+        resolveFirstDeliveryDate(new Date(), planConfig.deliveryEndTime),
+      );
+    });
+
+    it("reorder placed after the window close lands on the next day", async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({
+        ...existingOrder,
+        status: OrderStatus.DELIVERED,
+      });
+      // "00:01" is closed at every wall-clock time.
+      mockPrisma.planConfig.findUnique.mockResolvedValue({
+        ...planConfig,
+        deliveryEndTime: "00:01",
+      });
+
+      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+      const data = mockPrisma.order.create.mock.calls[0][0].data;
+      const tomorrow = new Date(TODAY);
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+      expect(data.deliveryDate).toEqual(tomorrow);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  //  ADMIN — COMPLETE ORDER
+  // ══════════════════════════════════════════════════════════════
+
+  describe("completeOrder", () => {
+    /** A DELIVERED order whose single PlanDelivery already fell due. */
+    const deliveredOrder = {
+      ...existingOrder,
+      status: OrderStatus.DELIVERED,
+      completedAt: null,
+      deliveryDate: plusDays(-1),
+      planDelivery: {
+        ...delivery,
+        deliveryDate: plusDays(-1),
+        status: DeliveryStatus.SCHEDULED,
+      },
+    };
+
+    /** Every write that completion must never perform. */
+    function expectNoFinancialOrScheduleWrites() {
+      expect(mockPrisma.planDelivery.update).not.toHaveBeenCalled();
+      expect(mockPrisma.planDelivery.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
+      expect(mockPrisma.planSelection.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
+      expect(mockPrisma.wallet.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.walletTransaction.create).not.toHaveBeenCalled();
+      expect(mockPrisma.payment.create).not.toHaveBeenCalled();
+      expect(mockPrisma.payment.update).not.toHaveBeenCalled();
+      expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.cashCollection.update).not.toHaveBeenCalled();
+      expect(mockPrisma.cashCollection.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.invoice.create).not.toHaveBeenCalled();
+      expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
+      expect(mockPrisma.order.create).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      mockPrisma.order.findUnique.mockResolvedValue(deliveredOrder);
+      mockPrisma.order.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it("completes an eligible DELIVERED order", async () => {
+      const completedAt = new Date();
+      mockPrisma.order.findUnique
+        .mockResolvedValueOnce(deliveredOrder)
+        .mockResolvedValueOnce({
+          ...deliveredOrder,
+          status: OrderStatus.COMPLETED,
+          completedAt,
+        });
+
+      const res = await service.completeOrder("order-1");
+
+      expect(res.success).toBe(true);
+      expect(res.alreadyCompleted).toBe(false);
+      expect(res.order.status).toBe(OrderStatus.COMPLETED);
+      expect(res.order.completedAt).toEqual(completedAt);
+    });
+
+    it("persists COMPLETED and completedAt, guarded on the current status", async () => {
+      await service.completeOrder("order-1");
+
+      expect(mockPrisma.order.updateMany).toHaveBeenCalledTimes(1);
+      const call = mockPrisma.order.updateMany.mock.calls[0][0];
+      expect(call.where).toEqual({ id: "order-1", status: OrderStatus.DELIVERED });
+      expect(call.data.status).toBe(OrderStatus.COMPLETED);
+      expect(call.data.completedAt).toBeInstanceOf(Date);
+    });
+
+    it("throws NotFound for a nonexistent order", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue(null);
+      await expect(service.completeOrder("nonexistent")).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      OrderStatus.PENDING,
+      OrderStatus.CONFIRMED,
+      OrderStatus.PROCESSING,
+      OrderStatus.OUT_FOR_DELIVERY,
+      OrderStatus.CANCELLED,
+      OrderStatus.FAILED,
+    ])("refuses to complete an order that is %s", async (status) => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        status,
+      });
+      await expect(service.completeOrder("order-1")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("does not mark an undelivered order delivered to make completion succeed", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        status: OrderStatus.OUT_FOR_DELIVERY,
+      });
+      await expect(service.completeOrder("order-1")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.order.update).not.toHaveBeenCalled();
+      expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
+      expectNoFinancialOrScheduleWrites();
+    });
+
+    it("is idempotent: an already-completed order is a no-op success", async () => {
+      const completedAt = plusDays(-1);
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        status: OrderStatus.COMPLETED,
+        completedAt,
+      });
+
+      const res = await service.completeOrder("order-1");
+
+      expect(res.success).toBe(true);
+      expect(res.alreadyCompleted).toBe(true);
+      expect(res.order.status).toBe(OrderStatus.COMPLETED);
+      // The original timestamp survives; a repeat call must not refresh it.
+      expect(res.order.completedAt).toEqual(completedAt);
+      expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
+      expectNoFinancialOrScheduleWrites();
+    });
+
+    it("treats a concurrent completion as success rather than a conflict", async () => {
+      mockPrisma.order.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.order.findUnique
+        .mockResolvedValueOnce(deliveredOrder)
+        .mockResolvedValueOnce({
+          ...deliveredOrder,
+          status: OrderStatus.COMPLETED,
+          completedAt: new Date(),
+        });
+
+      const res = await service.completeOrder("order-1");
+      expect(res.alreadyCompleted).toBe(true);
+    });
+
+    it("throws Conflict when the order moved to some other status mid-flight", async () => {
+      mockPrisma.order.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.order.findUnique
+        .mockResolvedValueOnce(deliveredOrder)
+        .mockResolvedValueOnce({
+          ...deliveredOrder,
+          status: OrderStatus.CANCELLED,
+        });
+
+      await expect(service.completeOrder("order-1")).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    // ── Delivery constraints ──────────────────────────────────────
+
+    it("refuses to complete an order whose delivery was SKIPPED", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        planDelivery: {
+          ...deliveredOrder.planDelivery,
+          status: DeliveryStatus.SKIPPED,
+        },
+      });
+      await expect(service.completeOrder("order-1")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("refuses to complete an order whose delivery is still in the future", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        planDelivery: {
+          ...deliveredOrder.planDelivery,
+          deliveryDate: plusDays(3),
+          status: DeliveryStatus.SCHEDULED,
+        },
+      });
+      await expect(service.completeOrder("order-1")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("accepts a delivery dated today", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        planDelivery: {
+          ...deliveredOrder.planDelivery,
+          deliveryDate: TODAY,
+          status: DeliveryStatus.SCHEDULED,
+        },
+      });
+      const res = await service.completeOrder("order-1");
+      expect(res.success).toBe(true);
+    });
+
+    it("throws Conflict when a plan order's delivery record is missing", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        planDelivery: null,
+      });
+      await expect(service.completeOrder("order-1")).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it("completes a BUY_ONCE order that has no delivery record", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        planType: PlanType.BUY_ONCE,
+        planSelectionId: null,
+        planDeliveryId: null,
+        planDelivery: null,
+      });
+      const res = await service.completeOrder("order-1");
+      expect(res.success).toBe(true);
+      expect(mockPrisma.order.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    // ── No side effects ───────────────────────────────────────────
+
+    it("leaves the plan's other scheduled deliveries untouched", async () => {
+      await service.completeOrder("order-1");
+      // Only the one order row is written; the schedule is never queried in
+      // bulk, so Trial / Monthly future deliveries cannot be affected.
+      expect(mockPrisma.planDelivery.update).not.toHaveBeenCalled();
+      expect(mockPrisma.planDelivery.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.planDelivery.findFirst).not.toHaveBeenCalled();
+      expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
+      expect(mockPrisma.planSelection.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("does not touch wallet, payment, cash or invoice records", async () => {
+      await service.completeOrder("order-1");
+      expectNoFinancialOrScheduleWrites();
+    });
+
+    it("does not change the order's money or payment status", async () => {
+      await service.completeOrder("order-1");
+      const data = mockPrisma.order.updateMany.mock.calls[0][0].data;
+      expect(Object.keys(data).sort()).toEqual(["completedAt", "status"]);
+    });
+
+    it("does not create a replacement order", async () => {
+      await service.completeOrder("order-1");
+      expect(mockPrisma.order.create).not.toHaveBeenCalled();
+    });
+
+    // ── Routed through the generic status endpoint ─────────────────
+
+    it("updateOrderStatus(COMPLETED) delegates to the guarded completion path", async () => {
+      const res = await service.updateOrderStatus("order-1", {
+        status: OrderStatus.COMPLETED,
+      });
+      expect(res.success).toBe(true);
+      // The generic `update` call is bypassed entirely, so the eligibility
+      // rules cannot be skipped via PATCH /status.
+      expect(mockPrisma.order.update).not.toHaveBeenCalled();
+      expect(mockPrisma.order.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it("updateOrderStatus(COMPLETED) still enforces delivery eligibility", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        planDelivery: {
+          ...deliveredOrder.planDelivery,
+          status: DeliveryStatus.SKIPPED,
+        },
+      });
+      await expect(
+        service.updateOrderStatus("order-1", { status: OrderStatus.COMPLETED }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  //  COMPLETED STATUS VISIBILITY
+  // ══════════════════════════════════════════════════════════════
+
+  describe("COMPLETED status is reported back by every read path", () => {
+    const completedAt = new Date();
+    const completed = {
+      ...existingOrder,
+      status: OrderStatus.COMPLETED,
+      completedAt,
+      user: {
+        id: USER,
+        mobile: "9999999999",
+        email: null,
+        customerProfile: { firstName: "Test", lastName: "User" },
+      },
+    };
+
+    it("customer order list reports COMPLETED", async () => {
+      mockPrisma.order.findMany.mockResolvedValue([completed]);
+      mockPrisma.order.count.mockResolvedValue(1);
+
+      const res = await service.getCustomerOrders(USER, {});
+      expect(res.data[0].status).toBe(OrderStatus.COMPLETED);
+      expect(res.data[0].completedAt).toEqual(completedAt);
+    });
+
+    it("customer order details report COMPLETED", async () => {
+      mockPrisma.order.findFirst.mockResolvedValue(completed);
+      const res = await service.getCustomerOrder(USER, "order-1");
+      expect(res.status).toBe(OrderStatus.COMPLETED);
+      expect(res.completedAt).toEqual(completedAt);
+    });
+
+    it("admin order list reports COMPLETED", async () => {
+      mockPrisma.order.findMany.mockResolvedValue([completed]);
+      mockPrisma.order.count.mockResolvedValue(1);
+
+      const res = await service.getAdminOrders({});
+      expect(res.data[0].status).toBe(OrderStatus.COMPLETED);
+      expect(res.data[0].completedAt).toEqual(completedAt);
+    });
+
+    it("admin order details report COMPLETED", async () => {
+      mockPrisma.order.findUnique.mockResolvedValue(completed);
+      const res = await service.getAdminOrder("order-1");
+      expect(res.status).toBe(OrderStatus.COMPLETED);
+      expect(res.completedAt).toEqual(completedAt);
+    });
+
+    it("a COMPLETED order is still eligible for reorder", async () => {
+      mockPrisma.order.findFirst.mockResolvedValue(completed);
+      mockPrisma.order.create.mockResolvedValue({
+        ...existingOrder,
+        id: "new-order",
+        status: OrderStatus.PENDING,
+      });
+      mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
+
+      const res = await service.reorder(USER, "order-1", { addressId: "addr-1" });
+      expect(res.success).toBe(true);
+    });
+
+    it("customer list passes a COMPLETED status filter straight through", async () => {
+      mockPrisma.order.findMany.mockResolvedValue([]);
+      mockPrisma.order.count.mockResolvedValue(0);
+
+      await service.getCustomerOrders(USER, { status: OrderStatus.COMPLETED });
+      expect(mockPrisma.order.findMany.mock.calls[0][0].where.status).toBe(
+        OrderStatus.COMPLETED,
+      );
+    });
+
+    it("admin list passes a COMPLETED status filter straight through", async () => {
+      mockPrisma.order.findMany.mockResolvedValue([]);
+      mockPrisma.order.count.mockResolvedValue(0);
+
+      await service.getAdminOrders({ status: OrderStatus.COMPLETED });
+      expect(mockPrisma.order.findMany.mock.calls[0][0].where.status).toBe(
+        OrderStatus.COMPLETED,
+      );
     });
   });
 });

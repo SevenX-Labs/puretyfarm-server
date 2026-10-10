@@ -152,8 +152,8 @@ Partially updates configuration fields for a specific plan type.
 | `quantityMax` | Integer | Maximum allowed quantity in litres (<= 50) |
 | `isActive` | Boolean | Whether the plan is currently visible to customers |
 | `deliveryFeePaise` | Integer (paise) | Delivery fee charged per order (e.g. `2000` = ₹20.00). Default `0`. |
-| `deliveryStartTime` | String (HH:MM) | Delivery window start time in 24h format (e.g. `"06:00"`) |
-| `deliveryEndTime` | String (HH:MM) | Delivery window end time in 24h format (e.g. `"08:00"`) |
+| `deliveryStartTime` | String (HH:MM) | Delivery window start time in 24h format (e.g. `"06:00"`). Must be earlier than `deliveryEndTime` (400 otherwise). |
+| `deliveryEndTime` | String (HH:MM) | Delivery window end time in 24h format (e.g. `"11:00"`). Also the **daily order cut-off** — see below. |
 
 #### Plan-Specific Request Body Fields:
 - **`BUY_ONCE`**:
@@ -197,6 +197,25 @@ Partially updates configuration fields for a specific plan type.
 ```
 
 > **Note**: `deliveryFeePaise`, `deliveryStartTime`, and `deliveryEndTime` are snapshotted onto each Order at creation time. Changing these values does not affect existing orders — only future orders use the updated configuration.
+
+#### Delivery Window as the Daily Cut-Off
+
+`deliveryEndTime` does double duty: it is both the end of the window shown to
+customers and the cut-off after which a plan can no longer start today.
+
+With a `06:00`–`11:00` window, a plan confirmed at 10:30 starts delivering
+**today**; one confirmed at 12:00 starts **tomorrow**, because the van has
+already run. Applied as follows:
+
+| Plan | When the cut-off is applied |
+|------|------------------------------|
+| `BUY_ONCE`, `SEVEN_DAY_TRIAL` | At confirmation, against the live config. For cash plans that means **admin confirmation time**, not when the customer placed the order. |
+| `MONTHLY` | At quote creation, because the billing period start determines the occurrence count and therefore the price. The 30-minute quote expiry bounds the staleness. |
+| Reorder | At reorder time, using the plan's current window. |
+
+An unset or malformed window falls back to `06:00`–`11:00`; leaving the field
+blank does **not** disable the cut-off. Times are stored and transported in 24h
+`HH:MM` form, and rendered as 12h AM/PM on every admin and customer surface.
 
 ---
 

@@ -8,6 +8,7 @@ import {
   Min,
 } from "class-validator";
 import {
+  DELIVERY_TIME_PATTERN,
   PRICE_PER_LITRE_MAX_PAISE,
   QUANTITY_MAX,
   QUANTITY_MIN,
@@ -64,14 +65,14 @@ export abstract class UpdatePlanBaseDto {
 
   @IsOptional()
   @IsString({ message: "deliveryStartTime must be a string" })
-  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
+  @Matches(DELIVERY_TIME_PATTERN, {
     message: "deliveryStartTime must be HH:MM (24h)",
   })
   deliveryStartTime?: string;
 
   @IsOptional()
   @IsString({ message: "deliveryEndTime must be a string" })
-  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
+  @Matches(DELIVERY_TIME_PATTERN, {
     message: "deliveryEndTime must be HH:MM (24h)",
   })
   deliveryEndTime?: string;

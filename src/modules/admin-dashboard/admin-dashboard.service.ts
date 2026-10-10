@@ -184,6 +184,7 @@ export class AdminDashboardService {
       processing: statusMap['PROCESSING'] || 0,
       outForDelivery: statusMap['OUT_FOR_DELIVERY'] || 0,
       delivered: statusMap['DELIVERED'] || 0,
+      completed: statusMap['COMPLETED'] || 0,
       cancelled: statusMap['CANCELLED'] || 0,
       failed: statusMap['FAILED'] || 0,
     };

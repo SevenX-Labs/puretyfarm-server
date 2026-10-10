@@ -2,7 +2,7 @@
 
 ## Overview
 
-Admin order management endpoints for viewing orders, searching by customer/status/date, and updating order status through valid lifecycle transitions. All pricing, delivery fee, and delivery time configuration is controlled via PlanConfig.
+Admin order management endpoints for viewing orders, searching by customer/status/date, updating order status through valid lifecycle transitions, and closing out delivered orders as COMPLETED. All pricing, delivery fee, and delivery time configuration is controlled via PlanConfig.
 
 ## Authentication
 
@@ -41,7 +41,9 @@ Pricing is defined in PlanConfig (`actualPricePerLitre`, `sellingPricePerLitre`)
 
 ## Admin-Controlled Delivery Time
 
-`deliveryStartTime` and `deliveryEndTime` on PlanConfig (HH:MM, 24h format) define the delivery window per plan type. Snapshotted at order creation.
+`deliveryStartTime` and `deliveryEndTime` on PlanConfig (HH:MM, 24h format) define the delivery window per plan type. Snapshotted at order creation, falling back to `06:00`–`11:00` when the plan has none configured, and rendered as 12h AM/PM in every UI.
+
+`deliveryEndTime` is also the **daily order cut-off**: a plan or reorder placed after today's window has closed is scheduled for the next day. See `docs/admin/plans.md` for which plan types apply it at quote time versus confirmation time.
 
 ## Order Snapshots
 
@@ -55,7 +57,7 @@ Each Order stores immutable snapshots of:
 ## Order Status Lifecycle
 
 ```
-PENDING → CONFIRMED → PROCESSING → OUT_FOR_DELIVERY → DELIVERED
+PENDING → CONFIRMED → PROCESSING → OUT_FOR_DELIVERY → DELIVERED → COMPLETED
    ↓          ↓            ↓              ↓
 CANCELLED  CANCELLED   CANCELLED      FAILED
                         FAILED
@@ -69,9 +71,23 @@ CANCELLED  CANCELLED   CANCELLED      FAILED
 | CONFIRMED | PROCESSING, CANCELLED |
 | PROCESSING | OUT_FOR_DELIVERY, CANCELLED, FAILED |
 | OUT_FOR_DELIVERY | DELIVERED, FAILED |
-| DELIVERED | (terminal) |
+| DELIVERED | COMPLETED |
+| COMPLETED | (terminal) |
 | CANCELLED | (terminal) |
 | FAILED | (terminal) |
+
+### DELIVERED vs COMPLETED
+
+`DELIVERED` is a statement about the goods: they reached the customer.
+`COMPLETED` is an administrative close on an order that is already delivered.
+It carries no financial or delivery side effects of its own, which is why it is
+safe to expose as a one-click admin action.
+
+Note that an **order status** and a **delivery status** are different things. A
+plan order is linked 1:1 to a `PlanDelivery` row whose `DeliveryStatus`
+(`SCHEDULED` / `SKIPPED` / `DELIVERED`) records what physically happened on that
+one calendar day. Completing an order reads that row and never writes it, so the
+other deliveries in a Trial or Monthly schedule — past or future — are untouched.
 
 ## Payment Status
 
@@ -129,6 +145,7 @@ GET /api/v1/admin/orders
       "actualPricePerLitrePaise": 9000,
       "sellingPricePerLitrePaise": 8000,
       "invoice": { "invoiceNumber": "INV-10001", "issuedAt": "..." },
+      "completedAt": null,
       "customer": {
         "id": "uuid",
         "mobile": "9999999999",
@@ -199,6 +216,61 @@ PATCH /api/v1/admin/orders/:id/status
 - `400` — Invalid status transition
 - `404` — Order not found
 
+**Note:** `{"status": "COMPLETED"}` on this endpoint is routed internally to the
+dedicated completion path below, so its eligibility rules cannot be bypassed.
+
+---
+
+### 4. Complete Order
+
+```
+PATCH /api/v1/admin/orders/:orderId/complete
+```
+
+**Authentication:** Admin JWT required
+
+**Request Body:** none. `orderId` must be a UUID (400 otherwise).
+
+**Eligibility:**
+- The order must exist
+- Its current status must be `DELIVERED`
+- If the order is linked to a `PlanDelivery`, that delivery must not be
+  `SKIPPED` and its `deliveryDate` must not be in the future
+
+**Business Rules:**
+- Writes exactly two columns on one `orders` row: `status` and `completedAt`
+- Never writes `PlanDelivery`, `PlanSelection`, `Wallet`, `WalletTransaction`,
+  `Payment`, `CashCollection` or `Invoice` records
+- Never marks an undelivered order delivered to make completion succeed
+- Never creates a replacement order
+- Idempotent: completing an already-`COMPLETED` order returns 200 with
+  `alreadyCompleted: true` and the original `completedAt`, repeating no side
+  effects
+
+**Response (200):**
+
+```json
+{
+  "success": true,
+  "message": "Order marked as completed.",
+  "alreadyCompleted": false,
+  "order": {
+    "id": "uuid",
+    "orderNumber": "PF10001",
+    "status": "COMPLETED",
+    "completedAt": "2026-10-10T07:15:00.000Z",
+    "...": "full order object"
+  }
+}
+```
+
+**Errors:**
+- `400` — Not a UUID; order not `DELIVERED`; delivery skipped; delivery still in the future
+- `401` — Missing or invalid authentication token
+- `403` — Customer token on admin endpoint
+- `404` — Order not found
+- `409` — Order changed concurrently, or a plan order's delivery record is missing
+
 ---
 
 ## Error Cases
@@ -209,7 +281,7 @@ PATCH /api/v1/admin/orders/:id/status
 | 401 | Missing or invalid authentication token |
 | 403 | Customer token on admin endpoint |
 | 404 | Order not found |
-| 409 | Duplicate order for same delivery |
+| 409 | Duplicate order for same delivery; concurrent completion conflict |
 
 ## Security Rules
 

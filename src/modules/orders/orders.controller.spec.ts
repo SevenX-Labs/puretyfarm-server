@@ -5,6 +5,7 @@ jest.mock("@nestjs/jwt", () => ({
   JwtService: jest.fn().mockImplementation(() => ({ verifyAsync: jest.fn() })),
 }));
 
+import { BadRequestException, ParseUUIDPipe } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
 import { OrdersController } from "./orders.controller";
 import { AdminOrdersController } from "./admin-orders.controller";
@@ -120,6 +121,7 @@ describe("AdminOrdersController", () => {
     getAdminOrders: jest.fn().mockResolvedValue({ data: [] }),
     getAdminOrder: jest.fn().mockResolvedValue({}),
     updateOrderStatus: jest.fn().mockResolvedValue({ success: true }),
+    completeOrder: jest.fn().mockResolvedValue({ success: true }),
   };
 
   beforeEach(async () => {
@@ -164,5 +166,43 @@ describe("AdminOrdersController", () => {
     expect(mockService.updateOrderStatus).toHaveBeenCalledWith("order-1", {
       status: "CONFIRMED",
     });
+  });
+
+  describe("completeOrder", () => {
+    it("delegates to the service with the route id and no body", async () => {
+      await adminController.completeOrder("order-1");
+      expect(mockService.completeOrder).toHaveBeenCalledWith("order-1");
+    });
+
+    it("sits behind JwtAuthGuard, so an unauthenticated caller is rejected", () => {
+      const guards = Reflect.getMetadata("__guards__", AdminOrdersController);
+      expect(guards).toContain(JwtAuthGuard);
+    });
+
+    it("requires the ADMIN role, so a customer token cannot complete an order", () => {
+      const roles = Reflect.getMetadata(ROLES_KEY, AdminOrdersController);
+      expect(roles).toContain("ADMIN");
+      expect(roles).not.toContain("CUSTOMER");
+    });
+
+    it("validates orderId as a UUID before reaching the service", async () => {
+      const pipe = new ParseUUIDPipe();
+      await expect(
+        pipe.transform("not-a-uuid", { type: "param", data: "orderId" }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("is not exposed on the customer controller", () => {
+      expect(
+        (OrdersController.prototype as Record<string, unknown>).completeOrder,
+      ).toBeUndefined();
+    });
+  });
+
+  it("UpdateOrderStatusDto accepts COMPLETED so the generic route can route it", async () => {
+    const errors = await validate(
+      plainToInstance(UpdateOrderStatusDto, { status: "COMPLETED" }),
+    );
+    expect(errors).toHaveLength(0);
   });
 });

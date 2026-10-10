@@ -19,6 +19,9 @@ import {
   QUOTE_EXPIRY_MINUTES,
   TRIAL_MAX_USES,
   TRIAL_DURATION_DAYS,
+  DEFAULT_DELIVERY_START_TIME,
+  DEFAULT_DELIVERY_END_TIME,
+  DELIVERY_TIME_PATTERN,
 } from "./plans.constants";
 import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
 import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
@@ -190,6 +193,54 @@ export function toDateOnly(d: Date): Date {
 }
 
 /**
+ * Parses a 24h "HH:MM" delivery time into minutes since midnight.
+ * Returns null for anything that is not a well-formed time, so callers can
+ * fall back rather than silently treating a bad value as 00:00.
+ */
+export function parseDeliveryTimeMinutes(time?: string | null): number | null {
+  if (!time || !DELIVERY_TIME_PATTERN.test(time)) return null;
+  const [h, m] = time.split(":");
+  return parseInt(h, 10) * 60 + parseInt(m, 10);
+}
+
+/** Renders a 24h "HH:MM" delivery time as 12h "h:mm AM/PM". */
+export function formatDeliveryTime12h(time?: string | null): string | null {
+  const minutes = parseDeliveryTimeMinutes(time);
+  if (minutes === null) return null;
+  const h24 = Math.floor(minutes / 60);
+  const mm = String(minutes % 60).padStart(2, "0");
+  const suffix = h24 >= 12 ? "PM" : "AM";
+  return `${h24 % 12 || 12}:${mm} ${suffix}`;
+}
+
+/**
+ * The first date a plan can actually be delivered on.
+ *
+ * The configured delivery window doubles as the daily cut-off: once today's
+ * window has closed, the van has already run, so the earliest real delivery is
+ * tomorrow. Ordering at 12:00 against an 06:00–11:00 window therefore starts
+ * the schedule on the next calendar day.
+ *
+ * An unconfigured or malformed `deliveryEndTime` falls back to the default
+ * window rather than to "no cut-off", so the rule cannot be disabled by
+ * leaving the field blank.
+ */
+export function resolveFirstDeliveryDate(
+  now: Date,
+  deliveryEndTime?: string | null,
+): Date {
+  const today = toDateOnly(now);
+  const cutoff =
+    parseDeliveryTimeMinutes(deliveryEndTime) ??
+    parseDeliveryTimeMinutes(DEFAULT_DELIVERY_END_TIME)!;
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  if (nowMinutes < cutoff) return today;
+  const tomorrow = new Date(today);
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  return tomorrow;
+}
+
+/**
  * Generates the ordered list of calendar delivery dates in the inclusive range
  * [start, end]. DAILY delivers every calendar day; ALTERNATE_DAYS delivers
  * every other calendar day, with the first delivery on `start` itself.
@@ -327,8 +378,8 @@ export class PlansService {
           available: buyOnceElig.eligible,
           usageCount: buyOnceElig.usageCount,
           remainingUses: buyOnceElig.remainingUses,
-          deliveryStartTime: buyOnceConfig?.deliveryStartTime ?? "06:00",
-          deliveryEndTime: buyOnceConfig?.deliveryEndTime ?? "11:00",
+          deliveryStartTime: buyOnceConfig?.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
+          deliveryEndTime: buyOnceConfig?.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
           ...(buyOnceElig.blockedReason
             ? { blockedReason: buyOnceElig.blockedReason }
             : {}),
@@ -337,8 +388,8 @@ export class PlansService {
           type: PlanType.SEVEN_DAY_TRIAL,
           available: trialElig.eligible,
           used: trialElig.used,
-          deliveryStartTime: trialConfig?.deliveryStartTime ?? "06:00",
-          deliveryEndTime: trialConfig?.deliveryEndTime ?? "11:00",
+          deliveryStartTime: trialConfig?.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
+          deliveryEndTime: trialConfig?.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
           ...(trialElig.blockedReason
             ? { blockedReason: trialElig.blockedReason }
             : {}),
@@ -603,10 +654,19 @@ export class PlansService {
       this.validateQuantityRange(dto.quantityB, config.quantityMin, config.quantityMax);
     }
 
-    // The plan starts today (date-only) and the billing window runs to the end
-    // of the current calendar month. Occurrences are counted from the actual
-    // start date, so a mid-month start is never charged for earlier dates.
-    const billingStart = toDateOnly(new Date());
+    // The plan starts on the first deliverable date — today, or tomorrow if
+    // today's delivery window has already closed — and the billing window runs
+    // to the end of that month. Occurrences are counted from the actual start
+    // date, so a start pushed past the cut-off is never charged for a day that
+    // cannot be delivered.
+    //
+    // MONTHLY resolves the cut-off here rather than at confirmation because the
+    // occurrence count, and therefore the quoted price, derives from it. The
+    // 30-minute quote expiry bounds how stale that decision can get.
+    const billingStart = resolveFirstDeliveryDate(
+      new Date(),
+      config.deliveryEndTime,
+    );
     const deliveryOccurrences = calculateMonthlyDeliveryOccurrences(
       dto.frequency,
       billingStart,
@@ -752,7 +812,10 @@ export class PlansService {
         }
       }
 
-      const schedule = this.resolveScheduleFromQuote(quote);
+      const schedule = this.resolveScheduleFromQuote(
+        quote,
+        activeConfig.deliveryEndTime,
+      );
       const paymentAmount = quote.totalSellingAmount;
 
       // Step 1: Create PlanSelection in PENDING_PAYMENT state first, so we have
@@ -986,8 +1049,8 @@ export class PlansService {
           deliveryFeePaise: deliveryFee,
           totalPaise: total,
           deliveryDate: d.deliveryDate,
-          deliveryStartTime: config.deliveryStartTime || "05:00",
-          deliveryEndTime: config.deliveryEndTime || "07:00",
+          deliveryStartTime: config.deliveryStartTime || DEFAULT_DELIVERY_START_TIME,
+          deliveryEndTime: config.deliveryEndTime || DEFAULT_DELIVERY_END_TIME,
           addressSnapshot,
           actualPricePerLitrePaise: actualPrice,
           sellingPricePerLitrePaise: unitPrice,
@@ -1092,12 +1155,29 @@ export class PlansService {
 
     const now = new Date();
 
+    // The cut-off is re-evaluated here, not reused from quote-confirm time: a
+    // cash plan is activated by the admin, possibly hours later, and the
+    // customer's first delivery must be the first date that is still
+    // deliverable *now*.
+    const scheduleConfig = await (tx as any).planConfig.findUnique({
+      where: { planType: selection.planType },
+    });
+    const schedule = this.resolveScheduleFromQuote(
+      selection.quote,
+      scheduleConfig?.deliveryEndTime,
+    );
+
     await (tx as any).planSelection.update({
       where: { id: planSelectionId },
       data: {
         status: PlanSelectionStatus.CONFIRMED,
         paidAt: now,
         paidAmountPaise: selection.quote.totalSellingAmount,
+        // Keep the live schedule window in step with the deliveries actually
+        // materialised below, so Manage Delivery does not show a start date
+        // the customer has no delivery on.
+        startDate: schedule.start,
+        endDate: schedule.end,
       },
     });
 
@@ -1106,7 +1186,6 @@ export class PlansService {
       data: { status: PlanQuoteStatus.CONFIRMED },
     });
 
-    const schedule = this.resolveScheduleFromQuote(selection.quote);
     await this.materializeDeliveries(tx, planSelectionId, selection.userId, schedule, selection.planType);
   }
 
@@ -1205,6 +1284,8 @@ export class PlansService {
       alternateDaysEnabled: boolean;
       fixedQuantityEnabled: boolean;
       alternatingQuantityEnabled: boolean;
+      deliveryStartTime?: string | null;
+      deliveryEndTime?: string | null;
     },
   ): void {
     if (config.quantityMin > config.quantityMax) {
@@ -1218,6 +1299,17 @@ export class PlansService {
         `sellingPricePerLitre (${config.sellingPricePerLitre}) cannot exceed actualPricePerLitre (${config.actualPricePerLitre})`,
       );
     }
+    // The window end is also the daily order cut-off, so an inverted or
+    // zero-length window would push every order to the next day forever.
+    const windowStart = parseDeliveryTimeMinutes(config.deliveryStartTime);
+    const windowEnd = parseDeliveryTimeMinutes(config.deliveryEndTime);
+    if (windowStart !== null && windowEnd !== null && windowStart >= windowEnd) {
+      throw new BadRequestException(
+        `deliveryStartTime (${config.deliveryStartTime}) must be earlier than ` +
+          `deliveryEndTime (${config.deliveryEndTime})`,
+      );
+    }
+
     if (planType === PlanType.MONTHLY) {
       if (!config.dailyEnabled && !config.alternateDaysEnabled) {
         throw new BadRequestException(
@@ -1242,17 +1334,25 @@ export class PlansService {
    * - SEVEN_DAY_TRIAL: `deliveryOccurrences` consecutive DAILY deliveries.
    * - BUY_ONCE: a single DAILY delivery on the start day.
    */
-  resolveScheduleFromQuote(quote: {
-    planType: string;
-    frequency: string | null;
-    quantityMode: string | null;
-    quantity: number | null;
-    quantityA: number | null;
-    quantityB: number | null;
-    deliveryOccurrences: number;
-    billingPeriodStart: Date | null;
-    billingPeriodEnd: Date | null;
-  }): {
+  resolveScheduleFromQuote(
+    quote: {
+      planType: string;
+      frequency: string | null;
+      quantityMode: string | null;
+      quantity: number | null;
+      quantityA: number | null;
+      quantityB: number | null;
+      deliveryOccurrences: number;
+      billingPeriodStart: Date | null;
+      billingPeriodEnd: Date | null;
+    },
+    /**
+     * The plan's configured window end, used as the daily cut-off for
+     * BUY_ONCE / SEVEN_DAY_TRIAL. Omitted means "fall back to the default
+     * window", never "no cut-off".
+     */
+    deliveryEndTime?: string | null,
+  ): {
     frequency: DeliveryFrequency;
     quantityMode: QuantityMode;
     quantity: number | null;
@@ -1279,8 +1379,11 @@ export class PlansService {
     }
 
     // BUY_ONCE (1 delivery) and SEVEN_DAY_TRIAL (N daily deliveries) are both
-    // FIXED-quantity DAILY schedules starting today.
-    const start = toDateOnly(new Date());
+    // FIXED-quantity DAILY schedules. Neither one's price depends on the start
+    // date, so the cut-off is applied here, at confirmation time, against the
+    // live configuration — which is what makes an order placed after today's
+    // window close start delivering tomorrow.
+    const start = resolveFirstDeliveryDate(new Date(), deliveryEndTime);
     const occurrences =
       quote.planType === PlanType.SEVEN_DAY_TRIAL
         ? Math.max(1, quote.deliveryOccurrences)

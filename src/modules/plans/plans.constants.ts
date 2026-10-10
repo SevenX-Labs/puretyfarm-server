@@ -49,6 +49,21 @@ export enum DeliveryStatus {
 /** How long a quote remains valid before automatic expiry (in minutes). */
 export const QUOTE_EXPIRY_MINUTES = 30;
 
+/**
+ * Fallback delivery window, used only when an admin has not configured one on
+ * the PlanConfig row. Stored and transported as 24h "HH:MM"; every surface
+ * renders it in 12h AM/PM form.
+ *
+ * Defined once here because the window is also the daily order cut-off: a
+ * plan confirmed after its window has closed starts delivering the next day,
+ * so a stray per-call-site default would silently shift that cut-off.
+ */
+export const DEFAULT_DELIVERY_START_TIME = "06:00";
+export const DEFAULT_DELIVERY_END_TIME = "11:00";
+
+/** 24-hour "HH:MM" — the only accepted wire format for a delivery window. */
+export const DELIVERY_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 /** Absolute structural quantity boundaries (enforced in DTOs). */
 export const QUANTITY_MIN = 1;
 export const QUANTITY_MAX = 5;

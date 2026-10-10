@@ -11,6 +11,7 @@ import {
   PaymentStatus,
   ALLOWED_STATUS_TRANSITIONS,
   REORDER_ELIGIBLE_STATUSES,
+  COMPLETION_ELIGIBLE_STATUSES,
 } from "./orders.constants";
 import {
   generateOrderNumber,
@@ -20,12 +21,15 @@ import {
   PlanType,
   DeliveryStatus,
   PlanSelectionStatus,
+  DEFAULT_DELIVERY_START_TIME,
+  DEFAULT_DELIVERY_END_TIME,
 } from "../plans/plans.constants";
 import { CreateOrderDto } from "./dto/customer/create-order.dto";
 import { ReorderDto } from "./dto/customer/reorder.dto";
 import { CustomerListOrdersQueryDto } from "./dto/customer/list-orders-query.dto";
 import { AdminListOrdersQueryDto } from "./dto/admin/list-orders-query.dto";
 import { UpdateOrderStatusDto } from "./dto/admin/update-order-status.dto";
+import { toDateOnly, resolveFirstDeliveryDate } from "../plans/plans.service";
 
 const ACTIVE_STATUSES = [PlanSelectionStatus.CONFIRMED, PlanSelectionStatus.ACTIVE];
 
@@ -151,8 +155,8 @@ export class OrdersService {
           deliveryFeePaise,
           totalPaise,
           deliveryDate: delivery.deliveryDate,
-          deliveryStartTime: config.deliveryStartTime,
-          deliveryEndTime: config.deliveryEndTime,
+          deliveryStartTime: config.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
+          deliveryEndTime: config.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
           addressSnapshot,
           actualPricePerLitrePaise: actualPricePaise,
           sellingPricePerLitrePaise: unitPricePaise,
@@ -317,6 +321,14 @@ export class OrdersService {
       const subtotalPaise = itemTotal;
       const totalPaise = subtotalPaise + deliveryFeePaise;
 
+      // A reorder is a fresh order placed now, so it inherits the same daily
+      // cut-off as a new plan: today if the window is still open, otherwise
+      // tomorrow. Previously no deliveryDate was set at all.
+      const deliveryDate = resolveFirstDeliveryDate(
+        new Date(),
+        config.deliveryEndTime,
+      );
+
       const orderNumber = await this.generateOrderNumber();
 
       const newOrder = await tx.order.create({
@@ -331,8 +343,9 @@ export class OrdersService {
           taxPaise: 0,
           deliveryFeePaise,
           totalPaise,
-          deliveryStartTime: config.deliveryStartTime,
-          deliveryEndTime: config.deliveryEndTime,
+          deliveryDate,
+          deliveryStartTime: config.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
+          deliveryEndTime: config.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
           addressSnapshot,
           actualPricePerLitrePaise: actualPricePaise,
           sellingPricePerLitrePaise: unitPricePaise,
@@ -502,6 +515,14 @@ export class OrdersService {
   // ══════════════════════════════════════════════════════════════════
 
   async updateOrderStatus(orderId: string, dto: UpdateOrderStatusDto) {
+    // COMPLETED carries eligibility rules of its own (the delivery behind the
+    // order must actually have fallen due and not been skipped). Routing it
+    // through the dedicated path means the generic status endpoint cannot be
+    // used to sidestep those rules.
+    if (dto.status === OrderStatus.COMPLETED) {
+      return this.completeOrder(orderId);
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id: orderId } });
       if (!order) throw new NotFoundException("Order not found");
@@ -523,6 +544,125 @@ export class OrdersService {
         success: true,
         message: `Order status updated to ${dto.status}.`,
         order: this.formatOrderResponse(updated, updated.items, updated.invoice),
+      };
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ADMIN — COMPLETE ORDER
+  // ══════════════════════════════════════════════════════════════════
+
+  /**
+   * Closes a delivered order by moving it to the terminal COMPLETED status.
+   *
+   * Completion is deliberately an accounting act and nothing more. It writes
+   * exactly two columns on exactly one `orders` row — `status` and
+   * `completedAt` — and touches no PlanDelivery, PlanSelection, Wallet,
+   * Payment, CashCollection or Invoice record. That is what keeps it safe to
+   * expose as a one-click admin action: there is no money and no delivery
+   * promise riding on the button.
+   *
+   * Consequently it never *creates* the evidence that a delivery happened. The
+   * order must already be DELIVERED (reached through the normal status flow),
+   * and for a plan order the individual PlanDelivery behind it is read — never
+   * written — to confirm it was not skipped and is not still in the future.
+   * Sibling deliveries of the same plan, past or future, are not queried at
+   * all, so completing one day of a Trial or Monthly plan cannot disturb the
+   * rest of the schedule.
+   *
+   * Repeating the call on an already-completed order is a no-op success: the
+   * conditional update matches zero rows, and the original `completedAt` is
+   * returned unchanged.
+   */
+  async completeOrder(orderId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { planDelivery: true, items: true, invoice: true },
+      });
+      if (!order) throw new NotFoundException("Order not found");
+
+      // Idempotency: already completed is a success, not a conflict, and must
+      // not refresh completedAt — the first completion is the real one.
+      if (order.status === OrderStatus.COMPLETED) {
+        return {
+          success: true,
+          message: "Order is already completed.",
+          alreadyCompleted: true,
+          order: this.formatOrderResponse(order, order.items, order.invoice),
+        };
+      }
+
+      if (!COMPLETION_ELIGIBLE_STATUSES.includes(order.status as OrderStatus)) {
+        throw new BadRequestException(
+          `Only a ${OrderStatus.DELIVERED} order can be completed. This order is ${order.status}.`,
+        );
+      }
+
+      // Plan orders own exactly one PlanDelivery (orders.planDeliveryId is
+      // unique). Its status is the record of what physically happened, so it
+      // decides eligibility — and is left exactly as it is.
+      if (order.planDeliveryId) {
+        const delivery = order.planDelivery;
+        if (!delivery) {
+          throw new ConflictException(
+            "The delivery record for this order is missing, so it cannot be completed.",
+          );
+        }
+        if (delivery.status === DeliveryStatus.SKIPPED) {
+          throw new BadRequestException(
+            "This order's delivery was skipped, so the order cannot be completed.",
+          );
+        }
+        const today = toDateOnly(new Date()).getTime();
+        if (toDateOnly(new Date(delivery.deliveryDate)).getTime() > today) {
+          throw new BadRequestException(
+            "This order's delivery is still scheduled for a future date.",
+          );
+        }
+      }
+
+      // Conditional update: the status we validated is part of the WHERE, so a
+      // concurrent completion (or cancellation) loses the race instead of
+      // overwriting the winner.
+      const result = await tx.order.updateMany({
+        where: { id: orderId, status: OrderStatus.DELIVERED },
+        data: { status: OrderStatus.COMPLETED, completedAt: new Date() },
+      });
+
+      if (result.count === 0) {
+        const latest = await tx.order.findUnique({
+          where: { id: orderId },
+          include: { items: true, invoice: true },
+        });
+        if (latest?.status === OrderStatus.COMPLETED) {
+          return {
+            success: true,
+            message: "Order is already completed.",
+            alreadyCompleted: true,
+            order: this.formatOrderResponse(latest, latest.items, latest.invoice),
+          };
+        }
+        throw new ConflictException(
+          "This order changed while it was being completed. Reload it and try again.",
+        );
+      }
+
+      const updated = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { items: true, invoice: true },
+      });
+
+      this.logger.log(
+        `ORDER COMPLETED orderId=${orderId} orderNumber=${order.orderNumber} ` +
+          `planType=${order.planType} planDeliveryId=${order.planDeliveryId ?? "none"}`,
+      );
+
+      return {
+        success: true,
+        message: "Order marked as completed.",
+        alreadyCompleted: false,
+        order: this.formatOrderResponse(updated, updated!.items, updated!.invoice),
       };
     });
   }
@@ -562,6 +702,7 @@ export class OrdersService {
       actualPricePerLitrePaise: order.actualPricePerLitrePaise,
       sellingPricePerLitrePaise: order.sellingPricePerLitrePaise,
       reorderedFromOrderId: order.reorderedFromOrderId,
+      completedAt: order.completedAt ?? null,
       invoice: invoice
         ? {
             invoiceNumber: invoice.invoiceNumber,

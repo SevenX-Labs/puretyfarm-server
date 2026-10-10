@@ -14,6 +14,8 @@ import {
   PlanSelectionStatus,
   ChangeRequestType,
   ChangeRequestStatus,
+  DEFAULT_DELIVERY_START_TIME,
+  DEFAULT_DELIVERY_END_TIME,
 } from "../plans/plans.constants";
 import {
   toDateOnly,
@@ -841,8 +843,8 @@ export class ManageDeliveryService {
       quantityMode: selection.quantityMode,
       startDate: this.fmt(selection.startDate),
       endDate: this.fmt(selection.endDate),
-      deliveryStartTime: deliveryStartTime ?? "06:00",
-      deliveryEndTime: deliveryEndTime ?? "11:00",
+      deliveryStartTime: deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
+      deliveryEndTime: deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
     };
     if (selection.quantityMode === QuantityMode.ALTERNATING) {
       activePlan.quantityA = selection.quantityA;
