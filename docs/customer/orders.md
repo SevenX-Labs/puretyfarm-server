@@ -65,12 +65,25 @@ Delivery fee is **Admin-controlled** via PlanConfig (`deliveryFeePaise`). The cu
 
 ## Delivery Time Rules
 
-Delivery window (`deliveryStartTime`, `deliveryEndTime`) is **Admin-controlled** via PlanConfig. Snapshotted onto the Order at creation time. Format: `HH:MM` (24h); clients render it as 12h AM/PM.
+Delivery window (`deliveryStartTime`, `deliveryEndTime`) is **Admin-controlled** via PlanConfig and snapshotted onto the Order at creation time. Format: `HH:MM` (24h); clients render it as 12h AM/PM.
 
-`deliveryEndTime` doubles as the daily cut-off. A plan confirmed — or an order
-reordered — after today's window has closed is scheduled for the next day, so a
-customer ordering at 12:00 against an `06:00`–`11:00` window gets tomorrow's
-delivery, not a slot that has already passed.
+Both fields are nullable with **no fallback**. When a plan has no configured window the API returns `null` and the app shows an explicit unavailable state — it never substitutes a default time.
+
+The window is separate from the **order cut-off**, which is returned as `orderCutoff` on `GET /api/v1/customer/plans`:
+
+```json
+{
+  "orderCutoff": {
+    "time": "23:00",
+    "timeLabel": "11:00 PM",
+    "timezone": "Asia/Kolkata",
+    "leadDaysBeforeCutoff": 1,
+    "leadDaysAfterCutoff": 2
+  }
+}
+```
+
+Deliveries are never same-day. Ordering before 23:00 IST schedules the next calendar day; at or after 23:00 IST, the day after next. `deliveryDate` on the order is the server's decision — clients display it and never recompute it.
 
 ## Address Snapshot Rules
 

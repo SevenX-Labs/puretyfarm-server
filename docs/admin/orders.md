@@ -41,9 +41,11 @@ Pricing is defined in PlanConfig (`actualPricePerLitre`, `sellingPricePerLitre`)
 
 ## Admin-Controlled Delivery Time
 
-`deliveryStartTime` and `deliveryEndTime` on PlanConfig (HH:MM, 24h format) define the delivery window per plan type. Snapshotted at order creation, falling back to `06:00`–`11:00` when the plan has none configured, and rendered as 12h AM/PM in every UI.
+`deliveryStartTime` and `deliveryEndTime` on PlanConfig (HH:MM, 24h format) define the delivery window per plan type, and are snapshotted onto the order at creation.
 
-`deliveryEndTime` is also the **daily order cut-off**: a plan or reorder placed after today's window has closed is scheduled for the next day. See `docs/admin/plans.md` for which plan types apply it at quote time versus confirmation time.
+Both fields are **nullable and have no fallback**. An unconfigured plan snapshots `null`, the API returns `null`, and every client renders "window not set". Order snapshots are historical and are never rewritten to match today's PlanConfig.
+
+The delivery window is **not** the order cut-off. The cut-off is a separate business-wide policy — 23:00 Asia/Kolkata — exposed as `orderCutoff` on the plans APIs. An order placed before 23:00 IST is scheduled for the next calendar day; at or after 23:00 IST, for the day after next. See `docs/admin/plans.md`.
 
 ## Order Snapshots
 

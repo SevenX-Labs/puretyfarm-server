@@ -13,14 +13,30 @@ import {
   QuantityMode,
   DeliveryStatus,
   PlanSelectionStatus,
-  DEFAULT_DELIVERY_START_TIME,
-  DEFAULT_DELIVERY_END_TIME,
 } from "../plans/plans.constants";
-import { resolveFirstDeliveryDate } from "../plans/plans.service";
+import { resolveFirstDeliveryDate, toDateOnly } from "../plans/plans.service";
+import { IST_UTC_OFFSET_MINUTES } from "../../common/utils/ist-date.util";
 
 const USER = "user-1";
 const OTHER_USER = "user-2";
 const ADMIN = "admin-1";
+
+/** The UTC instant at which it is `hh:mm` IST on the given Indian date. */
+function istInstantUtc(
+  year: number,
+  month1: number,
+  day: number,
+  hh: number,
+  mm = 0,
+): Date {
+  return new Date(
+    Date.UTC(year, month1 - 1, day, hh, mm) - IST_UTC_OFFSET_MINUTES * 60_000,
+  );
+}
+
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
 
 function dateOnly(d: Date): Date {
   return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -642,7 +658,7 @@ describe("OrdersService", () => {
     });
   });
   // ══════════════════════════════════════════════════════════════
-  //  DELIVERY WINDOW SNAPSHOT & CUT-OFF
+  //  DELIVERY WINDOW SNAPSHOT & ORDER CUT-OFF
   // ══════════════════════════════════════════════════════════════
 
   describe("delivery window on the order snapshot", () => {
@@ -654,7 +670,14 @@ describe("OrdersService", () => {
       mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
     });
 
-    it("falls back to the default window when the plan has none configured", async () => {
+    it("snapshots the configured window verbatim", async () => {
+      await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
+      const data = mockPrisma.order.create.mock.calls[0][0].data;
+      expect(data.deliveryStartTime).toBe("08:00");
+      expect(data.deliveryEndTime).toBe("10:00");
+    });
+
+    it("snapshots null — never a fabricated window — when the plan has none", async () => {
       mockPrisma.planConfig.findUnique.mockResolvedValue({
         ...planConfig,
         deliveryStartTime: null,
@@ -663,47 +686,145 @@ describe("OrdersService", () => {
 
       await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
       const data = mockPrisma.order.create.mock.calls[0][0].data;
-      expect(data.deliveryStartTime).toBe(DEFAULT_DELIVERY_START_TIME);
-      expect(data.deliveryEndTime).toBe(DEFAULT_DELIVERY_END_TIME);
+      expect(data.deliveryStartTime).toBeNull();
+      expect(data.deliveryEndTime).toBeNull();
     });
 
-    it("createOrder keeps the delivery's own scheduled date, cut-off or not", async () => {
+    it("createOrder keeps the delivery's own scheduled date", async () => {
       await service.createOrder(USER, { planDeliveryId: "del-1", addressId: "addr-1" });
       const data = mockPrisma.order.create.mock.calls[0][0].data;
       // The date comes from the already-materialised PlanDelivery, which the
-      // cut-off was applied to when the plan was confirmed.
+      // cut-off was applied to when the plan was confirmed. Re-applying it here
+      // would move a delivery the customer has already been promised.
       expect(data.deliveryDate).toEqual(delivery.deliveryDate);
     });
 
-    it("reorder schedules the first deliverable date instead of leaving it null", async () => {
+    it("exposes the saved snapshot on read, without substituting today's config", async () => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
-        status: OrderStatus.DELIVERED,
+        deliveryStartTime: "05:00",
+        deliveryEndTime: "07:00",
       });
 
-      await service.reorder(USER, "order-1", { addressId: "addr-1" });
-      const data = mockPrisma.order.create.mock.calls[0][0].data;
-      expect(data.deliveryDate).toEqual(
-        resolveFirstDeliveryDate(new Date(), planConfig.deliveryEndTime),
-      );
+      const res = await service.getCustomerOrder(USER, "order-1");
+      expect(res.deliveryStartTime).toBe("05:00");
+      expect(res.deliveryEndTime).toBe("07:00");
     });
 
-    it("reorder placed after the window close lands on the next day", async () => {
+    it("reports a null window on read rather than inventing one", async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({
+        ...existingOrder,
+        deliveryStartTime: null,
+        deliveryEndTime: null,
+      });
+
+      const res = await service.getCustomerOrder(USER, "order-1");
+      expect(res.deliveryStartTime).toBeNull();
+      expect(res.deliveryEndTime).toBeNull();
+    });
+  });
+
+  describe("reorder delivery date (23:00 IST cut-off)", () => {
+    beforeEach(() => {
       mockPrisma.order.findFirst.mockResolvedValue({
         ...existingOrder,
         status: OrderStatus.DELIVERED,
       });
-      // "00:01" is closed at every wall-clock time.
-      mockPrisma.planConfig.findUnique.mockResolvedValue({
-        ...planConfig,
-        deliveryEndTime: "00:01",
+      mockPrisma.order.create.mockResolvedValue({
+        ...existingOrder,
+        id: "new-order",
       });
+      mockPrisma.invoice.create.mockResolvedValue(existingOrder.invoice);
+    });
 
+    async function reorderDeliveryDate(): Promise<Date> {
       await service.reorder(USER, "order-1", { addressId: "addr-1" });
-      const data = mockPrisma.order.create.mock.calls[0][0].data;
-      const tomorrow = new Date(TODAY);
-      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-      expect(data.deliveryDate).toEqual(tomorrow);
+      return mockPrisma.order.create.mock.calls[0][0].data.deliveryDate;
+    }
+
+    it("assigns a delivery date instead of leaving it null", async () => {
+      const deliveryDate = await reorderDeliveryDate();
+      expect(deliveryDate).toBeInstanceOf(Date);
+      expect(deliveryDate).toEqual(resolveFirstDeliveryDate());
+    });
+
+    it("never leaves the date null, which is what made the UI show createdAt", async () => {
+      const deliveryDate = await reorderDeliveryDate();
+      expect(deliveryDate).not.toBeNull();
+      expect(deliveryDate).not.toBeUndefined();
+    });
+
+    it("is strictly in the future (never the reorder day itself)", async () => {
+      const deliveryDate = await reorderDeliveryDate();
+      expect(deliveryDate.getTime()).toBeGreaterThan(toDateOnly(new Date()).getTime());
+    });
+
+    it("22:59 IST reorders for the next day", async () => {
+      jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 10, 22, 59));
+      try {
+        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-11");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("exactly 23:00 IST reorders for the day after next", async () => {
+      jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 10, 23, 0));
+      try {
+        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-12");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("23:01 IST reorders for the day after next", async () => {
+      jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 10, 23, 1));
+      try {
+        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-12");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("ignores the plan's delivery window when picking the date", async () => {
+      jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 10, 12, 0));
+      try {
+        mockPrisma.planConfig.findUnique.mockResolvedValue({
+          ...planConfig,
+          deliveryStartTime: "16:00",
+          deliveryEndTime: "18:00",
+        });
+        // Noon IST is well before the 23:00 cut-off, so the window — whatever
+        // it is — does not change the date.
+        expect(isoDay(await reorderDeliveryDate())).toBe("2026-10-11");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("rolls over a month end", async () => {
+      jest.useFakeTimers().setSystemTime(istInstantUtc(2026, 10, 31, 23, 30));
+      try {
+        expect(isoDay(await reorderDeliveryDate())).toBe("2026-11-02");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("does not touch wallet, payment or cash records", async () => {
+      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+      expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
+      expect(mockPrisma.wallet.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.walletTransaction.create).not.toHaveBeenCalled();
+      expect(mockPrisma.payment.create).not.toHaveBeenCalled();
+      expect(mockPrisma.payment.update).not.toHaveBeenCalled();
+      expect(mockPrisma.cashCollection.update).not.toHaveBeenCalled();
+    });
+
+    it("creates exactly one order and one invoice", async () => {
+      await service.reorder(USER, "order-1", { addressId: "addr-1" });
+      expect(mockPrisma.order.create).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.invoice.create).toHaveBeenCalledTimes(1);
     });
   });
 

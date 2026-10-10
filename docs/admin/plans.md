@@ -198,24 +198,69 @@ Partially updates configuration fields for a specific plan type.
 
 > **Note**: `deliveryFeePaise`, `deliveryStartTime`, and `deliveryEndTime` are snapshotted onto each Order at creation time. Changing these values does not affect existing orders — only future orders use the updated configuration.
 
-#### Delivery Window as the Daily Cut-Off
+#### Delivery Window vs. Order Cut-Off
 
-`deliveryEndTime` does double duty: it is both the end of the window shown to
-customers and the cut-off after which a plan can no longer start today.
+These are two different things and must not be conflated:
 
-With a `06:00`–`11:00` window, a plan confirmed at 10:30 starts delivering
-**today**; one confirmed at 12:00 starts **tomorrow**, because the van has
-already run. Applied as follows:
+| | Delivery window | Order cut-off |
+|---|---|---|
+| What it means | When the van arrives | Whether there is still time to join a run |
+| Where it lives | `PlanConfig.deliveryStartTime` / `deliveryEndTime`, per plan | `ORDER_CUTOFF_HHMM` in `plans.constants.ts`, one business-wide policy |
+| Configurable by admin | Yes, via `PATCH /admin/plans/:planType` | Not yet — see below |
+| Exposed as | Per-plan fields | `orderCutoff` on `GET /admin/plans` and `GET /customer/plans` |
 
-| Plan | When the cut-off is applied |
-|------|------------------------------|
-| `BUY_ONCE`, `SEVEN_DAY_TRIAL` | At confirmation, against the live config. For cash plans that means **admin confirmation time**, not when the customer placed the order. |
-| `MONTHLY` | At quote creation, because the billing period start determines the occurrence count and therefore the price. The 30-minute quote expiry bounds the staleness. |
-| Reorder | At reorder time, using the plan's current window. |
+The cut-off is **23:00 Asia/Kolkata**:
 
-An unset or malformed window falls back to `06:00`–`11:00`; leaving the field
-blank does **not** disable the cut-off. Times are stored and transported in 24h
-`HH:MM` form, and rendered as 12h AM/PM on every admin and customer surface.
+- before 23:00 IST -> first delivery is the **next** calendar day
+- at or after 23:00 IST -> first delivery is the **day after next**
+
+Deliveries are never same-day: the morning run is loaded the night before.
+
+| Placed (IST) | First delivery |
+|---|---|
+| 10 Oct 22:59 | 11 Oct |
+| 10 Oct 23:00 | 12 Oct |
+| 10 Oct 23:01 | 12 Oct |
+
+Applied as follows:
+
+| Plan | When the cut-off is evaluated |
+|------|-------------------------------|
+| `BUY_ONCE`, `SEVEN_DAY_TRIAL` | At confirmation. For a cash plan that is **admin confirmation time**, not when the customer ordered. Neither plan's price depends on the start date. |
+| `MONTHLY` | At quote creation, because the occurrence count — and therefore the price — derives from the billing period start. |
+| Reorder | At reorder time. |
+
+**Why the cut-off is a constant, not a column.** It is one operational policy
+for the whole business, and a per-plan column would let three plans disagree
+about when the van is loaded. Promoting it later means adding a nullable
+`PlanConfig.orderCutoffTime` that falls back to the constant, plus the DTO
+validation and admin picker — the rule itself would not change. Both frontends
+already read it from `orderCutoff` in the API response, so neither hardcodes it.
+
+#### No fallback delivery window
+
+`deliveryStartTime` / `deliveryEndTime` are nullable and are returned, snapshotted
+and rendered **verbatim**. There is no default window anywhere in the stack:
+
+- an unconfigured plan returns `null` and every client shows "not configured"
+- `materializeDeliveries` and order creation snapshot `null` rather than a
+  plausible time
+- historical order snapshots are never rewritten to match today's `PlanConfig`
+
+A window the business never set must never read as a delivery promise.
+
+#### MONTHLY stale quote (late cash confirmation)
+
+A cash MONTHLY plan sits in `PENDING_PAYMENT` until an admin confirms the
+collection, which can be the next day. If the quoted `billingPeriodStart` has
+passed by then, the window is **shifted forward to begin on the first deliverable
+date, preserving the paid occurrence count**. The customer receives exactly the
+number of deliveries they paid for, at the quoted price; only the calendar window
+moves, and the shift is logged with a `MONTHLY schedule shifted forward` warning.
+
+Refusing to confirm instead would strand cash the admin has already collected,
+and truncating at the quoted end date would deliver less than was paid for. See
+`resolveMonthlyWindow` in `plans.service.ts`.
 
 ---
 

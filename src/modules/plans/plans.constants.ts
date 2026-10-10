@@ -50,19 +50,43 @@ export enum DeliveryStatus {
 export const QUOTE_EXPIRY_MINUTES = 30;
 
 /**
- * Fallback delivery window, used only when an admin has not configured one on
- * the PlanConfig row. Stored and transported as 24h "HH:MM"; every surface
- * renders it in 12h AM/PM form.
+ * Daily order cut-off: 23:00 (11:00 PM) India Standard Time.
  *
- * Defined once here because the window is also the daily order cut-off: a
- * plan confirmed after its window has closed starts delivering the next day,
- * so a stray per-call-site default would silently shift that cut-off.
+ * This is an ORDER cut-off, not a delivery window. It answers "is there still
+ * time to put this customer on tomorrow's run?", and is deliberately unrelated
+ * to `PlanConfig.deliveryStartTime`/`deliveryEndTime`, which describe when the
+ * van arrives. Conflating the two made a 6:00-11:00 window silently mean
+ * "stop taking orders at 11 AM".
+ *
+ * Policy:
+ *   - before 23:00 IST  -> first delivery is the NEXT calendar day (IST)
+ *   - at/after 23:00 IST -> tomorrow's run is already planned, so the first
+ *     delivery is the day AFTER next
+ *
+ * It is a single operational policy for the whole business (one morning run),
+ * not a per-plan setting, so it lives here rather than on PlanConfig. The
+ * value is exposed through the plans APIs so neither frontend hardcodes it;
+ * promoting it to a configurable column later means adding a nullable field
+ * that falls back to this constant, with no change to the rule itself.
  */
-export const DEFAULT_DELIVERY_START_TIME = "06:00";
-export const DEFAULT_DELIVERY_END_TIME = "11:00";
+export const ORDER_CUTOFF_HHMM = "23:00";
 
-/** 24-hour "HH:MM" — the only accepted wire format for a delivery window. */
-export const DELIVERY_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** `ORDER_CUTOFF_HHMM` as minutes since IST midnight (23 * 60). */
+export const ORDER_CUTOFF_MINUTES_IST = 23 * 60;
+
+/**
+ * Calendar days from "today in IST" to the first deliverable day.
+ * Index 0 is the before-cut-off case, index 1 the at/after-cut-off case.
+ */
+export const LEAD_DAYS_BEFORE_CUTOFF = 1;
+export const LEAD_DAYS_AFTER_CUTOFF = 2;
+
+/**
+ * 24-hour "HH:MM" — the only accepted wire format for a delivery window.
+ * Re-exported from the shared IST helpers so the DTO, the service and the
+ * cut-off logic all validate against one pattern.
+ */
+export { HH_MM_PATTERN as DELIVERY_TIME_PATTERN } from "../../common/utils/ist-date.util";
 
 /** Absolute structural quantity boundaries (enforced in DTOs). */
 export const QUANTITY_MIN = 1;

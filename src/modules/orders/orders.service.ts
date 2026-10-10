@@ -21,8 +21,6 @@ import {
   PlanType,
   DeliveryStatus,
   PlanSelectionStatus,
-  DEFAULT_DELIVERY_START_TIME,
-  DEFAULT_DELIVERY_END_TIME,
 } from "../plans/plans.constants";
 import { CreateOrderDto } from "./dto/customer/create-order.dto";
 import { ReorderDto } from "./dto/customer/reorder.dto";
@@ -155,8 +153,10 @@ export class OrdersService {
           deliveryFeePaise,
           totalPaise,
           deliveryDate: delivery.deliveryDate,
-          deliveryStartTime: config.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
-          deliveryEndTime: config.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
+          // Verbatim snapshot: null when the plan has no configured window, so
+          // clients show "not available" rather than an invented time.
+          deliveryStartTime: config.deliveryStartTime,
+          deliveryEndTime: config.deliveryEndTime,
           addressSnapshot,
           actualPricePerLitrePaise: actualPricePaise,
           sellingPricePerLitrePaise: unitPricePaise,
@@ -321,13 +321,19 @@ export class OrdersService {
       const subtotalPaise = itemTotal;
       const totalPaise = subtotalPaise + deliveryFeePaise;
 
-      // A reorder is a fresh order placed now, so it inherits the same daily
-      // cut-off as a new plan: today if the window is still open, otherwise
-      // tomorrow. Previously no deliveryDate was set at all.
-      const deliveryDate = resolveFirstDeliveryDate(
-        new Date(),
-        config.deliveryEndTime,
-      );
+      // A reorder is a fresh order placed now, so it inherits the same order
+      // cut-off as a new plan: tomorrow (IST), or the day after when placed at
+      // or after 23:00 IST. Previously no deliveryDate was set at all, which
+      // left the UI rendering the creation date as if it were the delivery day.
+      const deliveryDate = resolveFirstDeliveryDate();
+      if (!(deliveryDate instanceof Date) || Number.isNaN(deliveryDate.getTime())) {
+        // Unreachable with a sane clock, but a reorder must never be persisted
+        // without a delivery date — that is what produced the createdAt
+        // fallback in the first place.
+        throw new BadRequestException(
+          "Could not determine a delivery date for this reorder. Please try again.",
+        );
+      }
 
       const orderNumber = await this.generateOrderNumber();
 
@@ -344,8 +350,8 @@ export class OrdersService {
           deliveryFeePaise,
           totalPaise,
           deliveryDate,
-          deliveryStartTime: config.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
-          deliveryEndTime: config.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
+          deliveryStartTime: config.deliveryStartTime,
+          deliveryEndTime: config.deliveryEndTime,
           addressSnapshot,
           actualPricePerLitrePaise: actualPricePaise,
           sellingPricePerLitrePaise: unitPricePaise,

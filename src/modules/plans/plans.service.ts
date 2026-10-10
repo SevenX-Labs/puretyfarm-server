@@ -19,10 +19,21 @@ import {
   QUOTE_EXPIRY_MINUTES,
   TRIAL_MAX_USES,
   TRIAL_DURATION_DAYS,
-  DEFAULT_DELIVERY_START_TIME,
-  DEFAULT_DELIVERY_END_TIME,
-  DELIVERY_TIME_PATTERN,
+  ORDER_CUTOFF_HHMM,
+  ORDER_CUTOFF_MINUTES_IST,
+  LEAD_DAYS_BEFORE_CUTOFF,
+  LEAD_DAYS_AFTER_CUTOFF,
 } from "./plans.constants";
+import {
+  IST_TIMEZONE,
+  toIstDateOnly,
+  istMinutesSinceMidnight,
+  addDays,
+  toIsoDateString,
+  parseHhMmToMinutes,
+  formatHhMmTo12h,
+  formatMinutesTo12h,
+} from "../../common/utils/ist-date.util";
 import { BuyOnceQuoteDto } from "./dto/customer/buy-once-quote.dto";
 import { TrialQuoteDto } from "./dto/customer/trial-quote.dto";
 import { MonthlyQuoteDto } from "./dto/customer/monthly-quote.dto";
@@ -49,6 +60,11 @@ export interface PlanAvailability {
 
 export interface PlansOverviewResponse {
   plans: PlanAvailability[];
+  /**
+   * The order cut-off policy, so the customer app can state it accurately
+   * instead of hardcoding a time that may drift from the server's rule.
+   */
+  orderCutoff: OrderCutoffPolicy;
 }
 
 export interface EligibilityResponse {
@@ -114,6 +130,10 @@ export interface AdminPlanConfigResponse {
   frequencies?: DeliveryFrequency[];
   quantityModes?: QuantityMode[];
   deliveryFeePaise: number;
+  /**
+   * Configured delivery window, 24h "HH:MM". Null means the admin has not set
+   * one; clients must show that as unavailable, never substitute a default.
+   */
   deliveryStartTime: string | null;
   deliveryEndTime: string | null;
   createdAt: Date;
@@ -124,6 +144,12 @@ export interface AdminPlansResponse {
   plans: AdminPlanConfigResponse[];
   /** Plan types with no PlanConfig row yet (initialise one via PATCH). */
   unconfigured: PlanType[];
+  /**
+   * The order cut-off, which is a business-wide policy rather than a per-plan
+   * setting. Surfaced here so the admin UI shows the real rule next to each
+   * plan's delivery window without restating it client-side.
+   */
+  orderCutoff: OrderCutoffPolicy;
 }
 
 export interface ConfirmationResponse {
@@ -187,57 +213,80 @@ export function calculateTotalLitres(
  * time component. Delivery dates are calendar days, never instants.
  */
 export function toDateOnly(d: Date): Date {
-  // Pin to the LOCAL calendar date (the business day), represented as UTC
+  // Pin to the INDIAN calendar date (the business day), represented as UTC
   // midnight so downstream UTC date-stepping and ISO formatting stay stable.
-  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  //
+  // This used to read the server's local fields, which silently made the
+  // business day follow Render's UTC clock: after 18:30 UTC it is already
+  // tomorrow in India, so every date derived from "now" was a day behind.
+  // Values that are already date-only (Postgres DATE columns, "YYYY-MM-DD"
+  // strings) arrive as midnight UTC and are unaffected by the shift.
+  return toIstDateOnly(d);
+}
+
+/** Parses a 24h "HH:MM" time into minutes since midnight, or null if malformed. */
+export const parseDeliveryTimeMinutes = parseHhMmToMinutes;
+
+/** Renders a 24h "HH:MM" time as 12h "h:mm AM/PM", or null if malformed. */
+export const formatDeliveryTime12h = formatHhMmTo12h;
+
+/** The order cut-off as the API and both frontends present it. */
+export interface OrderCutoffPolicy {
+  /** 24h "HH:MM" in `timezone`. */
+  time: string;
+  /** Human-readable form of `time`, e.g. "11:00 PM". */
+  timeLabel: string;
+  /** IANA zone the cut-off is evaluated in, always Asia/Kolkata. */
+  timezone: string;
+  /** Calendar days to the first delivery when ordering before the cut-off. */
+  leadDaysBeforeCutoff: number;
+  /** Calendar days to the first delivery when ordering at/after it. */
+  leadDaysAfterCutoff: number;
 }
 
 /**
- * Parses a 24h "HH:MM" delivery time into minutes since midnight.
- * Returns null for anything that is not a well-formed time, so callers can
- * fall back rather than silently treating a bad value as 00:00.
+ * The single source of truth for the cut-off, shaped for API exposure so no
+ * frontend has to restate the rule.
  */
-export function parseDeliveryTimeMinutes(time?: string | null): number | null {
-  if (!time || !DELIVERY_TIME_PATTERN.test(time)) return null;
-  const [h, m] = time.split(":");
-  return parseInt(h, 10) * 60 + parseInt(m, 10);
+export function getOrderCutoffPolicy(): OrderCutoffPolicy {
+  return {
+    time: ORDER_CUTOFF_HHMM,
+    timeLabel: formatMinutesTo12h(ORDER_CUTOFF_MINUTES_IST),
+    timezone: IST_TIMEZONE,
+    leadDaysBeforeCutoff: LEAD_DAYS_BEFORE_CUTOFF,
+    leadDaysAfterCutoff: LEAD_DAYS_AFTER_CUTOFF,
+  };
 }
 
-/** Renders a 24h "HH:MM" delivery time as 12h "h:mm AM/PM". */
-export function formatDeliveryTime12h(time?: string | null): string | null {
-  const minutes = parseDeliveryTimeMinutes(time);
-  if (minutes === null) return null;
-  const h24 = Math.floor(minutes / 60);
-  const mm = String(minutes % 60).padStart(2, "0");
-  const suffix = h24 >= 12 ? "PM" : "AM";
-  return `${h24 % 12 || 12}:${mm} ${suffix}`;
+/** Whether `now` falls at or after the cut-off on its own Indian calendar day. */
+export function isAfterOrderCutoff(now: Date): boolean {
+  return istMinutesSinceMidnight(now) >= ORDER_CUTOFF_MINUTES_IST;
 }
 
 /**
- * The first date a plan can actually be delivered on.
+ * The earliest date a plan or order placed at `now` can be delivered on.
  *
- * The configured delivery window doubles as the daily cut-off: once today's
- * window has closed, the van has already run, so the earliest real delivery is
- * tomorrow. Ordering at 12:00 against an 06:00–11:00 window therefore starts
- * the schedule on the next calendar day.
+ * Deliveries are never same-day: the morning run is loaded the night before,
+ * so the best case is tomorrow. Ordering at or after 23:00 IST misses that
+ * loading, pushing the first delivery to the day after.
  *
- * An unconfigured or malformed `deliveryEndTime` falls back to the default
- * window rather than to "no cut-off", so the rule cannot be disabled by
- * leaving the field blank.
+ *   10 Oct 22:59 IST -> 11 Oct
+ *   10 Oct 23:00 IST -> 12 Oct   (the cut-off instant itself is "after")
+ *   10 Oct 23:01 IST -> 12 Oct
+ *
+ * Both the calendar date and the wall clock are read in IST, so the result is
+ * identical whether the process runs with TZ=UTC, TZ=Asia/Kolkata or anything
+ * else. Day-stepping is calendar-based, so month-end and year-end roll over
+ * correctly.
+ *
+ * Takes no delivery-window argument on purpose: the window says when the van
+ * arrives, never whether an order still makes today's list.
  */
-export function resolveFirstDeliveryDate(
-  now: Date,
-  deliveryEndTime?: string | null,
-): Date {
-  const today = toDateOnly(now);
-  const cutoff =
-    parseDeliveryTimeMinutes(deliveryEndTime) ??
-    parseDeliveryTimeMinutes(DEFAULT_DELIVERY_END_TIME)!;
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  if (nowMinutes < cutoff) return today;
-  const tomorrow = new Date(today);
-  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-  return tomorrow;
+export function resolveFirstDeliveryDate(now: Date = new Date()): Date {
+  const leadDays = isAfterOrderCutoff(now)
+    ? LEAD_DAYS_AFTER_CUTOFF
+    : LEAD_DAYS_BEFORE_CUTOFF;
+  return addDays(toIstDateOnly(now), leadDays);
 }
 
 /**
@@ -378,8 +427,8 @@ export class PlansService {
           available: buyOnceElig.eligible,
           usageCount: buyOnceElig.usageCount,
           remainingUses: buyOnceElig.remainingUses,
-          deliveryStartTime: buyOnceConfig?.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
-          deliveryEndTime: buyOnceConfig?.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
+          deliveryStartTime: buyOnceConfig?.deliveryStartTime ?? null,
+          deliveryEndTime: buyOnceConfig?.deliveryEndTime ?? null,
           ...(buyOnceElig.blockedReason
             ? { blockedReason: buyOnceElig.blockedReason }
             : {}),
@@ -388,8 +437,8 @@ export class PlansService {
           type: PlanType.SEVEN_DAY_TRIAL,
           available: trialElig.eligible,
           used: trialElig.used,
-          deliveryStartTime: trialConfig?.deliveryStartTime ?? DEFAULT_DELIVERY_START_TIME,
-          deliveryEndTime: trialConfig?.deliveryEndTime ?? DEFAULT_DELIVERY_END_TIME,
+          deliveryStartTime: trialConfig?.deliveryStartTime ?? null,
+          deliveryEndTime: trialConfig?.deliveryEndTime ?? null,
           ...(trialElig.blockedReason
             ? { blockedReason: trialElig.blockedReason }
             : {}),
@@ -402,9 +451,16 @@ export class PlansService {
                 deliveryStartTime: monthlyConfig.deliveryStartTime,
                 deliveryEndTime: monthlyConfig.deliveryEndTime,
               }
-            : { blockedReason: "PLAN_NOT_CONFIGURED" }),
+            : {
+                deliveryStartTime: null,
+                deliveryEndTime: null,
+                blockedReason: "PLAN_NOT_CONFIGURED",
+              }),
         },
       ],
+      // Exposed so the customer app can state the cut-off without restating
+      // the rule, and so it cannot drift from the server's policy.
+      orderCutoff: getOrderCutoffPolicy(),
     };
   }
 
@@ -654,19 +710,18 @@ export class PlansService {
       this.validateQuantityRange(dto.quantityB, config.quantityMin, config.quantityMax);
     }
 
-    // The plan starts on the first deliverable date — today, or tomorrow if
-    // today's delivery window has already closed — and the billing window runs
-    // to the end of that month. Occurrences are counted from the actual start
-    // date, so a start pushed past the cut-off is never charged for a day that
-    // cannot be delivered.
+    // The plan starts on the first deliverable date under the order cut-off
+    // (tomorrow, or the day after if quoting at/after 23:00 IST) and the
+    // billing window runs to the end of that month. Occurrences are counted
+    // from the actual start date, so the customer is never charged for a day
+    // that cannot be delivered.
     //
     // MONTHLY resolves the cut-off here rather than at confirmation because the
     // occurrence count, and therefore the quoted price, derives from it. The
-    // 30-minute quote expiry bounds how stale that decision can get.
-    const billingStart = resolveFirstDeliveryDate(
-      new Date(),
-      config.deliveryEndTime,
-    );
+    // 30-minute quote expiry bounds how stale that decision can get for a
+    // wallet payment; see resolveMonthlyWindow for the late-cash-confirmation
+    // case.
+    const billingStart = resolveFirstDeliveryDate();
     const deliveryOccurrences = calculateMonthlyDeliveryOccurrences(
       dto.frequency,
       billingStart,
@@ -812,10 +867,7 @@ export class PlansService {
         }
       }
 
-      const schedule = this.resolveScheduleFromQuote(
-        quote,
-        activeConfig.deliveryEndTime,
-      );
+      const schedule = this.resolveScheduleFromQuote(quote);
       const paymentAmount = quote.totalSellingAmount;
 
       // Step 1: Create PlanSelection in PENDING_PAYMENT state first, so we have
@@ -1049,8 +1101,12 @@ export class PlansService {
           deliveryFeePaise: deliveryFee,
           totalPaise: total,
           deliveryDate: d.deliveryDate,
-          deliveryStartTime: config.deliveryStartTime || DEFAULT_DELIVERY_START_TIME,
-          deliveryEndTime: config.deliveryEndTime || DEFAULT_DELIVERY_END_TIME,
+          // Snapshot the configured window verbatim. An unconfigured plan
+          // stores null, which every client renders as "not available" —
+          // fabricating a plausible window here would promise a delivery time
+          // the business never set.
+          deliveryStartTime: config.deliveryStartTime,
+          deliveryEndTime: config.deliveryEndTime,
           addressSnapshot,
           actualPricePerLitrePaise: actualPrice,
           sellingPricePerLitrePaise: unitPrice,
@@ -1156,16 +1212,11 @@ export class PlansService {
     const now = new Date();
 
     // The cut-off is re-evaluated here, not reused from quote-confirm time: a
-    // cash plan is activated by the admin, possibly hours later, and the
-    // customer's first delivery must be the first date that is still
-    // deliverable *now*.
-    const scheduleConfig = await (tx as any).planConfig.findUnique({
-      where: { planType: selection.planType },
-    });
-    const schedule = this.resolveScheduleFromQuote(
-      selection.quote,
-      scheduleConfig?.deliveryEndTime,
-    );
+    // cash plan is activated by the admin, possibly a day later, and the
+    // customer's first delivery must be a date that is still in the future.
+    // For MONTHLY this also triggers the stale-quote policy in
+    // resolveMonthlyWindow rather than booking days that have passed.
+    const schedule = this.resolveScheduleFromQuote(selection.quote);
 
     await (tx as any).planSelection.update({
       where: { id: planSelectionId },
@@ -1204,6 +1255,7 @@ export class PlansService {
         .filter((t) => byType.has(t))
         .map((t) => toAdminPlanResponse(byType.get(t)!)),
       unconfigured: order.filter((t) => !byType.has(t)),
+      orderCutoff: getOrderCutoffPolicy(),
     };
   }
 
@@ -1334,6 +1386,57 @@ export class PlansService {
    * - SEVEN_DAY_TRIAL: `deliveryOccurrences` consecutive DAILY deliveries.
    * - BUY_ONCE: a single DAILY delivery on the start day.
    */
+  /**
+   * Resolves the MONTHLY delivery window, preserving the quoted commercial
+   * terms wherever possible.
+   *
+   * MONTHLY prices by occurrence count, so the billing period is part of the
+   * immutable quote and is normally used exactly as quoted. The exception is a
+   * quote confirmed late — a cash plan sits in PENDING_PAYMENT until an admin
+   * confirms the collection, which can be the next day. By then the quoted
+   * start may be in the past, and materialising it would book deliveries on
+   * days that have already gone.
+   *
+   * Policy when that happens: shift the window forward to begin on the first
+   * deliverable date and keep the paid occurrence count intact. The customer
+   * receives exactly the number of deliveries they paid for, at the price they
+   * were quoted; only the calendar window moves. The alternative — refusing to
+   * confirm — would strand cash the admin has already collected, and shortening
+   * the window to the quoted end date would silently deliver less than was
+   * paid for.
+   *
+   * The shift is logged so a late confirmation is auditable rather than
+   * invisible.
+   */
+  private resolveMonthlyWindow(
+    quotedStart: Date,
+    quotedEnd: Date,
+    frequency: DeliveryFrequency,
+    deliveryOccurrences: number,
+    now: Date,
+  ): { start: Date; end: Date; shifted: boolean } {
+    const earliest = resolveFirstDeliveryDate(now);
+
+    // On time: honour the quote verbatim.
+    if (quotedStart.getTime() >= earliest.getTime()) {
+      return { start: quotedStart, end: quotedEnd, shifted: false };
+    }
+
+    const occurrences = Math.max(1, deliveryOccurrences);
+    const step = frequency === DeliveryFrequency.ALTERNATE_DAYS ? 2 : 1;
+    const start = earliest;
+    const end = addDays(start, (occurrences - 1) * step);
+
+    this.logger.warn(
+      `MONTHLY schedule shifted forward: quotedStart=${toIsoDateString(quotedStart)} ` +
+        `quotedEnd=${toIsoDateString(quotedEnd)} -> start=${toIsoDateString(start)} ` +
+        `end=${toIsoDateString(end)} occurrences=${occurrences} frequency=${frequency} ` +
+        `reason=quoted_start_in_past`,
+    );
+
+    return { start, end, shifted: true };
+  }
+
   resolveScheduleFromQuote(
     quote: {
       planType: string;
@@ -1347,11 +1450,11 @@ export class PlansService {
       billingPeriodEnd: Date | null;
     },
     /**
-     * The plan's configured window end, used as the daily cut-off for
-     * BUY_ONCE / SEVEN_DAY_TRIAL. Omitted means "fall back to the default
-     * window", never "no cut-off".
+     * Evaluation instant for the order cut-off. Injectable so callers that
+     * confirm long after the quote was issued (cash) and tests can both be
+     * explicit about "now".
      */
-    deliveryEndTime?: string | null,
+    now: Date = new Date(),
   ): {
     frequency: DeliveryFrequency;
     quantityMode: QuantityMode;
@@ -1362,12 +1465,19 @@ export class PlansService {
     end: Date;
   } {
     if (quote.planType === PlanType.MONTHLY) {
-      const start = toDateOnly(quote.billingPeriodStart ?? new Date());
-      const end = toDateOnly(quote.billingPeriodEnd ?? new Date());
+      const frequency =
+        (quote.frequency as DeliveryFrequency | null) ?? DeliveryFrequency.DAILY;
+      const quotedStart = toDateOnly(quote.billingPeriodStart ?? now);
+      const quotedEnd = toDateOnly(quote.billingPeriodEnd ?? now);
+      const { start, end } = this.resolveMonthlyWindow(
+        quotedStart,
+        quotedEnd,
+        frequency,
+        quote.deliveryOccurrences,
+        now,
+      );
       return {
-        frequency:
-          (quote.frequency as DeliveryFrequency | null) ??
-          DeliveryFrequency.DAILY,
+        frequency,
         quantityMode:
           (quote.quantityMode as QuantityMode | null) ?? QuantityMode.FIXED,
         quantity: quote.quantity,
@@ -1380,10 +1490,10 @@ export class PlansService {
 
     // BUY_ONCE (1 delivery) and SEVEN_DAY_TRIAL (N daily deliveries) are both
     // FIXED-quantity DAILY schedules. Neither one's price depends on the start
-    // date, so the cut-off is applied here, at confirmation time, against the
-    // live configuration — which is what makes an order placed after today's
-    // window close start delivering tomorrow.
-    const start = resolveFirstDeliveryDate(new Date(), deliveryEndTime);
+    // date, so the cut-off is evaluated here, at confirmation time — which for
+    // a cash plan means when the admin confirms, not when the customer
+    // ordered. The duration is preserved regardless of where the start lands.
+    const start = resolveFirstDeliveryDate(now);
     const occurrences =
       quote.planType === PlanType.SEVEN_DAY_TRIAL
         ? Math.max(1, quote.deliveryOccurrences)

@@ -9,11 +9,16 @@ import {
   calculateTotalLitres,
   generateDeliveryDates,
   quantityForOccurrence,
-  parseDeliveryTimeMinutes,
-  formatDeliveryTime12h,
   resolveFirstDeliveryDate,
+  getOrderCutoffPolicy,
+  isAfterOrderCutoff,
   toDateOnly,
 } from "./plans.service";
+import {
+  IST_UTC_OFFSET_MINUTES,
+  toIstDateOnly,
+  istMinutesSinceMidnight,
+} from "../../common/utils/ist-date.util";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   BadRequestException,
@@ -28,8 +33,7 @@ import {
   PlanSelectionStatus,
   QUOTE_EXPIRY_MINUTES,
   TRIAL_DURATION_DAYS,
-  DEFAULT_DELIVERY_START_TIME,
-  DEFAULT_DELIVERY_END_TIME,
+  ORDER_CUTOFF_MINUTES_IST,
 } from "./plans.constants";
 import { PlanPaymentMethod } from "./dto/customer/confirm-plan.dto";
 import { WalletTransactionReferenceType } from "../wallet/wallet.constants";
@@ -875,100 +879,195 @@ describe("PlansService", () => {
   });
 
   // ══════════════════════════════════════════════════════════════
-  //  DELIVERY WINDOW & DAILY CUT-OFF
+  //  IST BUSINESS CALENDAR & 23:00 ORDER CUT-OFF
   // ══════════════════════════════════════════════════════════════
 
-  describe("parseDeliveryTimeMinutes", () => {
-    it("parses a well-formed 24h time to minutes since midnight", () => {
-      expect(parseDeliveryTimeMinutes("06:00")).toBe(360);
-      expect(parseDeliveryTimeMinutes("11:00")).toBe(660);
-      expect(parseDeliveryTimeMinutes("00:00")).toBe(0);
-      expect(parseDeliveryTimeMinutes("23:59")).toBe(1439);
+  /**
+   * Builds the instant at which it is `hh:mm` IST on the given Indian
+   * calendar date, expressed as a UTC instant.
+   *
+   * Constructed from an explicit UTC epoch minus the +05:30 offset, so these
+   * tests assert the same thing no matter what TZ the runner has — which is
+   * the whole point of the helpers under test.
+   */
+  function istInstant(
+    year: number,
+    month1: number,
+    day: number,
+    hh: number,
+    mm = 0,
+  ): Date {
+    return new Date(
+      Date.UTC(year, month1 - 1, day, hh, mm) - IST_UTC_OFFSET_MINUTES * 60_000,
+    );
+  }
+
+  function isoDate(d: Date): string {
+    return d.toISOString().slice(0, 10);
+  }
+
+  describe("toIstDateOnly (business calendar date)", () => {
+    it("returns the Indian calendar date, not the server's", () => {
+      // 20:00 UTC on 10 Oct is already 01:30 IST on 11 Oct.
+      expect(isoDate(toIstDateOnly(new Date("2026-10-10T20:00:00Z")))).toBe(
+        "2026-10-11",
+      );
+      // 18:29 UTC is still 23:59 IST on the 10th.
+      expect(isoDate(toIstDateOnly(new Date("2026-10-10T18:29:00Z")))).toBe(
+        "2026-10-10",
+      );
+      // 18:30 UTC is exactly 00:00 IST on the 11th.
+      expect(isoDate(toIstDateOnly(new Date("2026-10-10T18:30:00Z")))).toBe(
+        "2026-10-11",
+      );
     });
 
-    it("returns null rather than coercing malformed input to midnight", () => {
-      for (const bad of [null, undefined, "", "6:00", "24:00", "11:60", "11", "abc"]) {
-        expect(parseDeliveryTimeMinutes(bad as any)).toBeNull();
-      }
-    });
-  });
-
-  describe("formatDeliveryTime12h", () => {
-    it("renders morning and afternoon times with the right meridiem", () => {
-      expect(formatDeliveryTime12h("06:00")).toBe("6:00 AM");
-      expect(formatDeliveryTime12h("11:00")).toBe("11:00 AM");
-      expect(formatDeliveryTime12h("11:30")).toBe("11:30 AM");
-      expect(formatDeliveryTime12h("13:05")).toBe("1:05 PM");
+    it("leaves an already date-only value (Postgres DATE) untouched", () => {
+      // Prisma hands DATE columns back as midnight UTC; shifting into IST must
+      // not move the calendar day.
+      expect(isoDate(toIstDateOnly(new Date("2026-10-15T00:00:00Z")))).toBe(
+        "2026-10-15",
+      );
+      expect(isoDate(toIstDateOnly(new Date("2026-01-01T00:00:00Z")))).toBe(
+        "2026-01-01",
+      );
     });
 
-    it("renders both midnight and noon as 12, not 0", () => {
-      expect(formatDeliveryTime12h("00:00")).toBe("12:00 AM");
-      expect(formatDeliveryTime12h("12:00")).toBe("12:00 PM");
-    });
-
-    it("returns null for malformed input", () => {
-      expect(formatDeliveryTime12h("nope")).toBeNull();
-      expect(formatDeliveryTime12h(null)).toBeNull();
-    });
-  });
-
-  describe("resolveFirstDeliveryDate (daily cut-off)", () => {
-    /** A local-time instant on 10 Oct 2026. */
-    function at(hour: number, minute = 0): Date {
-      return new Date(2026, 9, 10, hour, minute, 0, 0);
-    }
-    const TODAY = toDateOnly(at(0));
-    const TOMORROW = new Date(TODAY);
-    TOMORROW.setUTCDate(TOMORROW.getUTCDate() + 1);
-
-    it("keeps today while the window is still open", () => {
-      expect(resolveFirstDeliveryDate(at(5), "11:00")).toEqual(TODAY);
-      expect(resolveFirstDeliveryDate(at(8, 30), "11:00")).toEqual(TODAY);
-      expect(resolveFirstDeliveryDate(at(10, 59), "11:00")).toEqual(TODAY);
-    });
-
-    it("rolls to tomorrow once the window has closed", () => {
-      // The reported case: ordering at 12 PM against an 06:00–11:00 window.
-      expect(resolveFirstDeliveryDate(at(12), "11:00")).toEqual(TOMORROW);
-      expect(resolveFirstDeliveryDate(at(23, 59), "11:00")).toEqual(TOMORROW);
-    });
-
-    it("treats the window end itself as closed", () => {
-      expect(resolveFirstDeliveryDate(at(11), "11:00")).toEqual(TOMORROW);
-    });
-
-    it("follows the admin's configured window, not a hardcoded hour", () => {
-      // A later window keeps a noon order on today.
-      expect(resolveFirstDeliveryDate(at(12), "18:00")).toEqual(TODAY);
-      // An earlier window pushes an 08:00 order to tomorrow.
-      expect(resolveFirstDeliveryDate(at(8), "07:30")).toEqual(TOMORROW);
-    });
-
-    it("falls back to the default window when none is configured", () => {
-      // Default end is 11:00, so the cut-off still applies — leaving the field
-      // blank must not disable the rule.
-      expect(resolveFirstDeliveryDate(at(12), null)).toEqual(TOMORROW);
-      expect(resolveFirstDeliveryDate(at(9), undefined)).toEqual(TODAY);
-      expect(resolveFirstDeliveryDate(at(12), "garbage")).toEqual(TOMORROW);
-    });
-
-    it("rolls across a month boundary correctly", () => {
-      const lastDayNoon = new Date(2026, 9, 31, 12, 0, 0, 0);
-      expect(
-        resolveFirstDeliveryDate(lastDayNoon, "11:00").toISOString().slice(0, 10),
-      ).toBe("2026-11-01");
-    });
-
-    it("returns a date-only value (UTC midnight)", () => {
-      const d = resolveFirstDeliveryDate(at(12), "11:00");
+    it("normalises to midnight UTC", () => {
+      const d = toIstDateOnly(new Date("2026-10-10T20:00:00Z"));
       expect(d.getUTCHours()).toBe(0);
       expect(d.getUTCMinutes()).toBe(0);
       expect(d.getUTCSeconds()).toBe(0);
       expect(d.getUTCMilliseconds()).toBe(0);
     });
+
+    it("toDateOnly delegates to the IST helper", () => {
+      const instant = new Date("2026-10-10T20:00:00Z");
+      expect(toDateOnly(instant)).toEqual(toIstDateOnly(instant));
+    });
   });
 
-  describe("resolveScheduleFromQuote applies the cut-off", () => {
+  describe("istMinutesSinceMidnight (business wall clock)", () => {
+    it("reads IST, so the cut-off never follows the server clock", () => {
+      expect(istMinutesSinceMidnight(istInstant(2026, 10, 10, 22, 59))).toBe(
+        22 * 60 + 59,
+      );
+      expect(istMinutesSinceMidnight(istInstant(2026, 10, 10, 23, 0))).toBe(
+        ORDER_CUTOFF_MINUTES_IST,
+      );
+      expect(istMinutesSinceMidnight(istInstant(2026, 10, 10, 0, 0))).toBe(0);
+    });
+  });
+
+  describe("getOrderCutoffPolicy", () => {
+    it("reports 23:00 Asia/Kolkata with its lead days", () => {
+      expect(getOrderCutoffPolicy()).toEqual({
+        time: "23:00",
+        timeLabel: "11:00 PM",
+        timezone: "Asia/Kolkata",
+        leadDaysBeforeCutoff: 1,
+        leadDaysAfterCutoff: 2,
+      });
+    });
+  });
+
+  describe("isAfterOrderCutoff", () => {
+    it("is false before 23:00 IST and true from 23:00 IST onwards", () => {
+      expect(isAfterOrderCutoff(istInstant(2026, 10, 10, 22, 59))).toBe(false);
+      expect(isAfterOrderCutoff(istInstant(2026, 10, 10, 23, 0))).toBe(true);
+      expect(isAfterOrderCutoff(istInstant(2026, 10, 10, 23, 1))).toBe(true);
+    });
+  });
+
+  describe("resolveFirstDeliveryDate (23:00 IST cut-off)", () => {
+    it("22:59 IST on 10 Oct schedules 11 Oct", () => {
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 22, 59)))).toBe(
+        "2026-10-11",
+      );
+    });
+
+    it("exactly 23:00 IST on 10 Oct schedules 12 Oct (the cut-off instant is 'after')", () => {
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 23, 0)))).toBe(
+        "2026-10-12",
+      );
+    });
+
+    it("23:01 IST on 10 Oct schedules 12 Oct", () => {
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 23, 1)))).toBe(
+        "2026-10-12",
+      );
+    });
+
+    it("is never same-day, even at 00:01 IST", () => {
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 10, 0, 1)))).toBe(
+        "2026-10-11",
+      );
+    });
+
+    it("gives the same answer for a UTC-clock server as for an IST one", () => {
+      // 17:29 UTC == 22:59 IST (before the cut-off).
+      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T17:29:00Z")))).toBe(
+        "2026-10-11",
+      );
+      // 17:30 UTC == 23:00 IST (at the cut-off).
+      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T17:30:00Z")))).toBe(
+        "2026-10-12",
+      );
+    });
+
+    it("handles the IST midnight crossing without skipping a day", () => {
+      // 18:29 UTC is 23:59 IST on the 10th -> after cut-off -> 12 Oct.
+      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T18:29:00Z")))).toBe(
+        "2026-10-12",
+      );
+      // One minute later it is 00:00 IST on the 11th -> before cut-off -> 12 Oct.
+      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T18:30:00Z")))).toBe(
+        "2026-10-12",
+      );
+      // And 00:01 IST on the 11th is still 12 Oct.
+      expect(isoDate(resolveFirstDeliveryDate(new Date("2026-10-10T18:31:00Z")))).toBe(
+        "2026-10-12",
+      );
+    });
+
+    it("rolls over a month end", () => {
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 31, 10, 0)))).toBe(
+        "2026-11-01",
+      );
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 10, 31, 23, 30)))).toBe(
+        "2026-11-02",
+      );
+    });
+
+    it("rolls over a year end", () => {
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 12, 31, 10, 0)))).toBe(
+        "2027-01-01",
+      );
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2026, 12, 31, 23, 30)))).toBe(
+        "2027-01-02",
+      );
+    });
+
+    it("rolls over a February end in a leap year", () => {
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2028, 2, 28, 23, 30)))).toBe(
+        "2028-03-01",
+      );
+      expect(isoDate(resolveFirstDeliveryDate(istInstant(2028, 2, 29, 10, 0)))).toBe(
+        "2028-03-01",
+      );
+    });
+
+    it("ignores the delivery window entirely", () => {
+      // The window used to double as the cut-off. It takes no argument now, so
+      // a plan delivering 06:00-11:00 and one delivering 16:00-18:00 schedule
+      // identically — only the clock matters.
+      const beforeCutoff = istInstant(2026, 10, 10, 12, 0);
+      expect(isoDate(resolveFirstDeliveryDate(beforeCutoff))).toBe("2026-10-11");
+      expect(resolveFirstDeliveryDate.length).toBe(0);
+    });
+  });
+
+  describe("resolveScheduleFromQuote under the cut-off", () => {
     const buyOnceQuote = {
       planType: PlanType.BUY_ONCE,
       frequency: null,
@@ -987,51 +1086,73 @@ describe("PlansService", () => {
       deliveryOccurrences: TRIAL_DURATION_DAYS,
     };
 
-    // "23:59" is open at every wall-clock time and "00:01" is closed at every
-    // wall-clock time, so these assertions never straddle a real cut-off.
-    const ALWAYS_OPEN = "23:59";
-    const ALWAYS_CLOSED = "00:01";
-
-    it("BUY_ONCE starts today while the window is open", () => {
-      const schedule = service.resolveScheduleFromQuote(buyOnceQuote, ALWAYS_OPEN);
-      expect(schedule.start).toEqual(toDateOnly(new Date()));
-      // One delivery only: start and end are the same day.
+    it("BUY_ONCE lands on the next day before the cut-off", () => {
+      const schedule = service.resolveScheduleFromQuote(
+        buyOnceQuote,
+        istInstant(2026, 10, 10, 22, 59),
+      );
+      expect(isoDate(schedule.start)).toBe("2026-10-11");
+      // A single delivery: start and end are the same day.
       expect(schedule.end).toEqual(schedule.start);
     });
 
-    it("BUY_ONCE starts tomorrow once the window has closed", () => {
-      const schedule = service.resolveScheduleFromQuote(buyOnceQuote, ALWAYS_CLOSED);
-      const tomorrow = toDateOnly(new Date());
-      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-      expect(schedule.start).toEqual(tomorrow);
-      expect(schedule.end).toEqual(schedule.start);
+    it("BUY_ONCE lands two days out at/after the cut-off", () => {
+      expect(
+        isoDate(
+          service.resolveScheduleFromQuote(
+            buyOnceQuote,
+            istInstant(2026, 10, 10, 23, 0),
+          ).start,
+        ),
+      ).toBe("2026-10-12");
+      expect(
+        isoDate(
+          service.resolveScheduleFromQuote(
+            buyOnceQuote,
+            istInstant(2026, 10, 10, 23, 1),
+          ).start,
+        ),
+      ).toBe("2026-10-12");
     });
 
-    it("SEVEN_DAY_TRIAL spans its full duration from the first deliverable date", () => {
-      const schedule = service.resolveScheduleFromQuote(trialQuote, ALWAYS_OPEN);
-      const start = toDateOnly(new Date());
-      expect(schedule.start).toEqual(start);
-      const expectedEnd = new Date(start);
-      expectedEnd.setUTCDate(expectedEnd.getUTCDate() + (TRIAL_DURATION_DAYS - 1));
-      expect(schedule.end).toEqual(expectedEnd);
+    it("SEVEN_DAY_TRIAL keeps its 7-day duration before the cut-off", () => {
+      const schedule = service.resolveScheduleFromQuote(
+        trialQuote,
+        istInstant(2026, 10, 10, 22, 59),
+      );
+      expect(isoDate(schedule.start)).toBe("2026-10-11");
+      expect(isoDate(schedule.end)).toBe("2026-10-17");
       expect(
         generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
       ).toHaveLength(TRIAL_DURATION_DAYS);
     });
 
-    it("a window that is already closed shifts the trial a day later", () => {
-      const open = service.resolveScheduleFromQuote(trialQuote, ALWAYS_OPEN);
-      const closed = service.resolveScheduleFromQuote(trialQuote, ALWAYS_CLOSED);
-      const dayMs = 24 * 60 * 60 * 1000;
-      expect(closed.start.getTime() - open.start.getTime()).toBe(dayMs);
-      // The duration is preserved; only the window moves.
-      expect(closed.end.getTime() - closed.start.getTime()).toBe(
-        open.end.getTime() - open.start.getTime(),
+    it("SEVEN_DAY_TRIAL keeps its 7-day duration after the cut-off, just shifted", () => {
+      const schedule = service.resolveScheduleFromQuote(
+        trialQuote,
+        istInstant(2026, 10, 10, 23, 1),
       );
+      expect(isoDate(schedule.start)).toBe("2026-10-12");
+      expect(isoDate(schedule.end)).toBe("2026-10-18");
+      expect(
+        generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
+      ).toHaveLength(TRIAL_DURATION_DAYS);
     });
 
-    it("MONTHLY keeps the immutable billing period from the quote", () => {
-      const billingStart = new Date(Date.UTC(2026, 9, 10));
+    it("SEVEN_DAY_TRIAL spans a month end correctly", () => {
+      const schedule = service.resolveScheduleFromQuote(
+        trialQuote,
+        istInstant(2026, 10, 28, 23, 30),
+      );
+      expect(isoDate(schedule.start)).toBe("2026-10-30");
+      expect(isoDate(schedule.end)).toBe("2026-11-05");
+      expect(
+        generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
+      ).toHaveLength(TRIAL_DURATION_DAYS);
+    });
+
+    it("MONTHLY uses the immutable quoted billing period when it is still future", () => {
+      const billingStart = new Date(Date.UTC(2026, 9, 11));
       const billingEnd = new Date(Date.UTC(2026, 9, 31));
       const schedule = service.resolveScheduleFromQuote(
         {
@@ -1039,15 +1160,84 @@ describe("PlansService", () => {
           planType: PlanType.MONTHLY,
           frequency: DeliveryFrequency.DAILY,
           quantityMode: QuantityMode.FIXED,
+          deliveryOccurrences: 21,
           billingPeriodStart: billingStart,
           billingPeriodEnd: billingEnd,
         },
-        // Even with a long-closed window, the priced billing period wins:
-        // the quote's occurrence count is what the customer paid for.
-        "00:01",
+        istInstant(2026, 10, 10, 22, 59),
       );
       expect(schedule.start).toEqual(billingStart);
       expect(schedule.end).toEqual(billingEnd);
+    });
+  });
+
+  describe("MONTHLY stale-quote policy (late cash confirmation)", () => {
+    function monthlyQuote(
+      billingStart: Date,
+      billingEnd: Date,
+      occurrences: number,
+      frequency: DeliveryFrequency = DeliveryFrequency.DAILY,
+    ) {
+      return {
+        planType: PlanType.MONTHLY,
+        frequency,
+        quantityMode: QuantityMode.FIXED,
+        quantity: 2,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: occurrences,
+        billingPeriodStart: billingStart,
+        billingPeriodEnd: billingEnd,
+      };
+    }
+
+    it("never materialises a start date in the past", () => {
+      // Quoted for 5 Oct, confirmed on 10 Oct.
+      const schedule = service.resolveScheduleFromQuote(
+        monthlyQuote(new Date(Date.UTC(2026, 9, 5)), new Date(Date.UTC(2026, 9, 31)), 27),
+        istInstant(2026, 10, 10, 10, 0),
+      );
+      expect(isoDate(schedule.start)).toBe("2026-10-11");
+      expect(schedule.start.getTime()).toBeGreaterThan(
+        istInstant(2026, 10, 10, 10, 0).getTime(),
+      );
+    });
+
+    it("preserves the paid occurrence count when it shifts the window", () => {
+      const schedule = service.resolveScheduleFromQuote(
+        monthlyQuote(new Date(Date.UTC(2026, 9, 5)), new Date(Date.UTC(2026, 9, 31)), 27),
+        istInstant(2026, 10, 10, 10, 0),
+      );
+      expect(
+        generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
+      ).toHaveLength(27);
+    });
+
+    it("preserves the occurrence count for an ALTERNATE_DAYS plan too", () => {
+      const schedule = service.resolveScheduleFromQuote(
+        monthlyQuote(
+          new Date(Date.UTC(2026, 9, 5)),
+          new Date(Date.UTC(2026, 9, 31)),
+          14,
+          DeliveryFrequency.ALTERNATE_DAYS,
+        ),
+        istInstant(2026, 10, 10, 10, 0),
+      );
+      expect(isoDate(schedule.start)).toBe("2026-10-11");
+      expect(
+        generateDeliveryDates(schedule.frequency, schedule.start, schedule.end),
+      ).toHaveLength(14);
+    });
+
+    it("does not touch the quote, so the price the customer paid is unchanged", () => {
+      const quote = monthlyQuote(
+        new Date(Date.UTC(2026, 9, 5)),
+        new Date(Date.UTC(2026, 9, 31)),
+        27,
+      );
+      const before = JSON.stringify(quote);
+      service.resolveScheduleFromQuote(quote, istInstant(2026, 10, 10, 10, 0));
+      expect(JSON.stringify(quote)).toBe(before);
     });
   });
 
@@ -1067,8 +1257,19 @@ describe("PlansService", () => {
       expect(() =>
         service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
           ...base,
-          deliveryStartTime: DEFAULT_DELIVERY_START_TIME,
-          deliveryEndTime: DEFAULT_DELIVERY_END_TIME,
+          deliveryStartTime: "06:00",
+          deliveryEndTime: "11:00",
+        }),
+      ).not.toThrow();
+    });
+
+    it("accepts a window unrelated to the order cut-off", () => {
+      // The cut-off is 23:00 IST; an afternoon window is perfectly valid.
+      expect(() =>
+        service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
+          ...base,
+          deliveryStartTime: "16:00",
+          deliveryEndTime: "18:00",
         }),
       ).not.toThrow();
     });
@@ -1083,7 +1284,7 @@ describe("PlansService", () => {
       ).toThrow(BadRequestException);
     });
 
-    it("rejects a zero-length window, which would defer every order forever", () => {
+    it("rejects a zero-length window", () => {
       expect(() =>
         service.validateAdminPlanConfiguration(PlanType.BUY_ONCE, {
           ...base,
@@ -1103,6 +1304,29 @@ describe("PlansService", () => {
       ).not.toThrow();
     });
   });
+
+  describe("delivery window is never fabricated", () => {
+    it("plans overview reports null for an unconfigured window", async () => {
+      mockPrisma.planConfig.findFirst.mockResolvedValue(null);
+      mockPrisma.planConfig.findMany.mockResolvedValue([]);
+      mockPrisma.planSelection.count.mockResolvedValue(0);
+
+      const res = await service.getPlansOverview(USER);
+      for (const plan of res.plans) {
+        expect(plan.deliveryStartTime ?? null).toBeNull();
+        expect(plan.deliveryEndTime ?? null).toBeNull();
+      }
+    });
+
+    it("plans overview exposes the cut-off policy", async () => {
+      mockPrisma.planConfig.findFirst.mockResolvedValue(null);
+      mockPrisma.planSelection.count.mockResolvedValue(0);
+
+      const res = await service.getPlansOverview(USER);
+      expect(res.orderCutoff).toEqual(getOrderCutoffPolicy());
+    });
+  });
+
 
   describe("quantityForOccurrence (alternating by occurrence, not day)", () => {
     it("FIXED returns the constant quantity", () => {
