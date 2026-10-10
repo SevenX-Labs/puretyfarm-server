@@ -4,6 +4,10 @@ import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
 
+// http://localhost, http://127.0.0.1 and http://[::1], with or without a port.
+const LOOPBACK_ORIGIN =
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
@@ -42,6 +46,13 @@ async function bootstrap() {
             }
             const cleanOrigin = origin.replace(/\/+$/, '');
             if (normalizedOrigins.has(cleanOrigin)) {
+              return callback(null, true);
+            }
+            // Always allow loopback origins (any port) so local dev frontends
+            // work without having to enumerate every port in CORS_ORIGIN.
+            // Loopback can only be reached from the developer's own machine, so
+            // this does not widen exposure to remote origins.
+            if (LOOPBACK_ORIGIN.test(cleanOrigin)) {
               return callback(null, true);
             }
             return callback(
