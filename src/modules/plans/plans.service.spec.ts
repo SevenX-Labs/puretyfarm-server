@@ -606,126 +606,77 @@ describe('PlansService', () => {
   //  DELIVERY OCCURRENCE CALCULATION
   // ══════════════════════════════════════════════════════════════
 
-  describe('calculateMonthlyDeliveryOccurrences', () => {
-    it('January (31 days) DAILY = 31', () => {
-      // Jan 2027
+  describe('calculateMonthlyDeliveryOccurrences (fixed 30 days rolling schedule)', () => {
+    it('Start of month: DAILY = 30 across 30 days', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
           new Date(2027, 0, 1),
-        ),
-      ).toBe(31);
-    });
-
-    it('February non-leap (28 days) DAILY = 28', () => {
-      // Feb 2027
-      expect(
-        calculateMonthlyDeliveryOccurrences(
-          DeliveryFrequency.DAILY,
-          new Date(2027, 1, 1),
-        ),
-      ).toBe(28);
-    });
-
-    it('February leap (29 days) DAILY = 29', () => {
-      // Feb 2028 (leap year)
-      expect(
-        calculateMonthlyDeliveryOccurrences(
-          DeliveryFrequency.DAILY,
-          new Date(2028, 1, 1),
-        ),
-      ).toBe(29);
-    });
-
-    it('April (30 days) DAILY = 30', () => {
-      expect(
-        calculateMonthlyDeliveryOccurrences(
-          DeliveryFrequency.DAILY,
-          new Date(2027, 3, 1),
         ),
       ).toBe(30);
     });
 
-    it('January (31 days) ALTERNATE_DAYS = 16', () => {
+    it('Start of month: ALTERNATE_DAYS = 15 across 30 days', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
           new Date(2027, 0, 1),
         ),
-      ).toBe(16);
-    });
-
-    it('February non-leap (28 days) ALTERNATE_DAYS = 14', () => {
-      expect(
-        calculateMonthlyDeliveryOccurrences(
-          DeliveryFrequency.ALTERNATE_DAYS,
-          new Date(2027, 1, 1),
-        ),
-      ).toBe(14);
-    });
-
-    it('April (30 days) ALTERNATE_DAYS = 15', () => {
-      expect(
-        calculateMonthlyDeliveryOccurrences(
-          DeliveryFrequency.ALTERNATE_DAYS,
-          new Date(2027, 3, 1),
-        ),
       ).toBe(15);
     });
 
-    // ── Mid-month / month-end starts (start-date aware) ──
-    it('MID-MONTH: Oct 15 (31-day month) DAILY = 17 (Oct 15..31), not 31', () => {
+    it('MID-MONTH: Oct 15 DAILY = 30 (Oct 15 to Nov 13, rolling 30 days)', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
           new Date(2026, 9, 15),
         ),
-      ).toBe(17);
+      ).toBe(30);
     });
 
-    it('MID-MONTH: Oct 15 ALTERNATE_DAYS = 9 (15,17,...,31)', () => {
+    it('MID-MONTH: Oct 15 ALTERNATE_DAYS = 15 across rolling 30 days', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
           new Date(2026, 9, 15),
         ),
-      ).toBe(9);
+      ).toBe(15);
     });
 
-    it('NEAR MONTH-END: Jan 31 DAILY = 1', () => {
+    it('NEAR MONTH-END: Jan 31 DAILY = 30 (Jan 31 to Mar 1, rolling 30 days)', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
           new Date(2027, 0, 31),
         ),
-      ).toBe(1);
+      ).toBe(30);
     });
 
-    it('NEAR MONTH-END: Jan 30 ALTERNATE_DAYS = 1 (30 delivers, 31 would be next)', () => {
+    it('NEAR MONTH-END: Jan 30 ALTERNATE_DAYS = 15 across rolling 30 days', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.ALTERNATE_DAYS,
           new Date(2027, 0, 30),
         ),
-      ).toBe(1);
+      ).toBe(15);
     });
 
-    it('FEB leap mid-month: Feb 27 2028 DAILY = 3 (27,28,29)', () => {
+    it('FEB mid-month: Feb 27 DAILY = 30 across rolling 30 days', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
           DeliveryFrequency.DAILY,
           new Date(2028, 1, 27),
         ),
-      ).toBe(3);
+      ).toBe(30);
     });
 
-    it('FEB non-leap mid-month: Feb 27 2027 DAILY = 2 (27,28)', () => {
+    it('FEB mid-month: Feb 27 ALTERNATE_DAYS = 15 across rolling 30 days', () => {
       expect(
         calculateMonthlyDeliveryOccurrences(
-          DeliveryFrequency.DAILY,
-          new Date(2027, 1, 27),
+          DeliveryFrequency.ALTERNATE_DAYS,
+          new Date(2028, 1, 27),
         ),
-      ).toBe(2);
+      ).toBe(15);
     });
   });
 
@@ -2427,6 +2378,7 @@ describe('PlansService', () => {
       expect(res.plans.find((p) => p.type === PlanType.MONTHLY)).toEqual({
         type: PlanType.MONTHLY,
         available: false,
+        durationDays: 30,
         blockedReason: 'PLAN_NOT_CONFIGURED',
         deliveryStartTime: null,
         deliveryEndTime: null,

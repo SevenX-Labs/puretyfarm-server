@@ -22,6 +22,7 @@ import {
   QUOTE_EXPIRY_MINUTES,
   TRIAL_MAX_USES,
   TRIAL_DURATION_DAYS,
+  MONTHLY_DURATION_DAYS,
   ORDER_CUTOFF_HHMM,
   ORDER_CUTOFF_MINUTES_IST,
   LEAD_DAYS_BEFORE_CUTOFF,
@@ -58,6 +59,7 @@ import {
 export interface PlanAvailability {
   type: string;
   available: boolean;
+  durationDays?: number;
   usageCount?: number;
   remainingUses?: number;
   maxUses?: number;
@@ -100,6 +102,8 @@ export interface QuoteResponse {
   quantityA?: number;
   quantityB?: number;
   durationDays?: number;
+  billingPeriodStart?: Date;
+  billingPeriodEnd?: Date;
   deliveryOccurrences: number;
   actualPricePerLitre: number;
   sellingPricePerLitre: number;
@@ -112,6 +116,7 @@ export interface QuoteResponse {
 
 export interface MonthlyInfoResponse {
   available: boolean;
+  durationDays?: number;
   frequencies: string[];
   quantityModes: string[];
   quantityMin: number;
@@ -145,6 +150,7 @@ export interface AdminPlanConfigResponse {
   sellingPricePerLitre: number;
   quantityMin: number;
   quantityMax: number;
+  durationDays?: number;
   /** BUY_ONCE: configurable. SEVEN_DAY_TRIAL: fixed business rule (read-only). */
   maxUsages?: number;
   /** SEVEN_DAY_TRIAL: fixed business rule (read-only 7 days). */
@@ -194,6 +200,9 @@ export interface ConfirmationResponse {
   billingModel?: string;
   /** The plan's total at the quoted price, for display only. Not charged. */
   expectedTotalPaise?: number;
+  durationDays?: number;
+  startDate?: string | null;
+  endDate?: string | null;
   funding?: FundingSummary;
   message?: string;
 }
@@ -222,8 +231,11 @@ export interface CustomerSubscriptionSummary {
   quantity: number | null;
   quantityA: number | null;
   quantityB: number | null;
+  durationDays?: number;
   startDate: string | null;
   endDate: string | null;
+  provisionalStartDate?: string | null;
+  provisionalEndDate?: string | null;
   purchasedAt: Date;
   funding: FundingSummary;
   /** PENDING until an admin approves the plan. */
@@ -250,22 +262,19 @@ export interface CustomerSubscriptionSummary {
 
 /**
  * Calculates the number of delivery occurrences for a monthly billing period.
- * Uses the calendar month that contains `startDate`. Never hardcodes 30 days.
+ * Uses a fixed 30-day rolling window from `startDate` (30 occurrences for DAILY,
+ * 15 for ALTERNATE_DAYS), crossing calendar month boundaries as needed.
  */
 export function calculateMonthlyDeliveryOccurrences(
   frequency: DeliveryFrequency,
   startDate: Date,
 ): number {
-  // Count the actual delivery dates from the plan's START DATE through the end
-  // of that calendar month. This is start-date aware: a plan beginning mid-month
-  // is NOT charged for deliveries before its start date, and the count always
-  // matches the dates produced by generateDeliveryDates (single source of truth).
-  // The calendar month's real length (28/29/30/31) is respected automatically.
+  // Fixed 30-day monthly plan schedule: calculates delivery occurrences for a
+  // rolling 30-day window starting from startDate, seamlessly crossing into
+  // the next calendar month without truncating at month end.
   const start = toDateOnly(startDate);
-  const monthEnd = new Date(
-    Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0),
-  );
-  return generateDeliveryDates(frequency, start, monthEnd).length;
+  const end = addDays(start, MONTHLY_DURATION_DAYS - 1);
+  return generateDeliveryDates(frequency, start, end).length;
 }
 
 /**
@@ -542,6 +551,7 @@ export class PlansService {
           available: buyOnceElig.eligible,
           usageCount: buyOnceElig.usageCount,
           remainingUses: buyOnceElig.remainingUses,
+          durationDays: 1,
           deliveryStartTime: buyOnceConfig?.deliveryStartTime ?? null,
           deliveryEndTime: buyOnceConfig?.deliveryEndTime ?? null,
           ...(buyOnceElig.blockedReason
@@ -552,6 +562,7 @@ export class PlansService {
           type: PlanType.SEVEN_DAY_TRIAL,
           available: trialElig.eligible,
           used: trialElig.used,
+          durationDays: TRIAL_DURATION_DAYS,
           deliveryStartTime: trialConfig?.deliveryStartTime ?? null,
           deliveryEndTime: trialConfig?.deliveryEndTime ?? null,
           ...(trialElig.blockedReason
@@ -561,6 +572,7 @@ export class PlansService {
         {
           type: PlanType.MONTHLY,
           available: monthlyConfig !== null,
+          durationDays: MONTHLY_DURATION_DAYS,
           ...(monthlyConfig
             ? {
                 deliveryStartTime: monthlyConfig.deliveryStartTime,
@@ -796,6 +808,7 @@ export class PlansService {
 
     return {
       available: true,
+      durationDays: MONTHLY_DURATION_DAYS,
       frequencies: enabledFrequencies(config),
       quantityModes: enabledQuantityModes(config),
       quantityMin: config.quantityMin,
@@ -857,17 +870,10 @@ export class PlansService {
     // wallet payment; see resolveMonthlyWindow for the late-cash-confirmation
     // case.
     const billingStart = resolveFirstDeliveryDate();
+    const billingEnd = addDays(billingStart, MONTHLY_DURATION_DAYS - 1);
     const deliveryOccurrences = calculateMonthlyDeliveryOccurrences(
       dto.frequency,
       billingStart,
-    );
-
-    const billingEnd = new Date(
-      Date.UTC(
-        billingStart.getUTCFullYear(),
-        billingStart.getUTCMonth() + 1,
-        0,
-      ),
     );
 
     const totalLitres = calculateTotalLitres(
@@ -918,7 +924,10 @@ export class PlansService {
       ...(dto.quantityMode === QuantityMode.FIXED
         ? { quantity: dto.quantity }
         : { quantityA: dto.quantityA, quantityB: dto.quantityB }),
+      durationDays: MONTHLY_DURATION_DAYS,
       deliveryOccurrences,
+      billingPeriodStart: billingStart,
+      billingPeriodEnd: billingEnd,
       actualPricePerLitre: config.actualPricePerLitre,
       sellingPricePerLitre: config.sellingPricePerLitre,
       totalLitres,
@@ -1078,6 +1087,14 @@ export class PlansService {
         paidAmountPaise: 0,
         billingModel: PlanBillingModel.PER_DELIVERY,
         expectedTotalPaise: quote.totalSellingAmount,
+        durationDays:
+          quote.planType === PlanType.MONTHLY
+            ? MONTHLY_DURATION_DAYS
+            : quote.planType === PlanType.SEVEN_DAY_TRIAL
+              ? TRIAL_DURATION_DAYS
+              : 1,
+        startDate: toIsoDateString(schedule.start),
+        endDate: toIsoDateString(schedule.end),
         funding,
         message:
           funding.status === 'CONFIRMED'
@@ -1209,6 +1226,13 @@ export class PlansService {
       selection.status === PlanSelectionStatus.PENDING_APPROVAL ||
       selection.status === PlanSelectionStatus.PENDING_PAYMENT;
 
+    const durationDays =
+      selection.planType === PlanType.MONTHLY
+        ? MONTHLY_DURATION_DAYS
+        : selection.planType === PlanType.SEVEN_DAY_TRIAL
+          ? TRIAL_DURATION_DAYS
+          : 1;
+
     return {
       selectionId: selection.id,
       planType: selection.planType,
@@ -1219,13 +1243,19 @@ export class PlansService {
       quantity: selection.quantity,
       quantityA: selection.quantityA,
       quantityB: selection.quantityB,
-      // The dates are provisional until an admin approves and schedules.
-      startDate:
-        !awaitingApproval && selection.startDate
+      durationDays,
+      startDate: selection.startDate
+        ? toIsoDateString(selection.startDate)
+        : null,
+      endDate: selection.endDate
+        ? toIsoDateString(selection.endDate)
+        : null,
+      provisionalStartDate:
+        awaitingApproval && selection.startDate
           ? toIsoDateString(selection.startDate)
           : null,
-      endDate:
-        !awaitingApproval && selection.endDate
+      provisionalEndDate:
+        awaitingApproval && selection.endDate
           ? toIsoDateString(selection.endDate)
           : null,
       purchasedAt: selection.createdAt,
@@ -2007,6 +2037,12 @@ export class PlansService {
         subscriptionId,
         startDate: toIsoDateString(schedule.start),
         endDate: toIsoDateString(schedule.end),
+        durationDays:
+          selection.planType === PlanType.MONTHLY
+            ? MONTHLY_DURATION_DAYS
+            : selection.planType === PlanType.SEVEN_DAY_TRIAL
+              ? TRIAL_DURATION_DAYS
+              : 1,
         approvedAt: now.toISOString(),
         approvalNote: dto.note ?? null,
       };
@@ -2606,6 +2642,12 @@ export class PlansService {
         quantity: s.quantity,
         startDate: s.startDate,
         endDate: s.endDate,
+        durationDays:
+          s.planType === PlanType.MONTHLY
+            ? MONTHLY_DURATION_DAYS
+            : s.planType === PlanType.SEVEN_DAY_TRIAL
+              ? TRIAL_DURATION_DAYS
+              : 1,
         paymentMethod: s.paymentMethod,
         paidAmountPaise: s.paidAmountPaise,
         paidAt: s.paidAt,

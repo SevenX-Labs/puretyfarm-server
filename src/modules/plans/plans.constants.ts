@@ -110,6 +110,9 @@ export const TRIAL_MAX_USES = 1;
 /** The 7-Day Trial duration is fixed to exactly 7 days (business-invariant). */
 export const TRIAL_DURATION_DAYS = 7;
 
+/** The Monthly plan duration is fixed to exactly 30 days (business-invariant). */
+export const MONTHLY_DURATION_DAYS = 30;
+
 /**
  * Admin configuration bounds. The price ceiling (₹10,000/litre, in paise) keeps
  * every quote total (price × up to 31 deliveries × 5 L) inside a 32-bit Int column.
