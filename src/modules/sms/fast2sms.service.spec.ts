@@ -35,7 +35,7 @@ describe('Fast2SmsService', () => {
     expect(service).toBeDefined();
   });
 
-  it('should send OTP successfully via Fast2SMS Quick SMS API', async () => {
+  it('should send OTP successfully via Fast2SMS OTP route', async () => {
     const mockResponse = {
       return: true,
       request_id: 'req_123456',
@@ -58,9 +58,8 @@ describe('Fast2SmsService', () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          route: 'q',
-          message:
-            'Your Purety Farm verification code is 123456. Valid for 5 minutes.',
+          route: 'otp',
+          variables_values: '123456',
           numbers: '9876543210',
         }),
       }),
