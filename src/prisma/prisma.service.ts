@@ -4,7 +4,7 @@ import {
   OnModuleDestroy,
   Logger,
 } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 
 @Injectable()
 export class PrismaService
@@ -28,7 +28,22 @@ export class PrismaService
         maxWait: 10_000,
         timeout: 30_000,
       },
+      // Opt-in query timing (PERF_TIMING=true). Emitted as events so only the
+      // duration and the statement kind are logged — never query parameters.
+      ...(process.env.PERF_TIMING === 'true'
+        ? { log: [{ emit: 'event' as const, level: 'query' as const }] }
+        : {}),
     });
+
+    if (process.env.PERF_TIMING === 'true') {
+      (
+        this as unknown as {
+          $on(event: 'query', cb: (e: Prisma.QueryEvent) => void): void;
+        }
+      ).$on('query', (e) => {
+        this.logger.log(`db ${e.query.split(' ', 1)[0]} ${e.duration}ms`);
+      });
+    }
   }
 
   async onModuleInit() {

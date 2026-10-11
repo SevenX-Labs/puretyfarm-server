@@ -50,17 +50,18 @@ export class ProfileService {
     userId: string,
     dto: CustomerCreateProfileDto,
   ): Promise<CombinedCustomerProfileResponse> {
-    const existing = await this.prisma.customerProfile.findUnique({
-      where: { userId },
-    });
+    const [existing, user] = await Promise.all([
+      this.prisma.customerProfile.findUnique({
+        where: { userId },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+      }),
+    ]);
 
     if (existing) {
       throw new ConflictException('Customer profile already exists');
     }
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
 
     if (!user) {
       throw new NotFoundException('User not found');
@@ -140,13 +141,15 @@ export class ProfileService {
       updateData.whatsappNumber = dto.whatsappNumber;
     }
 
+    // The user row is not modified here, so reuse the one loaded above rather
+    // than re-including it: with `include` Prisma wraps the UPDATE in a
+    // multi-statement transaction instead of a single round-trip.
     const updated = await this.prisma.customerProfile.update({
       where: { userId },
       data: updateData,
-      include: { user: true },
     });
 
-    return this.buildProfileResponse(updated, updated.user);
+    return this.buildProfileResponse(updated, profile.user);
   }
 
   /**
@@ -183,12 +186,11 @@ export class ProfileService {
     const newAvatarPath = await this.storageService.uploadAvatar(userId, file!);
 
     // 3. Persist the new PATH in PostgreSQL.
-    let updated;
+    let updated: CustomerProfile;
     try {
       updated = await this.prisma.customerProfile.update({
         where: { userId },
         data: { profileImagePath: newAvatarPath },
-        include: { user: true },
       });
     } catch (dbError) {
       // DB update failed: remove the orphaned new object, keep old avatar/path.
@@ -211,7 +213,7 @@ export class ProfileService {
       }
     }
 
-    return this.buildProfileResponse(updated, updated.user);
+    return this.buildProfileResponse(updated, profile.user);
   }
 
   /**
@@ -236,10 +238,9 @@ export class ProfileService {
       const updated = await this.prisma.customerProfile.update({
         where: { userId },
         data: { profileImagePath: null },
-        include: { user: true },
       });
 
-      return this.buildProfileResponse(updated, updated.user);
+      return this.buildProfileResponse(updated, profile.user);
     }
 
     return this.buildProfileResponse(profile, profile.user);

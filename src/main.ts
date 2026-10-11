@@ -3,6 +3,13 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';
+import { requestTimingMiddleware } from './common/middleware/request-timing.middleware';
+
+// How long (seconds) a browser may reuse a CORS preflight result. Without it
+// browsers fall back to a few seconds, so cross-origin clients (the admin
+// panel) pay an extra OPTIONS round-trip before almost every API call. Origin,
+// method and header rules are unchanged; only the re-check interval is.
+const CORS_PREFLIGHT_MAX_AGE_SECONDS = 600;
 
 // http://localhost, http://127.0.0.1 and http://[::1], with or without a port.
 const LOOPBACK_ORIGIN =
@@ -10,6 +17,12 @@ const LOOPBACK_ORIGIN =
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Opt-in per-request timing (Server-Timing header + one log line). Off by
+  // default; see request-timing.middleware.ts.
+  if (process.env.PERF_TIMING === 'true') {
+    app.use(requestTimingMiddleware);
+  }
 
   const configService = app.get(ConfigService);
   const corsOriginRaw =
@@ -60,6 +73,7 @@ async function bootstrap() {
             );
           },
       credentials: true,
+      maxAge: CORS_PREFLIGHT_MAX_AGE_SECONDS,
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: [
         'Content-Type',
@@ -76,6 +90,7 @@ async function bootstrap() {
     app.enableCors({
       origin: true,
       credentials: true,
+      maxAge: CORS_PREFLIGHT_MAX_AGE_SECONDS,
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: [
         'Content-Type',

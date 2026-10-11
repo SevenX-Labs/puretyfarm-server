@@ -284,7 +284,6 @@ describe('ProfileService', () => {
       expect(mockPrismaService.customerProfile.update).toHaveBeenCalledWith({
         where: { userId: 'user-123' },
         data: { profileImagePath: NEW_PATH },
-        include: { user: true },
       });
       const stored =
         mockPrismaService.customerProfile.update.mock.calls[0][0].data
@@ -501,7 +500,6 @@ describe('ProfileService', () => {
       expect(mockPrismaService.customerProfile.update).toHaveBeenCalledWith({
         where: { userId: 'user-123' },
         data: { profileImagePath: null },
-        include: { user: true },
       });
       expect(result.profileImageUrl).toBeNull();
     });
