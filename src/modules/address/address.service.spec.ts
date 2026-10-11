@@ -8,6 +8,8 @@ describe('AddressService', () => {
 
   const mockPrisma = {
     area: { findUnique: jest.fn() },
+    city: { findUnique: jest.fn() },
+    state: { findUnique: jest.fn() },
     customerAddress: {
       create: jest.fn(),
       findMany: jest.fn(),
@@ -36,6 +38,16 @@ describe('AddressService', () => {
     },
   };
 
+  // The service loads the area, city and state rows separately (in parallel),
+  // so split a nested chain into the three lookups it will make.
+  const mockHierarchy = (chain: typeof activeArea) => {
+    const { city, ...area } = chain;
+    const { state, ...cityRow } = city;
+    mockPrisma.area.findUnique.mockResolvedValue(area);
+    mockPrisma.city.findUnique.mockResolvedValue(cityRow);
+    mockPrisma.state.findUnique.mockResolvedValue(state);
+  };
+
   const baseDto = {
     fullName: 'Sahil Hode',
     mobile: '+919876543210',
@@ -61,7 +73,7 @@ describe('AddressService', () => {
 
   describe('17/18. createAddress', () => {
     it('creates an address scoped to the JWT user with server-resolved names', async () => {
-      mockPrisma.area.findUnique.mockResolvedValue(activeArea);
+      mockHierarchy(activeArea);
       mockPrisma.customerAddress.create.mockImplementation(({ data }: any) => ({
         id: 'addr-1',
         ...data,
@@ -81,7 +93,7 @@ describe('AddressService', () => {
 
     it('19. rejects an invalid State -> City -> Area combination', async () => {
       // Area exists but belongs to a different city than the one claimed.
-      mockPrisma.area.findUnique.mockResolvedValue({
+      mockHierarchy({
         ...activeArea,
         cityId: 'city-999',
         city: { ...activeArea.city, id: 'city-999' },
@@ -94,7 +106,7 @@ describe('AddressService', () => {
     });
 
     it('rejects an inactive area', async () => {
-      mockPrisma.area.findUnique.mockResolvedValue({
+      mockHierarchy({
         ...activeArea,
         isActive: false,
       });
@@ -104,7 +116,7 @@ describe('AddressService', () => {
     });
 
     it('rejects when the city belongs to a different state', async () => {
-      mockPrisma.area.findUnique.mockResolvedValue({
+      mockHierarchy({
         ...activeArea,
         city: { ...activeArea.city, stateId: 'state-999' },
       });
@@ -114,7 +126,7 @@ describe('AddressService', () => {
     });
 
     it('29. persists GPS coordinates when provided', async () => {
-      mockPrisma.area.findUnique.mockResolvedValue(activeArea);
+      mockHierarchy(activeArea);
       mockPrisma.customerAddress.create.mockImplementation(({ data }: any) => ({
         id: 'addr-1',
         ...data,
@@ -132,7 +144,7 @@ describe('AddressService', () => {
     });
 
     it('30. leaves coordinates null for manual selection', async () => {
-      mockPrisma.area.findUnique.mockResolvedValue(activeArea);
+      mockHierarchy(activeArea);
       mockPrisma.customerAddress.create.mockImplementation(({ data }: any) => ({
         id: 'addr-1',
         ...data,
@@ -188,7 +200,7 @@ describe('AddressService', () => {
         cityId: 'city-1',
         areaId: 'area-old',
       });
-      mockPrisma.area.findUnique.mockResolvedValue(activeArea);
+      mockHierarchy(activeArea);
       mockPrisma.customerAddress.update.mockImplementation(({ data }: any) => ({
         id: 'addr-1',
         ...data,
@@ -249,7 +261,7 @@ describe('AddressService', () => {
 
   describe('mobile normalization', () => {
     beforeEach(() => {
-      mockPrisma.area.findUnique.mockResolvedValue(activeArea);
+      mockHierarchy(activeArea);
       mockPrisma.customerAddress.create.mockImplementation(({ data }: any) => ({
         id: 'addr-1',
         ...data,

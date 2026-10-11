@@ -169,18 +169,24 @@ export class AddressService {
     cityId: string,
     areaId: string,
   ): Promise<ResolvedHierarchy> {
-    const area = await this.prisma.area.findUnique({
-      where: { id: areaId },
-      include: { city: { include: { state: true } } },
-    });
+    // All three ids are supplied by the caller, so load the rows in parallel
+    // rather than walking area -> city -> state with a nested include, which
+    // Prisma runs as three sequential queries.
+    const [area, city, state] = await Promise.all([
+      this.prisma.area.findUnique({ where: { id: areaId } }),
+      this.prisma.city.findUnique({ where: { id: cityId } }),
+      this.prisma.state.findUnique({ where: { id: stateId } }),
+    ]);
 
     if (
       !area ||
+      !city ||
+      !state ||
       !area.isActive ||
       area.cityId !== cityId ||
-      !area.city.isActive ||
-      area.city.stateId !== stateId ||
-      !area.city.state.isActive
+      !city.isActive ||
+      city.stateId !== stateId ||
+      !state.isActive
     ) {
       throw new BadRequestException(
         'Invalid or inactive State -> City -> Area selection',
@@ -188,11 +194,11 @@ export class AddressService {
     }
 
     return {
-      stateId: area.city.state.id,
-      cityId: area.city.id,
+      stateId: state.id,
+      cityId: city.id,
       areaId: area.id,
-      state: area.city.state.name,
-      city: area.city.name,
+      state: state.name,
+      city: city.name,
       area: area.name,
       areaPincode: area.pincode,
     };
