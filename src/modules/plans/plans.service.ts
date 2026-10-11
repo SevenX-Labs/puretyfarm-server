@@ -594,17 +594,6 @@ export class PlansService {
   // ── Buy Once ────────────────────────────────────────────────────
 
   async getBuyOnceEligibility(userId: string): Promise<EligibilityResponse> {
-    const config = await this.getActiveConfig(PlanType.BUY_ONCE);
-    if (!config) {
-      return {
-        eligible: false,
-        usageCount: 0,
-        remainingUses: 0,
-        maxUses: 0,
-        blockedReason: 'PLAN_NOT_CONFIGURED',
-      };
-    }
-
     // If Trial has ever been used, Buy Once is disabled.
     const trialUsed = await this.hasUsedPlan(userId, PlanType.SEVEN_DAY_TRIAL);
     if (trialUsed) {
@@ -613,8 +602,19 @@ export class PlansService {
         eligible: false,
         usageCount,
         remainingUses: 0,
-        maxUses: config.maxUsages,
+        maxUses: 1,
         blockedReason: 'TRIAL_ALREADY_USED',
+      };
+    }
+
+    const config = await this.getActiveConfig(PlanType.BUY_ONCE);
+    if (!config) {
+      return {
+        eligible: false,
+        usageCount: 0,
+        remainingUses: 0,
+        maxUses: 0,
+        blockedReason: 'PLAN_NOT_CONFIGURED',
       };
     }
 
@@ -691,15 +691,6 @@ export class PlansService {
   // ── 7-Day Trial ─────────────────────────────────────────────────
 
   async getTrialEligibility(userId: string): Promise<EligibilityResponse> {
-    const config = await this.getActiveConfig(PlanType.SEVEN_DAY_TRIAL);
-    if (!config) {
-      return {
-        eligible: false,
-        used: false,
-        blockedReason: 'PLAN_NOT_CONFIGURED',
-      };
-    }
-
     // If Buy Once has ever been used, Trial is disabled.
     const buyOnceUsed = await this.hasUsedPlan(userId, PlanType.BUY_ONCE);
     if (buyOnceUsed) {
@@ -707,7 +698,6 @@ export class PlansService {
         eligible: false,
         used: false,
         trialDurationDays: TRIAL_DURATION_DAYS,
-        maxQuantityLitres: config.quantityMax,
         blockedReason: 'BUY_ONCE_ALREADY_USED',
       };
     }
@@ -718,8 +708,16 @@ export class PlansService {
         eligible: false,
         used: true,
         trialDurationDays: TRIAL_DURATION_DAYS,
-        maxQuantityLitres: config.quantityMax,
         blockedReason: 'TRIAL_ALREADY_USED',
+      };
+    }
+
+    const config = await this.getActiveConfig(PlanType.SEVEN_DAY_TRIAL);
+    if (!config) {
+      return {
+        eligible: false,
+        used: false,
+        blockedReason: 'PLAN_NOT_CONFIGURED',
       };
     }
 
