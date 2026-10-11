@@ -160,6 +160,13 @@ describe('Cash Plan Confirmation -> Wallet Routing Integration', () => {
           Object.assign(row, data, { updatedAt: new Date() });
           return { ...row };
         },
+        updateMany: async ({ where, data }: any) => {
+          const hits = db.planSelections.filter((s) => matches(s, where));
+          hits.forEach((s) =>
+            Object.assign(s, data, { updatedAt: new Date() }),
+          );
+          return { count: hits.length };
+        },
       },
       planQuote: {
         updateMany: async ({ where, data }: any) => {
@@ -205,6 +212,14 @@ describe('Cash Plan Confirmation -> Wallet Routing Integration', () => {
         count: async () => db.invoices.length,
       },
       order: {
+        findMany: async ({ where }: any) => {
+          let list = db.orders;
+          if (where?.planDeliveryId?.in) {
+            const set = new Set(where.planDeliveryId.in);
+            list = list.filter((o) => set.has(o.planDeliveryId));
+          }
+          return list.map((o) => ({ ...o }));
+        },
         findUnique: async ({ where }: any) => {
           const row = db.orders.find(
             (o) => o.planDeliveryId === where.planDeliveryId,

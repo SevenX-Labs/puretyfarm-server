@@ -54,7 +54,7 @@ describe('ManageDeliveryService', () => {
       deleteMany: jest.fn(),
     },
     planConfig: { findUnique: jest.fn() },
-    order: { findFirst: jest.fn(), updateMany: jest.fn() },
+    order: { findFirst: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn() },
     manageDeliveryChangeRequest: {
       create: jest.fn(),
       findFirst: jest.fn(),
@@ -347,7 +347,7 @@ describe('ManageDeliveryService', () => {
 
     it('creates a PENDING RESUME request for a PAUSED plan', async () => {
       mockPrisma.planSelection.findFirst.mockResolvedValue({
-        ...selection,
+        ...monthlySelection,
         status: PlanSelectionStatus.PAUSED,
       });
 
@@ -792,6 +792,13 @@ describe('ManageDeliveryService', () => {
     });
 
     it('performs atomic PENDING→APPROVED transition (race-safe)', async () => {
+      mockPrisma.planSelection.findUnique.mockResolvedValue({
+        ...monthlySelection,
+        billingModel: 'PER_DELIVERY',
+      });
+      mockDeliveryBilling.applyOrderQuantityChange.mockResolvedValue({
+        changed: true,
+      });
       mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
         count: 1,
       });
@@ -852,6 +859,13 @@ describe('ManageDeliveryService', () => {
     });
 
     it('stores adminId from function arg (not from request body)', async () => {
+      mockPrisma.planSelection.findUnique.mockResolvedValue({
+        ...monthlySelection,
+        billingModel: 'PER_DELIVERY',
+      });
+      mockDeliveryBilling.applyOrderQuantityChange.mockResolvedValue({
+        changed: true,
+      });
       mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
         count: 1,
       });

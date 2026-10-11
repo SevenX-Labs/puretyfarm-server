@@ -189,7 +189,8 @@ describe('OrdersService', () => {
     planConfig: { findUnique: jest.fn() },
     customerAddress: { findFirst: jest.fn() },
     // Present only so the completion tests can assert they are never written.
-    wallet: { update: jest.fn(), updateMany: jest.fn() },
+    wallet: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
+    walletCreditRequest: { findFirst: jest.fn(), count: jest.fn() },
     walletTransaction: { create: jest.fn() },
     payment: { update: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
     cashCollection: { update: jest.fn(), updateMany: jest.fn() },
@@ -406,6 +407,35 @@ describe('OrdersService', () => {
           where: expect.objectContaining({ status: OrderStatus.DELIVERED }),
         }),
       );
+    });
+
+    it('returns pendingPlanPurchases when customer has a pending unscheduled plan selection', async () => {
+      mockPrisma.order.findMany.mockResolvedValue([]);
+      mockPrisma.order.count.mockResolvedValue(0);
+      mockPrisma.planSelection.findFirst.mockResolvedValue({
+        id: 'sel-pending',
+        userId: USER,
+        planType: PlanType.MONTHLY,
+        status: PlanSelectionStatus.PENDING_APPROVAL,
+        billingModel: 'PER_DELIVERY',
+        paymentMethod: 'WALLET',
+        frequency: DeliveryFrequency.DAILY,
+        quantityMode: QuantityMode.FIXED,
+        quantity: 2,
+        quote: { totalSellingAmount: 450000, sellingPricePerLitrePaise: 7500 },
+        deliveries: [],
+        createdAt: new Date('2026-10-10T10:00:00.000Z'),
+      });
+      mockPrisma.wallet.findUnique.mockResolvedValue({ id: 'w-1', balancePaise: 200000 });
+      mockPrisma.walletCreditRequest.findFirst.mockResolvedValue(null);
+      mockPrisma.walletCreditRequest.count.mockResolvedValue(1);
+
+      const res = await service.getCustomerOrders(USER, {});
+      expect(res.pendingPlanPurchases).toHaveLength(1);
+      expect(res.pendingPlanPurchases[0].id).toBe('sel-pending');
+      expect(res.pendingPlanPurchases[0].status).toBe(PlanSelectionStatus.PENDING_APPROVAL);
+      expect(res.pendingPlanPurchases[0].funding.status).toBe('CONFIRMED');
+      expect(res.pendingPlanPurchases[0].funding.walletBalancePaise).toBe(200000);
     });
   });
 

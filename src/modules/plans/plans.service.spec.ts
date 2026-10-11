@@ -2752,5 +2752,49 @@ describe('PlansService', () => {
         service.resolveScheduleFromQuote(quote, now, '2026-10-09'),
       ).toThrow('First delivery date cannot be in the past');
     });
+
+    it('rejects impossible calendar dates without rollover', () => {
+      const quote = {
+        planType: PlanType.BUY_ONCE,
+        frequency: null,
+        quantityMode: null,
+        quantity: 1,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 1,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+      };
+      const now = new Date('2026-01-01T00:00:00.000Z');
+      expect(() =>
+        service.resolveScheduleFromQuote(quote, now, '2026-02-31'),
+      ).toThrow(BadRequestException);
+      expect(() =>
+        service.resolveScheduleFromQuote(quote, now, '2026-04-31'),
+      ).toThrow(BadRequestException);
+      expect(() =>
+        service.resolveScheduleFromQuote(quote, now, '2026-02-29'),
+      ).toThrow(BadRequestException);
+      expect(() =>
+        service.resolveScheduleFromQuote(quote, now, '2026-13-10'),
+      ).toThrow(BadRequestException);
+    });
+
+    it('preserves ISO YYYY-MM-DD calendar date without timezone drift', () => {
+      const quote = {
+        planType: PlanType.BUY_ONCE,
+        frequency: null,
+        quantityMode: null,
+        quantity: 1,
+        quantityA: null,
+        quantityB: null,
+        deliveryOccurrences: 1,
+        billingPeriodStart: null,
+        billingPeriodEnd: null,
+      };
+      const now = new Date('2026-10-10T23:59:00.000Z');
+      const schedule = service.resolveScheduleFromQuote(quote, now, '2026-10-25');
+      expect(schedule.start.toISOString()).toBe('2026-10-25T00:00:00.000Z');
+    });
   });
 });

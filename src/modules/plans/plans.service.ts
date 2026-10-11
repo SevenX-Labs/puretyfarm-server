@@ -2148,13 +2148,29 @@ export class PlansService {
         parsedDate = toIstDateOnly(explicitStartDate);
       } else if (typeof explicitStartDate === 'string') {
         const trimmed = explicitStartDate.trim();
-        if (!/^d{4}-d{2}-d{2}$/.test(trimmed) && isNaN(Date.parse(trimmed))) {
-          throw new BadRequestException('Invalid first delivery date');
-        }
-        if (/^d{4}-d{2}-d{2}$/.test(trimmed)) {
-          parsedDate = new Date(`${trimmed}T00:00:00.000Z`);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+          const [yearStr, monthStr, dayStr] = trimmed.split('-');
+          const year = parseInt(yearStr, 10);
+          const month = parseInt(monthStr, 10);
+          const day = parseInt(dayStr, 10);
+          const d = new Date(`${trimmed}T00:00:00.000Z`);
+          if (
+            isNaN(d.getTime()) ||
+            d.getUTCFullYear() !== year ||
+            d.getUTCMonth() + 1 !== month ||
+            d.getUTCDate() !== day
+          ) {
+            throw new BadRequestException('Invalid first delivery date');
+          }
+          parsedDate = d;
+        } else if (!isNaN(Date.parse(trimmed))) {
+          const raw = new Date(trimmed);
+          if (isNaN(raw.getTime())) {
+            throw new BadRequestException('Invalid first delivery date');
+          }
+          parsedDate = toIstDateOnly(raw);
         } else {
-          parsedDate = toIstDateOnly(new Date(trimmed));
+          throw new BadRequestException('Invalid first delivery date');
         }
       } else {
         throw new BadRequestException('Invalid first delivery date');
