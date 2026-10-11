@@ -493,13 +493,6 @@ export class LocationsService {
   async deleteState(stateId: string): Promise<{ id: string; deleted: true }> {
     await this.getStateOr404(stateId);
 
-    const cityCount = await this.prisma.city.count({ where: { stateId } });
-    if (cityCount > 0) {
-      throw new ConflictException(
-        'State has dependent cities and cannot be deleted. Disable it instead.',
-      );
-    }
-
     const addressCount = await this.prisma.customerAddress.count({
       where: { stateId },
     });
@@ -509,6 +502,7 @@ export class LocationsService {
       );
     }
 
+    // Cascade delete: Prisma schema onDelete: Cascade automatically deletes dependent cities and areas.
     await this.prisma.state.delete({ where: { id: stateId } });
     return { id: stateId, deleted: true };
   }
@@ -596,13 +590,6 @@ export class LocationsService {
   async deleteCity(cityId: string): Promise<{ id: string; deleted: true }> {
     await this.getCityOr404(cityId);
 
-    const areaCount = await this.prisma.area.count({ where: { cityId } });
-    if (areaCount > 0) {
-      throw new ConflictException(
-        'City has dependent areas and cannot be deleted. Disable it instead.',
-      );
-    }
-
     const addressCount = await this.prisma.customerAddress.count({
       where: { cityId },
     });
@@ -612,6 +599,7 @@ export class LocationsService {
       );
     }
 
+    // Cascade delete: Prisma schema onDelete: Cascade automatically deletes dependent areas.
     await this.prisma.city.delete({ where: { id: cityId } });
     return { id: cityId, deleted: true };
   }

@@ -187,13 +187,15 @@ describe('LocationsService (admin catalog)', () => {
       });
     });
 
-    it('refuses to delete a state that has cities (409, no delete)', async () => {
+    it('deletes a state even if it has dependent cities (cascades via DB)', async () => {
       mockPrisma.state.findUnique.mockResolvedValue({ id: 'state-1' });
-      mockPrisma.city.count.mockResolvedValue(2);
-      await expect(service.deleteState('state-1')).rejects.toThrow(
-        ConflictException,
-      );
-      expect(mockPrisma.state.delete).not.toHaveBeenCalled();
+      mockPrisma.state.delete.mockResolvedValue(stateRow);
+      mockPrisma.customerAddress.count.mockResolvedValue(0);
+      const result = await service.deleteState('state-1');
+      expect(result).toEqual({ id: 'state-1', deleted: true });
+      expect(mockPrisma.state.delete).toHaveBeenCalledWith({
+        where: { id: 'state-1' },
+      });
     });
 
     it('refuses to delete a state referenced by customer addresses', async () => {
@@ -310,13 +312,15 @@ describe('LocationsService (admin catalog)', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('refuses to delete a city that has areas', async () => {
+    it('deletes a city even if it has dependent areas (cascades via DB)', async () => {
       mockPrisma.city.findUnique.mockResolvedValue({ id: 'city-1' });
-      mockPrisma.area.count.mockResolvedValue(3);
-      await expect(service.deleteCity('city-1')).rejects.toThrow(
-        ConflictException,
-      );
-      expect(mockPrisma.city.delete).not.toHaveBeenCalled();
+      mockPrisma.city.delete.mockResolvedValue(cityRow);
+      mockPrisma.customerAddress.count.mockResolvedValue(0);
+      const result = await service.deleteCity('city-1');
+      expect(result).toEqual({ id: 'city-1', deleted: true });
+      expect(mockPrisma.city.delete).toHaveBeenCalledWith({
+        where: { id: 'city-1' },
+      });
     });
 
     it('refuses to delete a city referenced by customer addresses', async () => {
