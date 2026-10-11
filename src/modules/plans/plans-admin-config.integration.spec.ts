@@ -805,7 +805,7 @@ describe('Admin plan configuration -> customer plans (HTTP integration)', () => 
       });
     });
 
-    it('Monthly confirmation still creates a selection with materialised deliveries', async () => {
+    it('Monthly confirmation creates a selection with PENDING_APPROVAL status', async () => {
       const res = await buyAndConfirm(
         CUST1,
         '/api/v1/customer/plans/monthly/quote',
@@ -817,9 +817,8 @@ describe('Admin plan configuration -> customer plans (HTTP integration)', () => 
       );
       expect(res.body).toMatchObject({
         plan: 'MONTHLY',
-        status: PlanSelectionStatus.CONFIRMED,
+        status: PlanSelectionStatus.PENDING_APPROVAL,
       });
-      expect(db.deliveries.length).toBeGreaterThan(0);
     });
 
     it('a quote issued before the admin disabled the plan cannot be confirmed', async () => {
@@ -854,7 +853,9 @@ describe('Admin plan configuration -> customer plans (HTTP integration)', () => 
       expect(JSON.stringify({ s: db.selections, d: db.deliveries })).toBe(
         snapshot,
       );
-      expect(db.selections[0].status).toBe(PlanSelectionStatus.CONFIRMED);
+      expect(db.selections[0].status).toBe(
+        PlanSelectionStatus.PENDING_APPROVAL,
+      );
     });
 
     it("the price on an already-issued quote is a snapshot (later admin price edits don't change it)", async () => {
