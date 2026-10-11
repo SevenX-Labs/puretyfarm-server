@@ -80,3 +80,51 @@ export async function generateInvoiceNumber(
       : 0;
   return `${INVOICE_NUMBER_PREFIX}${10001 + count}`;
 }
+
+export async function generateOrderNumbers(
+  client: RawQueryClient,
+  count: number,
+): Promise<string[]> {
+  if (count <= 0) return [];
+  if (typeof client?.$queryRaw === "function") {
+    try {
+      const rows = await client.$queryRaw<Array<{ nextval: bigint }>>(
+        Prisma.sql`SELECT nextval('order_number_seq') AS nextval FROM generate_series(1, ${count})`,
+      );
+      if (Array.isArray(rows) && rows.length === count) {
+        return rows.map((r) => `${ORDER_NUMBER_PREFIX}${r.nextval}`);
+      }
+    } catch {
+      // Fall back to serial generation if sequence query fails
+    }
+  }
+  const results: string[] = [];
+  for (let i = 0; i < count; i++) {
+    results.push(await generateOrderNumber(client));
+  }
+  return results;
+}
+
+export async function generateInvoiceNumbers(
+  client: RawQueryClient,
+  count: number,
+): Promise<string[]> {
+  if (count <= 0) return [];
+  if (typeof client?.$queryRaw === "function") {
+    try {
+      const rows = await client.$queryRaw<Array<{ nextval: bigint }>>(
+        Prisma.sql`SELECT nextval('invoice_number_seq') AS nextval FROM generate_series(1, ${count})`,
+      );
+      if (Array.isArray(rows) && rows.length === count) {
+        return rows.map((r) => `${INVOICE_NUMBER_PREFIX}${r.nextval}`);
+      }
+    } catch {
+      // Fall back
+    }
+  }
+  const results: string[] = [];
+  for (let i = 0; i < count; i++) {
+    results.push(await generateInvoiceNumber(client));
+  }
+  return results;
+}

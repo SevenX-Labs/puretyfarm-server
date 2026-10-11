@@ -48,6 +48,8 @@ import { ApproveSubscriptionPlanDto } from './dto/admin/approve-subscription.dto
 import {
   generateOrderNumber,
   generateInvoiceNumber,
+  generateOrderNumbers,
+  generateInvoiceNumbers,
 } from '../orders/order-number.util';
 
 // ─── Response interfaces ────────────────────────────────────────────
@@ -1577,13 +1579,25 @@ export class PlansService {
           area: 'Raipur',
         };
 
-    for (const d of deliveries) {
-      if (deliveryIdsWithOrder.has(d.id)) continue;
+    const pendingDeliveries = deliveries.filter(
+      (d: any) => !deliveryIdsWithOrder.has(d.id),
+    );
+    if (pendingDeliveries.length === 0) {
+      return;
+    }
 
-      const orderNumber = await generateOrderNumber(tx);
-      const invoiceNumber = isPerDelivery
-        ? null
-        : await generateInvoiceNumber(tx);
+    const orderNumbers = await generateOrderNumbers(
+      tx,
+      pendingDeliveries.length,
+    );
+    const invoiceNumbers = isPerDelivery
+      ? []
+      : await generateInvoiceNumbers(tx, pendingDeliveries.length);
+
+    for (let i = 0; i < pendingDeliveries.length; i++) {
+      const d = pendingDeliveries[i];
+      const orderNumber = orderNumbers[i];
+      const invoiceNumber = isPerDelivery ? null : invoiceNumbers[i];
 
       const qty = d.quantityLitres || 1;
       const itemTotal = unitPrice * qty;
