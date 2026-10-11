@@ -185,8 +185,17 @@ export class AuthService {
       ),
     ]);
 
-    // 4. Send SMS via Fast2SMS
-    await this.fast2SmsService.sendOtp(normalizedMobile, otp);
+    // 4. Send SMS via Fast2SMS (dedicated OTP route)
+    const smsResult = await this.fast2SmsService.sendOtp(normalizedMobile, otp);
+    if (!smsResult.success) {
+      this.logger.error(
+        `[Fast2SMS] Failed to send OTP to ${normalizedMobile}: ${smsResult.error}`,
+      );
+      throw new HttpException(
+        smsResult.error || "Failed to dispatch OTP SMS. Please try again.",
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
 
     // Development log only
     if (process.env.NODE_ENV !== 'production') {
