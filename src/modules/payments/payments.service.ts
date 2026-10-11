@@ -1342,6 +1342,7 @@ export class PaymentsService {
           totalPaise: true,
           paymentStatus: true,
           status: true,
+          planSelection: { select: { billingModel: true } },
         },
       });
 
@@ -1349,6 +1350,17 @@ export class PaymentsService {
         throw new NotFoundException({
           error: 'ORDER_NOT_FOUND',
           message: 'Order not found',
+        });
+      }
+
+      // A per-delivery plan order is charged by the delivery billing service
+      // when an admin confirms the delivery. Paying it here would debit the
+      // wallet before the goods arrive, so this path is closed for it.
+      if (order.planSelection?.billingModel === 'PER_DELIVERY') {
+        throw new ConflictException({
+          error: 'ORDER_CHARGED_ON_DELIVERY',
+          message:
+            'This order is charged to your wallet automatically when it is delivered. No payment is needed now.',
         });
       }
 
@@ -1424,6 +1436,7 @@ export class PaymentsService {
         totalPaise: true,
         paymentStatus: true,
         orderNumber: true,
+        planSelection: { select: { billingModel: true } },
       },
     });
 
@@ -1431,6 +1444,16 @@ export class PaymentsService {
       throw new NotFoundException({
         error: 'ORDER_NOT_FOUND',
         message: 'Order not found',
+      });
+    }
+
+    // Same rule as payOrderFromWallet: a per-delivery plan order is charged
+    // only when it is delivered, never paid for in advance.
+    if (order.planSelection?.billingModel === 'PER_DELIVERY') {
+      throw new ConflictException({
+        error: 'ORDER_CHARGED_ON_DELIVERY',
+        message:
+          'This order is charged to your wallet automatically when it is delivered. No payment is needed now.',
       });
     }
 

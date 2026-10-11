@@ -222,6 +222,9 @@ enum PlanQuoteStatus {
 enum PlanSelectionStatus {
   CONFIRMED
   PENDING_PAYMENT
+  /// Purchased under per-delivery billing and waiting for an admin to approve
+  /// it and choose the first delivery date. No schedule or orders exist yet.
+  PENDING_APPROVAL
   ACTIVE
   /// Admin-approved suspension. Deliveries already materialised inside the
   /// pause window are SKIPPED, and no new ones are generated until a RESUME
@@ -229,6 +232,16 @@ enum PlanSelectionStatus {
   PAUSED
   COMPLETED
   CANCELLED
+}
+
+/// How a plan's deliveries are paid for.
+enum PlanBillingModel {
+  /// The whole plan was debited upfront at purchase. Marking one of its
+  /// deliveries delivered must never create a wallet debit.
+  PREPAID_LEGACY
+  /// Nothing is debited at purchase; each delivery is charged to the wallet
+  /// when an admin confirms it delivered.
+  PER_DELIVERY
 }
 
 /// Lifecycle of a single scheduled delivery within a plan selection.
@@ -330,6 +343,9 @@ model PlanSelection {
   quoteId     String
   planType    PlanType
   status      PlanSelectionStatus @default(CONFIRMED)
+  /// Defaults to PREPAID_LEGACY so every row that existed before per-delivery
+  /// billing keeps its upfront-paid meaning. New purchases set PER_DELIVERY.
+  billingModel PlanBillingModel   @default(PREPAID_LEGACY)
 
   // ── Mutable delivery-schedule configuration (Manage Delivery) ──────────
   // Seeded from the immutable quote snapshot at confirmation, then editable by
@@ -396,6 +412,8 @@ model PlanDelivery {
   occurrence     Int
   quantityLitres Int
   status         DeliveryStatus @default(SCHEDULED)
+  /// When an admin confirmed this delivery. Never the scheduled date.
+  deliveredAt    DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -447,17 +465,26 @@ model ManageDeliveryChangeRequest {
   adminId                  String?
   adminNote                String?
   reviewedAt               DateTime?
+  /// Set when a CHANGE_QUANTITY request targets one delivery's order. Null for
+  /// plan-wide requests.
+  orderId                  String?
+  /// Order total before the change, in INTEGER PAISE.
+  currentAmountPaise       Int?
+  /// Order total the requested quantity would produce, in INTEGER PAISE.
+  requestedAmountPaise     Int?
   createdAt                DateTime            @default(now())
   updatedAt                DateTime            @updatedAt
 
   user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   planSelection PlanSelection @relation(fields: [planSelectionId], references: [id], onDelete: Cascade)
   admin         Admin?        @relation(fields: [adminId], references: [id])
+  order         Order?        @relation(fields: [orderId], references: [id])
 
   @@index([userId])
   @@index([userId, status])
   @@index([planSelectionId])
   @@index([status])
+  @@index([orderId])
   @@map("manage_delivery_change_requests")
 }
 
@@ -485,6 +512,17 @@ enum PaymentStatus {
   FAILED
   REFUNDED
   PARTIALLY_REFUNDED
+}
+
+/// Per-delivery billing state of an order. Null on orders that are not billed
+/// per delivery (prepaid plans, standalone orders).
+enum OrderSettlementStatus {
+  /// Not delivered yet, so nothing is owed yet.
+  PENDING
+  /// Delivered and its charge was debited from the wallet (or was zero).
+  SETTLED
+  /// Delivered, but the wallet could not cover the charge. Awaiting settlement.
+  OUTSTANDING
 }
 
 model Order {
@@ -523,6 +561,16 @@ model Order {
   /// When an admin marked this order COMPLETED. Null for every other status.
   completedAt          DateTime?
 
+  // ── Per-delivery billing ──
+  /// When an admin confirmed the delivery. Separate from `deliveryDate` (the
+  /// scheduled day) and from the wallet debit time.
+  deliveredAt          DateTime?
+  settlementStatus     OrderSettlementStatus?
+  /// When the delivery charge was debited.
+  settledAt            DateTime?
+  /// The wallet ledger row that charged this delivery.
+  walletTransactionId  String?       @unique
+
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
@@ -534,6 +582,8 @@ model Order {
   items         OrderItem[]
   invoice       Invoice?
   payments      Payment[]
+  walletTransaction WalletTransaction? @relation(fields: [walletTransactionId], references: [id])
+  changeRequests    ManageDeliveryChangeRequest[]
 
   @@index([userId])
   @@index([userId, status])
@@ -541,6 +591,7 @@ model Order {
   @@index([status])
   @@index([orderNumber])
   @@index([createdAt])
+  @@index([settlementStatus])
   @@map("orders")
 }
 
@@ -687,6 +738,8 @@ model WalletTransaction {
 
   wallet            Wallet                           @relation(fields: [walletId], references: [id], onDelete: Cascade)
   creditRequest     WalletCreditRequest?             @relation(fields: [creditRequestId], references: [id])
+  /// The order this row charged for, when it is a per-delivery debit.
+  settledOrder      Order?
 
   @@unique([type, referenceType, referenceId])
   @@index([walletId, createdAt])

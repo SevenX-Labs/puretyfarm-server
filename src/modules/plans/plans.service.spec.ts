@@ -57,12 +57,24 @@ describe('PlansService', () => {
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      findFirst: jest.fn(),
     },
-    planDelivery: { createMany: jest.fn(), findMany: jest.fn() },
-    order: { findUnique: jest.fn(), count: jest.fn(), create: jest.fn() },
+    planDelivery: {
+      createMany: jest.fn(),
+      findMany: jest.fn(),
+      groupBy: jest.fn(),
+    },
+    order: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      create: jest.fn(),
+    },
     invoice: { count: jest.fn() },
     customerAddress: { findFirst: jest.fn() },
-    wallet: { findUnique: jest.fn() },
+    wallet: { findUnique: jest.fn(), findMany: jest.fn() },
+    walletTransaction: { groupBy: jest.fn() },
+    walletCreditRequest: { groupBy: jest.fn() },
     cashCollection: { create: jest.fn() },
     planQuote: {
       create: jest.fn(),
@@ -151,6 +163,13 @@ describe('PlansService', () => {
     setupConfigMock();
     // Default: no usages for any plan.
     mockPrisma.planSelection.count.mockResolvedValue(0);
+    // Default: no current plan and an unfunded customer with no wallet.
+    mockPrisma.planSelection.findFirst.mockResolvedValue(null);
+    mockPrisma.wallet.findMany.mockResolvedValue([]);
+    mockPrisma.walletTransaction.groupBy.mockResolvedValue([]);
+    mockPrisma.walletCreditRequest.groupBy.mockResolvedValue([]);
+    mockPrisma.planDelivery.groupBy.mockResolvedValue([]);
+    mockPrisma.order.findMany.mockResolvedValue([]);
     // Default: quote create echoes back with id.
     mockPrisma.planQuote.create.mockImplementation(({ data }: any) => ({
       id: 'quote-1',
@@ -1388,6 +1407,8 @@ describe('PlansService', () => {
           invoice: mockPrisma.invoice,
           customerAddress: mockPrisma.customerAddress,
           wallet: mockPrisma.wallet,
+          walletTransaction: mockPrisma.walletTransaction,
+          walletCreditRequest: mockPrisma.walletCreditRequest,
           cashCollection: mockPrisma.cashCollection,
           $executeRaw: mockPrisma.$executeRaw,
         });
@@ -1429,53 +1450,89 @@ describe('PlansService', () => {
       });
     });
 
-    it('confirms a valid pending quote via WALLET', async () => {
+    // ── Per-delivery billing: a purchase is an enrolment, not a payment ──
+
+    it.each([PlanPaymentMethod.WALLET, PlanPaymentMethod.CASH])(
+      'enrols via %s without debiting, scheduling or creating a cash collection',
+      async (paymentMethod) => {
+        const result = await service.confirmPlan(USER, {
+          quoteId: 'quote-1',
+          paymentMethod,
+        });
+
+        expect(result.selectionId).toBe('sel-1');
+        expect(result.status).toBe(PlanSelectionStatus.PENDING_APPROVAL);
+        expect(result.billingModel).toBe('PER_DELIVERY');
+        expect(result.paymentMethod).toBe(paymentMethod);
+        // Nothing is charged at purchase; the quoted total is informational.
+        expect(result.paidAmountPaise).toBe(0);
+        expect(result.expectedTotalPaise).toBe(300);
+        expect(result.cashCollectionId).toBeUndefined();
+
+        expect(mockPrisma.planSelection.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            status: PlanSelectionStatus.PENDING_APPROVAL,
+            billingModel: 'PER_DELIVERY',
+          }),
+        });
+        expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
+        expect(mockPrisma.cashCollection.create).not.toHaveBeenCalled();
+        // No schedule and no orders until an admin approves.
+        expect(mockPrisma.planDelivery.createMany).not.toHaveBeenCalled();
+        expect(mockPrisma.order.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it('enrols even when the wallet is empty, and reports funding as not confirmed', async () => {
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { id: 'w-1', userId: USER, balancePaise: 0 },
+      ]);
+      mockPrisma.walletCreditRequest.groupBy.mockResolvedValue([
+        { walletId: 'w-1', _count: { _all: 1 }, _sum: { amountPaise: 200000 } },
+      ]);
+
       const result = await service.confirmPlan(USER, {
         quoteId: 'quote-1',
         paymentMethod: PlanPaymentMethod.WALLET,
       });
-      expect(result.selectionId).toBe('sel-1');
-      expect(result.quoteId).toBe('quote-1');
-      expect(result.plan).toBe(PlanType.BUY_ONCE);
-      expect(result.status).toBe(PlanSelectionStatus.CONFIRMED);
-      expect(result.paymentMethod).toBe(PlanPaymentMethod.WALLET);
-      expect(result.paidAmountPaise).toBe(300);
-    });
 
-    it('confirms a valid pending quote via CASH (creates CashCollection, stays PENDING_PAYMENT)', async () => {
-      mockPrisma.cashCollection.create.mockResolvedValue({ id: 'cc-1' });
-      const result = await service.confirmPlan(USER, {
-        quoteId: 'quote-1',
-        paymentMethod: PlanPaymentMethod.CASH,
+      expect(result.status).toBe(PlanSelectionStatus.PENDING_APPROVAL);
+      expect(result.funding).toEqual({
+        status: 'PENDING_APPROVAL',
+        walletBalancePaise: 0,
+        hasCompletedCredit: false,
+        pendingCreditCount: 1,
+        pendingCreditPaise: 200000,
       });
-      expect(result.selectionId).toBe('sel-1');
-      expect(result.status).toBe(PlanSelectionStatus.PENDING_PAYMENT);
-      expect(result.paymentMethod).toBe(PlanPaymentMethod.CASH);
-      expect(result.cashCollectionId).toBe('cc-1');
       expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
     });
 
-    it('throws INSUFFICIENT_WALLET_BALANCE when wallet balance is too low', async () => {
-      mockPrisma.wallet.findUnique.mockResolvedValue({
-        userId: USER,
-        balancePaise: 100,
+    it('leaves a funded wallet balance untouched at purchase', async () => {
+      mockPrisma.wallet.findMany.mockResolvedValue([
+        { id: 'w-1', userId: USER, balancePaise: 200000 },
+      ]);
+      mockPrisma.walletTransaction.groupBy.mockResolvedValue([
+        { walletId: 'w-1', _count: { _all: 1 } },
+      ]);
+
+      const result = await service.confirmPlan(USER, {
+        quoteId: 'quote-1',
+        paymentMethod: PlanPaymentMethod.WALLET,
       });
-      mockPrisma.planSelection.delete.mockResolvedValue({});
-      try {
-        await service.confirmPlan(USER, {
+
+      expect(result.funding?.status).toBe('CONFIRMED');
+      expect(result.funding?.walletBalancePaise).toBe(200000);
+      expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
+    });
+
+    it('rejects the purchase when the quote was confirmed by a concurrent request', async () => {
+      mockPrisma.planQuote.updateMany.mockResolvedValue({ count: 0 });
+      await expect(
+        service.confirmPlan(USER, {
           quoteId: 'quote-1',
           paymentMethod: PlanPaymentMethod.WALLET,
-        });
-        fail('Expected BadRequestException');
-      } catch (err: any) {
-        expect(err).toBeInstanceOf(BadRequestException);
-        const response = err.getResponse();
-        expect(response.error).toBe('INSUFFICIENT_WALLET_BALANCE');
-        expect(response.currentBalancePaise).toBe(100);
-        expect(response.requiredPaise).toBe(300);
-        expect(response.shortfallPaise).toBe(200);
-      }
-      expect(mockPrisma.planSelection.delete).toHaveBeenCalled();
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('throws NotFound when quote does not exist', async () => {
@@ -1620,7 +1677,7 @@ describe('PlansService', () => {
       });
     });
 
-    it('materialises delivery rows and seeds the live schedule for a MONTHLY plan', async () => {
+    it('seeds the schedule configuration for a MONTHLY plan but creates no deliveries until approval', async () => {
       const start = new Date(2026, 0, 1);
       const end = new Date(2026, 0, 5);
       mockPrisma.planQuote.findUnique.mockResolvedValue({
@@ -1639,11 +1696,20 @@ describe('PlansService', () => {
         quoteId: 'quote-1',
         paymentMethod: PlanPaymentMethod.WALLET,
       });
-      expect(mockPrisma.planDelivery.createMany).toHaveBeenCalledTimes(1);
-      const rows = mockPrisma.planDelivery.createMany.mock.calls[0][0].data;
-      expect(rows).toHaveLength(5); // Jan 1..5
-      expect(rows.every((r: any) => r.quantityLitres === 2)).toBe(true);
-      expect(rows[0].occurrence).toBe(1);
+      // The cadence and quantity are carried onto the selection so the admin
+      // can schedule it; the delivery rows and orders are generated only when
+      // the plan is approved with a first delivery date.
+      expect(mockPrisma.planSelection.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          planType: PlanType.MONTHLY,
+          frequency: DeliveryFrequency.DAILY,
+          quantityMode: QuantityMode.FIXED,
+          quantity: 2,
+          status: PlanSelectionStatus.PENDING_APPROVAL,
+        }),
+      });
+      expect(mockPrisma.planDelivery.createMany).not.toHaveBeenCalled();
+      expect(mockPrisma.order.create).not.toHaveBeenCalled();
     });
 
     it('quoting does NOT mark Trial or Buy Once as used', async () => {

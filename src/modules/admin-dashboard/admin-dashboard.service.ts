@@ -211,16 +211,42 @@ export class AdminDashboardService {
   // for paid plan selections (avoids double-counting with prepaid orders).
   // For BUY_ONCE orders without a plan selection, use order.totalPaise.
 
-  private async getSalesMetrics(period: DateRange) {
-    const planSalesGroups = await this.prisma.planSelection.groupBy({
+  // Per-delivery plans are never paid as a whole (`paidAmountPaise` stays
+  // null), so their sales are the delivery charges actually debited: orders
+  // whose settlement is SETTLED, dated by when they were settled. Prepaid plans
+  // never have a SETTLED order, so the two sources cannot overlap.
+  private async getDeliveryChargeSales(period: DateRange) {
+    const groups = await this.prisma.order.groupBy({
       by: ['planType'],
       where: {
-        paidAt: { gte: period.from, lte: period.to },
-        status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
-        paidAmountPaise: { not: null },
+        settlementStatus: 'SETTLED',
+        settledAt: { gte: period.from, lte: period.to },
       },
-      _sum: { paidAmountPaise: true },
+      _sum: { totalPaise: true },
     });
+    const byType: Record<string, number> = {};
+    let totalPaise = 0;
+    for (const g of groups) {
+      const amount = g._sum.totalPaise || 0;
+      byType[g.planType] = amount;
+      totalPaise += amount;
+    }
+    return { totalPaise, byType };
+  }
+
+  private async getSalesMetrics(period: DateRange) {
+    const [planSalesGroups, deliverySales] = await Promise.all([
+      this.prisma.planSelection.groupBy({
+        by: ['planType'],
+        where: {
+          paidAt: { gte: period.from, lte: period.to },
+          status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
+          paidAmountPaise: { not: null },
+        },
+        _sum: { paidAmountPaise: true },
+      }),
+      this.getDeliveryChargeSales(period),
+    ]);
 
     let buyOncePaise = 0;
     let trialPaise = 0;
@@ -241,21 +267,28 @@ export class AdminDashboardService {
       }
     }
 
+    buyOncePaise += deliverySales.byType['BUY_ONCE'] || 0;
+    trialPaise += deliverySales.byType['SEVEN_DAY_TRIAL'] || 0;
+    monthlyPaise += deliverySales.byType['MONTHLY'] || 0;
+
     const totalPaise = buyOncePaise + trialPaise + monthlyPaise;
 
     return { totalPaise, buyOncePaise, trialPaise, monthlyPaise };
   }
 
   private async getSalesTotalPaise(period: DateRange): Promise<number> {
-    const result = await this.prisma.planSelection.aggregate({
-      where: {
-        paidAt: { gte: period.from, lte: period.to },
-        status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
-        paidAmountPaise: { not: null },
-      },
-      _sum: { paidAmountPaise: true },
-    });
-    return result._sum.paidAmountPaise || 0;
+    const [result, deliverySales] = await Promise.all([
+      this.prisma.planSelection.aggregate({
+        where: {
+          paidAt: { gte: period.from, lte: period.to },
+          status: { notIn: ['CANCELLED', 'PENDING_PAYMENT'] },
+          paidAmountPaise: { not: null },
+        },
+        _sum: { paidAmountPaise: true },
+      }),
+      this.getDeliveryChargeSales(period),
+    ]);
+    return (result._sum.paidAmountPaise || 0) + deliverySales.totalPaise;
   }
 
   // ── Revenue Metrics ──
@@ -509,7 +542,7 @@ export class AdminDashboardService {
   // grossProfitPaise = salesPaise - deliveryCostPaise (contribution margin only).
 
   private async getProfitMetrics(period: DateRange) {
-    const [salesResult, deliveryCostResult] = await Promise.all([
+    const [salesResult, deliveryCostResult, deliverySales] = await Promise.all([
       this.prisma.planSelection.aggregate({
         where: {
           paidAt: { gte: period.from, lte: period.to },
@@ -525,9 +558,11 @@ export class AdminDashboardService {
         },
         _sum: { deliveryFeePaise: true },
       }),
+      this.getDeliveryChargeSales(period),
     ]);
 
-    const salesPaise = salesResult._sum.paidAmountPaise || 0;
+    const salesPaise =
+      (salesResult._sum.paidAmountPaise || 0) + deliverySales.totalPaise;
     const deliveryCostPaise = deliveryCostResult._sum.deliveryFeePaise || 0;
     const productCostPaise = 0;
 
@@ -548,7 +583,7 @@ export class AdminDashboardService {
   }
 
   private async getGrossProfitPaise(period: DateRange): Promise<number> {
-    const [salesResult, deliveryCostResult] = await Promise.all([
+    const [salesResult, deliveryCostResult, deliverySales] = await Promise.all([
       this.prisma.planSelection.aggregate({
         where: {
           paidAt: { gte: period.from, lte: period.to },
@@ -564,9 +599,11 @@ export class AdminDashboardService {
         },
         _sum: { deliveryFeePaise: true },
       }),
+      this.getDeliveryChargeSales(period),
     ]);
     return (
-      (salesResult._sum.paidAmountPaise || 0) -
+      (salesResult._sum.paidAmountPaise || 0) +
+      deliverySales.totalPaise -
       (deliveryCostResult._sum.deliveryFeePaise || 0)
     );
   }
@@ -622,6 +659,7 @@ export class AdminDashboardService {
       profitDeliveryCostByDay,
       ordersByDay,
       deliveriesByDay,
+      deliverySalesByDay,
     ] = await Promise.all([
       this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
           SELECT DATE("paidAt") AS day, SUM("paidAmountPaise")::bigint AS total
@@ -659,8 +697,17 @@ export class AdminDashboardService {
             AND status = 'DELIVERED'
           GROUP BY "deliveryDate"
         `,
+      // Per-delivery plan sales: settled delivery charges, by settlement day.
+      this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
+          SELECT DATE("settledAt") AS day, SUM("totalPaise")::bigint AS total
+          FROM orders
+          WHERE "settlementStatus" = 'SETTLED'
+            AND "settledAt" >= ${period.from} AND "settledAt" <= ${period.to}
+          GROUP BY DATE("settledAt")
+        `,
     ]);
 
+    const deliverySalesMap = this.toDayMap(deliverySalesByDay, 'total');
     const salesMap = this.toDayMap(salesByDay, 'total');
     const orderRevenueMap = this.toDayMap(orderRevenueByDay, 'total');
     const deliveryCostMap = this.toDayMap(profitDeliveryCostByDay, 'total');
@@ -668,12 +715,15 @@ export class AdminDashboardService {
     const deliveriesMap = this.toDayMap(deliveriesByDay, 'count');
 
     const daily = days.map((date) => {
-      const salesPaise = salesMap[date] || 0;
+      const planSalesPaise = salesMap[date] || 0;
+      const salesPaise = planSalesPaise + (deliverySalesMap[date] || 0);
       const deliveryCost = deliveryCostMap[date] || 0;
       return {
         date,
         salesPaise,
-        revenueCollectedPaise: salesPaise + (orderRevenueMap[date] || 0),
+        // Delivery charges are wallet ORDER debits, so they are already inside
+        // `orderRevenueMap`; only prepaid plan sales are added to it here.
+        revenueCollectedPaise: planSalesPaise + (orderRevenueMap[date] || 0),
         grossProfitPaise: salesPaise - deliveryCost,
         orders: ordersMap[date] || 0,
         deliveries: deliveriesMap[date] || 0,

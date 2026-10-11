@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Post,
   Body,
   Param,
   Query,
@@ -13,6 +14,8 @@ import {
 import { OrdersService } from './orders.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { AdminListOrdersQueryDto } from './dto/admin/list-orders-query.dto';
 import { UpdateOrderStatusDto } from './dto/admin/update-order-status.dto';
 import { BulkUpdateOrderStatusDto } from './dto/admin/bulk-update-order-status.dto';
@@ -37,8 +40,11 @@ export class AdminOrdersController {
    */
   @Patch('bulk/status')
   @HttpCode(HttpStatus.OK)
-  async bulkUpdateStatus(@Body() dto: BulkUpdateOrderStatusDto) {
-    return this.ordersService.bulkUpdateOrderStatus(dto);
+  async bulkUpdateStatus(
+    @CurrentUser() admin: JwtPayload,
+    @Body() dto: BulkUpdateOrderStatusDto,
+  ) {
+    return this.ordersService.bulkUpdateOrderStatus(dto, admin.sub);
   }
 
   /**
@@ -48,8 +54,11 @@ export class AdminOrdersController {
    */
   @Patch('bulk/quantity')
   @HttpCode(HttpStatus.OK)
-  async bulkUpdateQuantity(@Body() dto: BulkUpdateOrderQuantityDto) {
-    return this.ordersService.bulkUpdateOrderQuantity(dto);
+  async bulkUpdateQuantity(
+    @CurrentUser() admin: JwtPayload,
+    @Body() dto: BulkUpdateOrderQuantityDto,
+  ) {
+    return this.ordersService.bulkUpdateOrderQuantity(dto, admin.sub);
   }
 
   @Get(':id')
@@ -61,10 +70,24 @@ export class AdminOrdersController {
   @Patch(':id/status')
   @HttpCode(HttpStatus.OK)
   async updateStatus(
+    @CurrentUser() admin: JwtPayload,
     @Param('id') id: string,
     @Body() dto: UpdateOrderStatusDto,
   ) {
-    return this.ordersService.updateOrderStatus(id, dto);
+    return this.ordersService.updateOrderStatus(id, dto, admin.sub);
+  }
+
+  /**
+   * Retries the wallet charge for a delivered order whose delivery charge is
+   * outstanding. Takes no body: the amount comes from the persisted order.
+   */
+  @Post(':orderId/settle')
+  @HttpCode(HttpStatus.OK)
+  async settleOrder(
+    @CurrentUser() admin: JwtPayload,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+  ) {
+    return this.ordersService.settleOutstandingOrder(orderId, admin.sub);
   }
 
   /**

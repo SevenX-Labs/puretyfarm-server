@@ -6,6 +6,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ManageDeliveryService } from './manage-delivery.service';
 import { PlansService } from '../plans/plans.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DeliveryBillingService } from '../orders/delivery-billing.service';
 import {
   BadRequestException,
   NotFoundException,
@@ -72,6 +73,10 @@ describe('ManageDeliveryService', () => {
   // unit tests do not reach into real pricing logic.
   const mockPlansService: any = {
     materializeOrdersForSchedule: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockDeliveryBilling: any = {
+    applyOrderQuantityChange: jest.fn(),
   };
 
   // A price snapshot read back from an existing order of the subscription.
@@ -160,6 +165,7 @@ describe('ManageDeliveryService', () => {
         ManageDeliveryService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: PlansService, useValue: mockPlansService },
+        { provide: DeliveryBillingService, useValue: mockDeliveryBilling },
       ],
     }).compile();
     service = module.get(ManageDeliveryService);
@@ -626,10 +632,11 @@ describe('ManageDeliveryService', () => {
       reviewedAt: expect.any(Date),
     };
 
-    it('blocks CHANGE_QUANTITY approval and leaves the plan untouched', async () => {
-      // Quantity-change approval is temporarily disabled pending a prepaid-plan
-      // billing/refund/settlement policy. Approval must throw (rolling the
-      // transaction back so the request stays PENDING) and apply nothing.
+    it('refuses CHANGE_QUANTITY approval for a prepaid plan and leaves it untouched', async () => {
+      // A prepaid (legacy) plan's deliveries are already paid against fixed
+      // snapshots, so there is nothing a quantity change could bill. Approval
+      // must throw — rolling the transaction back so the request stays PENDING
+      // — with a 409 rather than the old 501.
       mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
         count: 1,
       });
@@ -638,13 +645,130 @@ describe('ManageDeliveryService', () => {
       );
 
       await expect(service.approveRequest(ADMIN, 'req-1')).rejects.toThrow(
-        NotImplementedException,
+        ConflictException,
       );
 
-      // The active quantity and the delivery schedule are left exactly as they
-      // were — nothing was written.
+      expect(mockDeliveryBilling.applyOrderQuantityChange).not.toHaveBeenCalled();
       expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
       expect(mockPrisma.planDelivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    describe('CHANGE_QUANTITY on a per-delivery plan', () => {
+      const perDeliverySelection = {
+        ...monthlySelection,
+        billingModel: 'PER_DELIVERY',
+      };
+      const orderRequest = {
+        ...pendingRequest,
+        orderId: 'order-1',
+        currentConfiguration: { quantity: 2 },
+        requestedConfiguration: { quantity: 3 },
+      };
+
+      beforeEach(() => {
+        mockPrisma.planSelection.findUnique.mockResolvedValue(
+          perDeliverySelection,
+        );
+        mockPrisma.manageDeliveryChangeRequest.updateMany.mockResolvedValue({
+          count: 1,
+        });
+      });
+
+      it('applies a single-delivery request through the billing service with a balance check', async () => {
+        mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(
+          orderRequest,
+        );
+        mockDeliveryBilling.applyOrderQuantityChange.mockResolvedValue({
+          orderNumber: 'PF1',
+          oldQuantity: 2,
+          newQuantity: 3,
+          oldTotalPaise: 16000,
+          newTotalPaise: 24000,
+          changed: true,
+        });
+
+        const res = await service.approveRequest(ADMIN, 'req-1');
+
+        expect(res.success).toBe(true);
+        expect(mockDeliveryBilling.applyOrderQuantityChange).toHaveBeenCalledTimes(1);
+        expect(mockDeliveryBilling.applyOrderQuantityChange).toHaveBeenCalledWith(
+          expect.anything(),
+          'order-1',
+          3,
+          { checkBalance: true },
+        );
+        // The amounts actually applied are stored on the request for audit.
+        expect(mockPrisma.manageDeliveryChangeRequest.update).toHaveBeenCalledWith({
+          where: { id: 'req-1' },
+          data: { currentAmountPaise: 16000, requestedAmountPaise: 24000 },
+        });
+        // A single-delivery change never rewrites the plan's standing quantity.
+        expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
+      });
+
+      it('propagates an insufficient-balance refusal so the request stays PENDING', async () => {
+        mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue(
+          orderRequest,
+        );
+        mockDeliveryBilling.applyOrderQuantityChange.mockRejectedValue(
+          new BadRequestException({
+            error: 'INSUFFICIENT_WALLET_BALANCE',
+            message: 'short',
+            shortfallPaise: 4000,
+          }),
+        );
+
+        // The mocked $transaction runs the callback inline; a rejection here is
+        // what makes the real transaction roll the APPROVED claim back.
+        await expect(service.approveRequest(ADMIN, 'req-1')).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(mockPrisma.planSelection.update).not.toHaveBeenCalled();
+      });
+
+      it('applies a plan-wide request to every changeable upcoming order, checking the balance once', async () => {
+        mockPrisma.manageDeliveryChangeRequest.findUnique.mockResolvedValue({
+          ...pendingRequest,
+          requestedConfiguration: { quantity: 3 },
+        });
+        mockPrisma.planDelivery.findMany.mockResolvedValue([
+          { id: 'd1', order: { id: 'o1', status: 'CONFIRMED', orderNumber: 'PF1' } },
+          { id: 'd2', order: { id: 'o2', status: 'CONFIRMED', orderNumber: 'PF2' } },
+          { id: 'd3', order: { id: 'o3', status: 'OUT_FOR_DELIVERY', orderNumber: 'PF3' } },
+          { id: 'd4', order: null },
+        ]);
+        mockPrisma.planDelivery.update = jest.fn().mockResolvedValue({});
+        mockDeliveryBilling.applyOrderQuantityChange.mockResolvedValue({
+          changed: true,
+        });
+
+        const res = await service.approveRequest(ADMIN, 'req-1');
+
+        expect(mockDeliveryBilling.applyOrderQuantityChange.mock.calls.map(
+          (c: any[]) => [c[1], c[2], c[3]],
+        )).toEqual([
+          ['o1', 3, { checkBalance: true }],
+          ['o2', 3, { checkBalance: false }],
+        ]);
+        // The dispatched order keeps its quantity and the admin is told.
+        expect(res.warnings).toEqual([
+          'Order PF3 is already OUT_FOR_DELIVERY and kept its quantity.',
+        ]);
+        // A delivery with no order yet just takes the new quantity.
+        expect(mockPrisma.planDelivery.update).toHaveBeenCalledWith({
+          where: { id: 'd4' },
+          data: { quantityLitres: 3 },
+        });
+        expect(mockPrisma.planSelection.update).toHaveBeenCalledWith({
+          where: { id: 'sel-1' },
+          data: {
+            quantityMode: QuantityMode.FIXED,
+            quantity: 3,
+            quantityA: null,
+            quantityB: null,
+          },
+        });
+      });
     });
 
     it('blocks CHANGE_PLAN approval and leaves the plan untouched', async () => {

@@ -34,11 +34,21 @@ export enum PlanQuoteStatus {
 export enum PlanSelectionStatus {
   CONFIRMED = 'CONFIRMED',
   PENDING_PAYMENT = 'PENDING_PAYMENT',
+  /** Purchased under per-delivery billing; awaiting admin approval + start date. */
+  PENDING_APPROVAL = 'PENDING_APPROVAL',
   ACTIVE = 'ACTIVE',
   /** Admin-approved suspension. Non-terminal; a RESUME approval reactivates. */
   PAUSED = 'PAUSED',
   COMPLETED = 'COMPLETED',
   CANCELLED = 'CANCELLED',
+}
+
+/** How a plan's deliveries are paid for (mirrors the Prisma enum). */
+export enum PlanBillingModel {
+  /** Debited in full at purchase. Never charged again per delivery. */
+  PREPAID_LEGACY = 'PREPAID_LEGACY',
+  /** Nothing debited at purchase; each delivery is charged when delivered. */
+  PER_DELIVERY = 'PER_DELIVERY',
 }
 
 /** Lifecycle of a single scheduled delivery (mirrors the Prisma enum). */

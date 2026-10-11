@@ -169,10 +169,16 @@ describe('Admin plan configuration -> customer plans (HTTP integration)', () => 
         const idx = db.selections.findIndex((s) => s.id === where.id);
         if (idx >= 0) db.selections.splice(idx, 1);
       },
+      // The plans overview looks up the customer's current plan; these tests
+      // are about availability, so there is none.
+      findFirst: async () => null,
     },
     wallet: {
       findUnique: async () => ({ balancePaise: 999_999_999 }),
+      findMany: async () => [],
     },
+    walletTransaction: { groupBy: async () => [] },
+    walletCreditRequest: { groupBy: async () => [] },
     cashCollection: {
       create: async ({ data }: any) => ({ id: randomUUID(), ...data }),
     },

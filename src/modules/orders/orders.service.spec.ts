@@ -5,6 +5,8 @@ jest.mock('@nestjs/config', () => ({
 import { Test, TestingModule } from '@nestjs/testing';
 import { OrdersService } from './orders.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DeliveryBillingService } from './delivery-billing.service';
+import { WalletService } from '../wallet/wallet.service';
 import {
   BadRequestException,
   NotFoundException,
@@ -191,12 +193,19 @@ describe('OrdersService', () => {
     walletTransaction: { create: jest.fn() },
     payment: { update: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
     cashCollection: { update: jest.fn(), updateMany: jest.fn() },
+    manageDeliveryChangeRequest: { create: jest.fn() },
+    $queryRaw: jest.fn(),
     $transaction: jest.fn(),
+  };
+
+  const mockWalletService: any = {
+    debitWalletWithin: jest.fn(),
   };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     mockPrisma.order.count.mockResolvedValue(0);
+    mockPrisma.$queryRaw.mockResolvedValue([]);
     mockPrisma.invoice.count.mockResolvedValue(0);
     mockPrisma.planConfig.findUnique.mockResolvedValue(planConfig);
     mockPrisma.planSelection.findFirst.mockResolvedValue(selection);
@@ -212,7 +221,11 @@ describe('OrdersService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrdersService,
+        // The real billing service, so status changes are exercised end to end
+        // against the mocked Prisma client; only the wallet is stubbed.
+        DeliveryBillingService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: WalletService, useValue: mockWalletService },
       ],
     }).compile();
     service = module.get(OrdersService);

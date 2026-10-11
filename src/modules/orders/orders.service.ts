@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   OrderStatus,
   PaymentStatus,
+  OrderSettlementStatus,
   ALLOWED_STATUS_TRANSITIONS,
   REORDER_ELIGIBLE_STATUSES,
   COMPLETION_ELIGIBLE_STATUSES,
@@ -21,9 +22,16 @@ import {
   PlanType,
   DeliveryStatus,
   PlanSelectionStatus,
+  PlanBillingModel,
+  ChangeRequestType,
+  ChangeRequestStatus,
   QUANTITY_MIN,
   QUANTITY_MAX,
 } from '../plans/plans.constants';
+import {
+  DeliveryBillingService,
+  SettlementResult,
+} from './delivery-billing.service';
 import { CreateOrderDto } from './dto/customer/create-order.dto';
 import { ReorderDto } from './dto/customer/reorder.dto';
 import { CustomerListOrdersQueryDto } from './dto/customer/list-orders-query.dto';
@@ -42,7 +50,10 @@ const ACTIVE_STATUSES = [
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly deliveryBilling: DeliveryBillingService,
+  ) {}
 
   // ══════════════════════════════════════════════════════════════════
   //  ORDER NUMBER GENERATION
@@ -128,10 +139,17 @@ export class OrdersService {
         throw new BadRequestException('No active plan found for this delivery');
       }
 
+      // Per-delivery plan: the order is charged when it is delivered, so it
+      // starts unpaid and unsettled, with no invoice yet.
+      const isPerDelivery =
+        selection.billingModel === PlanBillingModel.PER_DELIVERY;
+
       // Prepaid plan: the plan payment covers all deliveries, so the order
       // is born PAID. The customer is never charged again for this delivery.
       const isPrepaid =
-        selection.paidAmountPaise != null && selection.paidAmountPaise > 0;
+        !isPerDelivery &&
+        selection.paidAmountPaise != null &&
+        selection.paidAmountPaise > 0;
 
       // 4. Get the PlanConfig for pricing & delivery config.
       const config = await tx.planConfig.findUnique({
@@ -170,6 +188,9 @@ export class OrdersService {
           planType: selection.planType,
           status: OrderStatus.CONFIRMED,
           paymentStatus: isPrepaid ? PaymentStatus.PAID : PaymentStatus.PENDING,
+          ...(isPerDelivery
+            ? { settlementStatus: OrderSettlementStatus.PENDING }
+            : {}),
           subtotalPaise,
           discountPaise: itemDiscount > 0 ? itemDiscount : 0,
           taxPaise: 0,
@@ -197,7 +218,15 @@ export class OrdersService {
         include: { items: true },
       });
 
-      // 9. Create the invoice.
+      // 9. Create the invoice. A per-delivery order is invoiced when its
+      //    delivery is settled, not before.
+      if (isPerDelivery) {
+        return {
+          success: true,
+          message: 'Order created successfully.',
+          order: this.formatOrderResponse(order, order.items, null),
+        };
+      }
       const invoiceNumber = await this.generateInvoiceNumber();
       const invoice = await tx.invoice.create({
         data: {
@@ -259,7 +288,12 @@ export class OrdersService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
-        include: { items: true, invoice: true },
+        include: {
+          items: true,
+          invoice: true,
+          planDelivery: true,
+          planSelection: { select: { billingModel: true } },
+        },
       }),
       this.prisma.order.count({ where }),
     ]);
@@ -277,7 +311,12 @@ export class OrdersService {
   async getCustomerOrder(userId: string, orderId: string) {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, userId },
-      include: { items: true, invoice: true },
+      include: {
+        items: true,
+        invoice: true,
+        planDelivery: true,
+        planSelection: { select: { billingModel: true } },
+      },
     });
     if (!order) throw new NotFoundException('Order not found');
     return this.formatOrderResponse(order, order.items, order.invoice);
@@ -500,12 +539,14 @@ export class OrdersService {
           items: true,
           invoice: true,
           planDelivery: true,
+          planSelection: { select: { billingModel: true } },
           user: {
             select: {
               id: true,
               mobile: true,
               email: true,
               customerProfile: { select: { firstName: true, lastName: true } },
+              wallet: { select: { balancePaise: true } },
             },
           },
         },
@@ -523,6 +564,7 @@ export class OrdersService {
           name: o.user.customerProfile
             ? `${o.user.customerProfile.firstName} ${o.user.customerProfile.lastName}`
             : null,
+          walletBalancePaise: o.user.wallet?.balancePaise ?? 0,
         },
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
@@ -539,12 +581,15 @@ export class OrdersService {
       include: {
         items: true,
         invoice: true,
+        planDelivery: true,
+        planSelection: { select: { billingModel: true } },
         user: {
           select: {
             id: true,
             mobile: true,
             email: true,
             customerProfile: { select: { firstName: true, lastName: true } },
+            wallet: { select: { balancePaise: true } },
           },
         },
       },
@@ -557,6 +602,7 @@ export class OrdersService {
         id: order.user.id,
         mobile: order.user.mobile,
         email: order.user.email,
+        walletBalancePaise: order.user.wallet?.balancePaise ?? 0,
         name: order.user.customerProfile
           ? `${order.user.customerProfile.firstName} ${order.user.customerProfile.lastName}`
           : null,
@@ -568,13 +614,24 @@ export class OrdersService {
   //  ADMIN — UPDATE STATUS
   // ══════════════════════════════════════════════════════════════════
 
-  async updateOrderStatus(orderId: string, dto: UpdateOrderStatusDto) {
+  async updateOrderStatus(
+    orderId: string,
+    dto: UpdateOrderStatusDto,
+    adminId: string | null = null,
+  ) {
     // COMPLETED carries eligibility rules of its own (the delivery behind the
     // order must actually have fallen due and not been skipped). Routing it
     // through the dedicated path means the generic status endpoint cannot be
     // used to sidestep those rules.
     if (dto.status === OrderStatus.COMPLETED) {
       return this.completeOrder(orderId);
+    }
+
+    // DELIVERED is the one status that moves money, so it has exactly one
+    // implementation: the delivery billing service. Nothing below this branch
+    // can mark an order delivered.
+    if (dto.status === OrderStatus.DELIVERED) {
+      return this.markDelivered(orderId, adminId);
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -611,7 +668,9 @@ export class OrdersService {
       // it as proof of delivery would let one click fabricate a delivery
       // record.
       let deliverySynced = false;
-      if (dto.status === OrderStatus.DELIVERED && order.planDeliveryId) {
+      // Unreachable for DELIVERED (handled above); kept so the generic path
+      // stays self-consistent if a caller is ever added below it.
+      if ((dto.status as string) === 'DELIVERED' && order.planDeliveryId) {
         // Scoped to this order's own delivery, and guarded on SCHEDULED so a
         // delivery the customer already SKIPPED is never rewritten as
         // DELIVERED, and a repeat call is a no-op. `updatedAt` moves; nothing
@@ -660,19 +719,171 @@ export class OrdersService {
   }
 
   // ══════════════════════════════════════════════════════════════════
+  //  ADMIN — MARK DELIVERED / SETTLE (single order)
+  // ══════════════════════════════════════════════════════════════════
+
+  /** Shapes a settlement result for API responses. */
+  private formatSettlement(result: SettlementResult) {
+    return {
+      outcome: result.outcome,
+      customerId: result.customerId,
+      orderNumber: result.orderNumber,
+      scheduledDate: result.scheduledDate,
+      deliveredAt: result.deliveredAt,
+      settledAt: result.settledAt,
+      requiredPaise: result.requiredPaise,
+      availableBalancePaise: result.availableBalancePaise,
+      balanceAfterPaise: result.balanceAfterPaise,
+      shortfallPaise: result.shortfallPaise,
+      walletTransactionId: result.walletTransactionId,
+    };
+  }
+
+  private async loadAdminOrderResponse(orderId: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: true,
+        invoice: true,
+        planDelivery: true,
+        planSelection: { select: { billingModel: true } },
+      },
+    });
+    return this.formatOrderResponse(order, order!.items, order!.invoice);
+  }
+
+  /**
+   * Marks one order delivered through the delivery billing service. Keeps the
+   * status endpoint's existing error conventions: an order that cannot move to
+   * DELIVERED is a 400, exactly as before.
+   */
+  private async markDelivered(orderId: string, adminId: string | null) {
+    const result = await this.deliveryBilling.settleDelivery(orderId, adminId);
+
+    if (
+      result.outcome === 'ALREADY_DELIVERED' ||
+      result.outcome === 'NOT_ELIGIBLE'
+    ) {
+      throw new BadRequestException(
+        result.outcome === 'ALREADY_DELIVERED'
+          ? `Cannot transition from ${OrderStatus.DELIVERED} to ${OrderStatus.DELIVERED}`
+          : result.message,
+      );
+    }
+
+    return {
+      success: true,
+      message:
+        result.outcome === 'INSUFFICIENT_BALANCE'
+          ? result.message
+          : `Order status updated to ${OrderStatus.DELIVERED}.`,
+      deliverySynced: true,
+      settlement: this.formatSettlement(result),
+      order: await this.loadAdminOrderResponse(orderId),
+    };
+  }
+
+  /**
+   * Retries the wallet charge for a delivered order whose settlement is
+   * outstanding. Uses the same billing function as marking delivered, so it
+   * can never charge an order twice.
+   */
+  async settleOutstandingOrder(orderId: string, adminId: string | null) {
+    const existing = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { settlementStatus: true, orderNumber: true },
+    });
+    if (!existing) throw new NotFoundException('Order not found');
+    if (existing.settlementStatus !== OrderSettlementStatus.OUTSTANDING) {
+      throw new ConflictException({
+        error: 'ORDER_NOT_OUTSTANDING',
+        message: `Order ${existing.orderNumber} has no outstanding delivery charge.`,
+      });
+    }
+
+    const result = await this.deliveryBilling.settleDelivery(orderId, adminId);
+    if (result.outcome === 'ALREADY_DELIVERED') {
+      throw new ConflictException({
+        error: 'ORDER_NOT_OUTSTANDING',
+        message: `Order ${existing.orderNumber} has no outstanding delivery charge.`,
+      });
+    }
+    if (result.outcome === 'INSUFFICIENT_BALANCE') {
+      throw new BadRequestException({
+        error: 'INSUFFICIENT_WALLET_BALANCE',
+        message: result.message,
+        ...this.formatSettlement(result),
+      });
+    }
+
+    return {
+      success: true,
+      message: 'Outstanding delivery charge settled.',
+      settlement: this.formatSettlement(result),
+      order: await this.loadAdminOrderResponse(orderId),
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
   //  ADMIN — BULK UPDATE ORDER STATUS (e.g. MARK AS DELIVERED)
   // ══════════════════════════════════════════════════════════════════
 
-  async bulkUpdateOrderStatus(dto: BulkUpdateOrderStatusDto) {
+  async bulkUpdateOrderStatus(
+    dto: BulkUpdateOrderStatusDto,
+    adminId: string | null = null,
+  ) {
     const results: Array<{
       orderId: string;
       orderNumber: string;
       success: boolean;
       status?: OrderStatus;
       reason?: string;
+      /** Per-order billing outcome. Present for DELIVERED requests. */
+      outcome?: string;
+      customerId?: string;
+      requiredPaise?: number | null;
+      availableBalancePaise?: number | null;
+      shortfallPaise?: number | null;
     }> = [];
 
     for (const orderId of dto.orderIds) {
+      // Marking delivered: one transaction per order through the same billing
+      // function the single-order endpoint uses, so a failure on one order
+      // never rolls back another and the financial rules are identical.
+      if (dto.status === OrderStatus.DELIVERED) {
+        try {
+          const r = await this.deliveryBilling.settleDelivery(orderId, adminId);
+          const delivered =
+            r.outcome === 'SETTLED' ||
+            r.outcome === 'DELIVERED_PREPAID' ||
+            r.outcome === 'INSUFFICIENT_BALANCE';
+          results.push({
+            orderId,
+            orderNumber: r.orderNumber,
+            success: delivered,
+            ...(delivered ? { status: OrderStatus.DELIVERED } : {}),
+            ...(r.outcome === 'SETTLED' || r.outcome === 'DELIVERED_PREPAID'
+              ? {}
+              : { reason: r.message }),
+            outcome: r.outcome,
+            customerId: r.customerId,
+            requiredPaise: r.requiredPaise,
+            availableBalancePaise: r.availableBalancePaise,
+            shortfallPaise: r.shortfallPaise,
+          });
+        } catch (err: any) {
+          const notFound = err instanceof NotFoundException;
+          results.push({
+            orderId,
+            orderNumber: notFound ? 'UNKNOWN' : 'ERROR',
+            success: false,
+            reason: err?.message || 'Failed to update order status',
+            outcome: 'ERROR',
+          });
+        }
+        continue;
+      }
+
       try {
         const order = await this.prisma.order.findUnique({
           where: { id: orderId },
@@ -716,7 +927,7 @@ export class OrdersService {
         }
 
         // For DELIVERED: Guard against skipped or already delivered PlanDelivery
-        if (dto.status === OrderStatus.DELIVERED && order.planDelivery) {
+        if ((dto.status as string) === 'DELIVERED' && order.planDelivery) {
           if (order.planDelivery.status === DeliveryStatus.SKIPPED) {
             results.push({
               orderId,
@@ -740,7 +951,7 @@ export class OrdersService {
         // Enforce valid transitions:
         // For DELIVERED, allow transition from OUT_FOR_DELIVERY, CONFIRMED, or PROCESSING
         const isBulkDeliveryEligible =
-          dto.status === OrderStatus.DELIVERED &&
+          (dto.status as string) === 'DELIVERED' &&
           [
             OrderStatus.OUT_FOR_DELIVERY,
             OrderStatus.CONFIRMED,
@@ -775,7 +986,7 @@ export class OrdersService {
 
           // If marking DELIVERED, synchronize PlanDelivery while strictly guarding on SCHEDULED.
           // Preserves original scheduled deliveryDate without modification.
-          if (dto.status === OrderStatus.DELIVERED && order.planDeliveryId) {
+          if ((dto.status as string) === 'DELIVERED' && order.planDeliveryId) {
             await tx.planDelivery.updateMany({
               where: {
                 id: order.planDeliveryId,
@@ -815,7 +1026,10 @@ export class OrdersService {
   //  ADMIN — BULK UPDATE ORDER QUANTITY (UPCOMING DELIVERIES)
   // ══════════════════════════════════════════════════════════════════
 
-  async bulkUpdateOrderQuantity(dto: BulkUpdateOrderQuantityDto) {
+  async bulkUpdateOrderQuantity(
+    dto: BulkUpdateOrderQuantityDto,
+    adminId: string | null = null,
+  ) {
     if (dto.quantity < QUANTITY_MIN || dto.quantity > QUANTITY_MAX) {
       throw new BadRequestException(
         `Quantity must be between ${QUANTITY_MIN} and ${QUANTITY_MAX} litres`,
@@ -829,13 +1043,24 @@ export class OrdersService {
       oldQuantity?: number;
       newQuantity?: number;
       reason?: string;
+      oldTotalPaise?: number;
+      newTotalPaise?: number;
+      /** Set when the change was refused for lack of wallet funds. */
+      customerId?: string;
+      currentBalancePaise?: number;
+      requiredPaise?: number;
+      shortfallPaise?: number;
     }> = [];
 
     for (const orderId of dto.orderIds) {
       try {
         const order = await this.prisma.order.findUnique({
           where: { id: orderId },
-          include: { items: true, planDelivery: true },
+          include: {
+            items: true,
+            planDelivery: true,
+            planSelection: { select: { billingModel: true } },
+          },
         });
 
         if (!order) {
@@ -844,6 +1069,68 @@ export class OrdersService {
             orderNumber: 'UNKNOWN',
             success: false,
             reason: 'Order not found',
+          });
+          continue;
+        }
+
+        // Per-delivery plans: a quantity edit changes what the wallet will be
+        // charged, so it goes through the billing service (same validation,
+        // repricing and balance check as an approved change request) and
+        // leaves an audit record of who changed it and why.
+        if (
+          order.planSelection?.billingModel === PlanBillingModel.PER_DELIVERY
+        ) {
+          const change = await this.prisma.$transaction(async (tx) => {
+            const applied = await this.deliveryBilling.applyOrderQuantityChange(
+              tx,
+              order.id,
+              dto.quantity,
+              { checkBalance: true },
+            );
+            if (applied.changed && order.planSelectionId) {
+              await tx.manageDeliveryChangeRequest.create({
+                data: {
+                  userId: order.userId,
+                  planSelectionId: order.planSelectionId,
+                  requestType: ChangeRequestType.CHANGE_QUANTITY,
+                  status: ChangeRequestStatus.APPROVED,
+                  orderId: order.id,
+                  currentAmountPaise: applied.oldTotalPaise,
+                  requestedAmountPaise: applied.newTotalPaise,
+                  currentConfiguration: {
+                    quantity: applied.oldQuantity,
+                    deliveryDate: applied.scheduledDate,
+                    orderNumber: applied.orderNumber,
+                  },
+                  requestedConfiguration: {
+                    quantity: applied.newQuantity,
+                    deliveryDate: applied.scheduledDate,
+                    orderNumber: applied.orderNumber,
+                    requestedBy: 'ADMIN',
+                  },
+                  adminId,
+                  adminNote:
+                    dto.reason?.trim() || 'Quantity adjusted directly by admin',
+                  reviewedAt: new Date(),
+                },
+              });
+            }
+            return applied;
+          });
+          this.logger.log(
+            `ORDER QUANTITY CHANGED orderNumber=${change.orderNumber} ` +
+              `oldQuantity=${change.oldQuantity} newQuantity=${change.newQuantity} ` +
+              `oldTotalPaise=${change.oldTotalPaise} newTotalPaise=${change.newTotalPaise} ` +
+              `adminId=${adminId ?? 'unknown'}`,
+          );
+          results.push({
+            orderId,
+            orderNumber: change.orderNumber,
+            success: true,
+            oldQuantity: change.oldQuantity,
+            newQuantity: change.newQuantity,
+            oldTotalPaise: change.oldTotalPaise,
+            newTotalPaise: change.newTotalPaise,
           });
           continue;
         }
@@ -954,11 +1241,26 @@ export class OrdersService {
           newQuantity: dto.quantity,
         });
       } catch (err: any) {
+        // A refused change carries the figures the admin needs (customer,
+        // balance, required amount, shortfall) in the exception body.
+        const body =
+          typeof err?.getResponse === 'function' ? err.getResponse() : null;
+        const detail = body && typeof body === 'object' ? body : {};
         results.push({
           orderId,
-          orderNumber: 'ERROR',
+          orderNumber: detail.orderNumber || 'ERROR',
           success: false,
           reason: err?.message || 'Failed to update quantity',
+          ...(detail.error === 'INSUFFICIENT_WALLET_BALANCE'
+            ? {
+                customerId: detail.customerId,
+                oldQuantity: detail.currentQuantity,
+                newQuantity: detail.requestedQuantity,
+                currentBalancePaise: detail.currentBalancePaise,
+                requiredPaise: detail.requiredPaise,
+                shortfallPaise: detail.shortfallPaise,
+              }
+            : {}),
         });
       }
     }
@@ -1020,6 +1322,14 @@ export class OrdersService {
       if (!COMPLETION_ELIGIBLE_STATUSES.includes(order.status as OrderStatus)) {
         throw new BadRequestException(
           `Only a ${OrderStatus.DELIVERED} order can be completed. This order is ${order.status}.`,
+        );
+      }
+
+      // Completion closes the books on an order, so it cannot happen while the
+      // delivery charge is still owed.
+      if (order.settlementStatus === OrderSettlementStatus.OUTSTANDING) {
+        throw new BadRequestException(
+          "This order's delivery charge is still outstanding. Settle it before completing the order.",
         );
       }
 
@@ -1142,6 +1452,22 @@ export class OrdersService {
           }
         : null,
       completedAt: order.completedAt ?? null,
+      // ── Per-delivery billing (additive) ──
+      /** PREPAID_LEGACY | PER_DELIVERY, or null for a non-plan order. */
+      billingModel: order.planSelection?.billingModel ?? null,
+      /** When an admin confirmed the delivery. Not the scheduled date. */
+      deliveredAt: order.deliveredAt ?? null,
+      /** PENDING | SETTLED | OUTSTANDING, or null when not billed per delivery. */
+      settlementStatus: order.settlementStatus ?? null,
+      settledAt: order.settledAt ?? null,
+      walletTransactionId: order.walletTransactionId ?? null,
+      /** What this delivery is expected to cost. */
+      expectedAmountPaise: order.totalPaise,
+      /** What was actually debited for it; null until it is settled. */
+      chargedAmountPaise:
+        order.settlementStatus === OrderSettlementStatus.SETTLED
+          ? order.totalPaise
+          : null,
       invoice: invoice
         ? {
             invoiceNumber: invoice.invoiceNumber,

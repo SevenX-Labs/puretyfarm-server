@@ -27,7 +27,7 @@ import { OrderPaymentsController } from './order-payments.controller';
     PrismaModule,
     AuthModule,
     forwardRef(() => WalletModule),
-    OrdersModule,
+    forwardRef(() => OrdersModule),
     forwardRef(() => PlansModule),
   ],
   controllers: [

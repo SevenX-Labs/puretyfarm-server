@@ -13,9 +13,14 @@ import {
   QuantityMode,
   DeliveryStatus,
   PlanSelectionStatus,
+  PlanBillingModel,
   ChangeRequestType,
   ChangeRequestStatus,
 } from '../plans/plans.constants';
+import {
+  DeliveryBillingService,
+  QUANTITY_EDITABLE_ORDER_STATUSES,
+} from '../orders/delivery-billing.service';
 import {
   toDateOnly,
   generateDeliveryDates,
@@ -40,6 +45,8 @@ export interface ActivePlanView {
   selectionId: string;
   planType: string;
   status: string;
+  /** PREPAID_LEGACY | PER_DELIVERY. */
+  billingModel?: string;
   frequency: string | null;
   quantityMode: string | null;
   quantityLitres?: number | null;
@@ -58,6 +65,13 @@ export interface UpcomingDeliveryView {
   status: string;
   canSkip: boolean;
   canModify: boolean;
+  /** The delivery's dispatch order, when one exists. */
+  orderId?: string | null;
+  orderNumber?: string | null;
+  /** What this delivery is expected to cost, in paise. */
+  expectedAmountPaise?: number | null;
+  /** PENDING | SETTLED | OUTSTANDING, or null for a prepaid plan. */
+  settlementStatus?: string | null;
 }
 
 export interface ManageDeliveryResponse {
@@ -97,6 +111,7 @@ export class ManageDeliveryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly plansService: PlansService,
+    private readonly deliveryBilling: DeliveryBillingService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════
@@ -118,6 +133,16 @@ export class ManageDeliveryService {
       this.prisma.planDelivery.findMany({
         where: { selectionId: selection.id, userId },
         orderBy: { deliveryDate: 'asc' },
+        include: {
+          order: {
+            select: {
+              id: true,
+              orderNumber: true,
+              totalPaise: true,
+              settlementStatus: true,
+            },
+          },
+        },
       }),
       this.prisma.planConfig.findUnique({
         where: { planType: selection.planType as any },
@@ -349,6 +374,10 @@ export class ManageDeliveryService {
   async changeQuantity(userId: string, dto: ChangeQuantityDto) {
     const selection = await this.requireActiveSelection(userId);
 
+    if (dto.deliveryDate) {
+      return this.requestDeliveryQuantityChange(userId, selection, dto);
+    }
+
     await this.rejectDuplicatePending(
       userId,
       selection.id,
@@ -386,6 +415,171 @@ export class ManageDeliveryService {
         status: request.status,
         currentQuantity: selection.quantity,
         requestedQuantity: dto.quantityLitres,
+      },
+    };
+  }
+
+  /**
+   * Requests a new quantity for ONE upcoming delivery. Nothing about the order
+   * changes until an admin approves; this only records the request together
+   * with the amount the new quantity would cost.
+   *
+   * An increase the wallet cannot cover is refused up front with the shortfall,
+   * so the customer tops up first. The balance is checked again at approval and
+   * again when the delivery is charged.
+   */
+  private async requestDeliveryQuantityChange(
+    userId: string,
+    selection: { id: string; planType: string; billingModel: string },
+    dto: ChangeQuantityDto,
+  ) {
+    if (selection.billingModel !== PlanBillingModel.PER_DELIVERY) {
+      throw new ConflictException({
+        error: 'QUANTITY_CHANGE_NOT_SUPPORTED_FOR_PREPAID_PLAN',
+        message:
+          'This plan was paid upfront, so the quantity of a single delivery cannot be changed.',
+      });
+    }
+
+    const target = toDateOnly(new Date(dto.deliveryDate as string));
+    const delivery = await this.prisma.planDelivery.findFirst({
+      where: { selectionId: selection.id, userId, deliveryDate: target },
+      include: { order: { include: { items: true } } },
+    });
+    if (!delivery) {
+      throw new BadRequestException(
+        `${dto.deliveryDate} is not a scheduled delivery date`,
+      );
+    }
+    if (delivery.status !== DeliveryStatus.SCHEDULED) {
+      throw new BadRequestException(
+        `The ${dto.deliveryDate} delivery is ${delivery.status} and can no longer be changed`,
+      );
+    }
+    const order = delivery.order;
+    const item = order?.items[0];
+    if (!order || !item) {
+      throw new BadRequestException(
+        `The ${dto.deliveryDate} delivery has no order to change yet`,
+      );
+    }
+    if (
+      !QUANTITY_EDITABLE_ORDER_STATUSES.includes(order.status as OrderStatus)
+    ) {
+      throw new BadRequestException(
+        `Order ${order.orderNumber} is already ${order.status} and can no longer be changed`,
+      );
+    }
+    const earliest = DeliveryBillingService.earliestChangeableDate();
+    if (target.getTime() < earliest.getTime()) {
+      throw new BadRequestException(
+        `The order cut-off for the ${dto.deliveryDate} delivery has passed`,
+      );
+    }
+
+    const config = await this.prisma.planConfig.findUnique({
+      where: { planType: selection.planType as any },
+      select: { quantityMin: true, quantityMax: true },
+    });
+    if (
+      config &&
+      (dto.quantityLitres < config.quantityMin ||
+        dto.quantityLitres > config.quantityMax)
+    ) {
+      throw new BadRequestException(
+        `Quantity must be between ${config.quantityMin} and ${config.quantityMax} litres`,
+      );
+    }
+    if (dto.quantityLitres === item.quantity) {
+      throw new BadRequestException(
+        `The ${dto.deliveryDate} delivery is already ${item.quantity} L`,
+      );
+    }
+
+    const pending = await this.prisma.manageDeliveryChangeRequest.findFirst({
+      where: {
+        userId,
+        orderId: order.id,
+        requestType: ChangeRequestType.CHANGE_QUANTITY,
+        status: ChangeRequestStatus.PENDING,
+      },
+    });
+    if (pending) {
+      throw new ConflictException(
+        'You already have a pending quantity request for this delivery. Please wait for admin review.',
+      );
+    }
+
+    const currentAmountPaise = order.totalPaise;
+    const requestedAmountPaise = DeliveryBillingService.priceForQuantity(
+      order,
+      item.unitPricePaise,
+      dto.quantityLitres,
+    ).totalPaise;
+
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { userId },
+      select: { balancePaise: true },
+    });
+    const walletBalancePaise = wallet?.balancePaise ?? 0;
+    if (
+      requestedAmountPaise > currentAmountPaise &&
+      walletBalancePaise < requestedAmountPaise
+    ) {
+      const shortfallPaise = requestedAmountPaise - walletBalancePaise;
+      throw new BadRequestException({
+        error: 'INSUFFICIENT_WALLET_BALANCE',
+        message:
+          `Your wallet balance is too low for this change. Add at least ` +
+          `₹${Math.ceil(shortfallPaise / 100)} to your wallet first, then request the change again.`,
+        orderNumber: order.orderNumber,
+        deliveryDate: dto.deliveryDate,
+        currentQuantity: item.quantity,
+        requestedQuantity: dto.quantityLitres,
+        currentBalancePaise: walletBalancePaise,
+        currentAmountPaise,
+        requiredPaise: requestedAmountPaise,
+        shortfallPaise,
+      });
+    }
+
+    const request = await this.prisma.manageDeliveryChangeRequest.create({
+      data: {
+        userId,
+        planSelectionId: selection.id,
+        requestType: ChangeRequestType.CHANGE_QUANTITY,
+        orderId: order.id,
+        currentAmountPaise,
+        requestedAmountPaise,
+        currentConfiguration: {
+          quantity: item.quantity,
+          deliveryDate: dto.deliveryDate,
+          orderNumber: order.orderNumber,
+        },
+        requestedConfiguration: {
+          quantity: dto.quantityLitres,
+          deliveryDate: dto.deliveryDate,
+          orderNumber: order.orderNumber,
+          requestedBy: 'CUSTOMER',
+        },
+      },
+    });
+
+    return {
+      success: true,
+      message:
+        'Your quantity change request has been submitted for admin approval.',
+      request: {
+        id: request.id,
+        type: request.requestType,
+        status: request.status,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        deliveryDate: dto.deliveryDate,
+        currentQuantity: item.quantity,
+        requestedQuantity: dto.quantityLitres,
+        currentAmountPaise,
+        requestedAmountPaise,
       },
     };
   }
@@ -610,6 +804,15 @@ export class ManageDeliveryService {
               customerProfile: {
                 select: { firstName: true, lastName: true },
               },
+              wallet: { select: { balancePaise: true } },
+            },
+          },
+          order: {
+            select: {
+              id: true,
+              orderNumber: true,
+              deliveryDate: true,
+              status: true,
             },
           },
         },
@@ -627,6 +830,7 @@ export class ManageDeliveryService {
         adminNote: r.adminNote,
         reviewedAt: r.reviewedAt,
         createdAt: r.createdAt,
+        ...this.formatRequestBilling(r, r.user.wallet?.balancePaise ?? 0),
         customer: {
           id: r.user.id,
           mobile: r.user.mobile,
@@ -657,6 +861,15 @@ export class ManageDeliveryService {
             customerProfile: {
               select: { firstName: true, lastName: true },
             },
+            wallet: { select: { balancePaise: true } },
+          },
+        },
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            deliveryDate: true,
+            status: true,
           },
         },
       },
@@ -670,6 +883,10 @@ export class ManageDeliveryService {
       status: request.status,
       currentConfiguration: request.currentConfiguration,
       requestedConfiguration: request.requestedConfiguration,
+      ...this.formatRequestBilling(
+        request,
+        request.user.wallet?.balancePaise ?? 0,
+      ),
       adminId: request.adminId,
       adminNote: request.adminNote,
       reviewedAt: request.reviewedAt,
@@ -809,7 +1026,7 @@ export class ManageDeliveryService {
 
     switch (request.requestType) {
       case ChangeRequestType.CHANGE_QUANTITY:
-        return this.blockQuantityChangeApproval();
+        return this.applyQuantityChange(tx, selection, request, requested);
       case ChangeRequestType.CHANGE_FREQUENCY:
         await this.applyFrequencyChange(tx, selection, requested);
         return [];
@@ -829,38 +1046,125 @@ export class ManageDeliveryService {
   }
 
   /**
-   * TEMPORARILY DISABLED — approving a CHANGE_QUANTITY request is blocked until
-   * a prepaid-plan billing / refund / settlement policy exists.
+   * Applies an approved CHANGE_QUANTITY request.
    *
-   * A plan's upcoming deliveries are each backed by an order created PAID with
-   * an immutable price snapshot and an Invoice, and the money actually
-   * collected lives at plan level (`PlanSelection.paidAmountPaise`, what the
-   * dashboard aggregates as sales). Changing the active quantity changes what is
-   * physically dispatched and therefore what is owed, but there is no defined,
-   * consistently implemented rule for reconciling the difference — extra
-   * charge, refund, or wallet adjustment — against those immutable financial
-   * snapshots. Applying the change anyway would leave deliveries, orders,
-   * invoices and collected amounts disagreeing with each other.
+   * Runs inside the approval transaction, after the request row was claimed
+   * PENDING -> APPROVED, so anything thrown here rolls the claim back and the
+   * request stays PENDING and retryable — which is exactly what must happen
+   * when the wallet cannot cover an increase.
    *
-   * This throws (rather than returns) on purpose. It runs inside the approval
-   * transaction, AFTER the request row was optimistically flipped to APPROVED,
-   * so throwing rolls the whole transaction back: the request stays PENDING and
-   * reviewable, and the active quantity — along with every delivery, order and
-   * invoice — is left exactly as it was. The admin sees the explanation below.
+   * All repricing, eligibility and balance rules live in
+   * `DeliveryBillingService.applyOrderQuantityChange`; this only decides which
+   * orders the request covers:
+   *   - a request with `orderId` changes that one delivery;
+   *   - a plan-wide request changes the plan's standing quantity and every
+   *     upcoming delivery that can still be changed, with the wallet checked
+   *     against the earliest of them.
    *
-   * Re-enable once a prepaid-plan quantity-change billing/refund/settlement
-   * policy is defined and implemented.
+   * Prepaid plans are refused: their deliveries were paid upfront against fixed
+   * snapshots and there is no refund or extra-charge rule for them.
    */
-  private blockQuantityChangeApproval(): Promise<string[]> {
-    throw new NotImplementedException(
-      "Approving quantity changes is temporarily disabled. A prepaid plan's " +
-        'upcoming deliveries are already paid against fixed price snapshots and ' +
-        'invoices, and there is no billing, refund or settlement rule for the ' +
-        'difference a new quantity would create. The request has been kept ' +
-        'PENDING and the active quantity is unchanged — reject it, or re-enable ' +
-        'approval once a prepaid-plan quantity-change billing/refund/settlement ' +
-        'policy is in place.',
-    );
+  private async applyQuantityChange(
+    tx: any,
+    selection: any,
+    request: any,
+    requested: Record<string, any>,
+  ): Promise<string[]> {
+    const quantity = Number(requested.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      throw new BadRequestException('The requested quantity is not valid.');
+    }
+
+    if (selection.billingModel !== PlanBillingModel.PER_DELIVERY) {
+      throw new ConflictException({
+        error: 'QUANTITY_CHANGE_NOT_SUPPORTED_FOR_PREPAID_PLAN',
+        message:
+          'This plan was paid upfront, so its quantity cannot be changed: its ' +
+          'deliveries are already paid against fixed price snapshots and there ' +
+          'is no refund or extra-charge rule for the difference. The request ' +
+          'has been kept PENDING and nothing was changed — reject it.',
+      });
+    }
+
+    // ── One delivery ────────────────────────────────────────────────
+    if (request.orderId) {
+      const applied = await this.deliveryBilling.applyOrderQuantityChange(
+        tx,
+        request.orderId,
+        quantity,
+        { checkBalance: true },
+      );
+      await tx.manageDeliveryChangeRequest.update({
+        where: { id: request.id },
+        data: {
+          currentAmountPaise: applied.oldTotalPaise,
+          requestedAmountPaise: applied.newTotalPaise,
+        },
+      });
+      this.logger.log(
+        `QUANTITY CHANGE APPROVED requestId=${request.id} orderNumber=${applied.orderNumber} ` +
+          `oldQuantity=${applied.oldQuantity} newQuantity=${applied.newQuantity} ` +
+          `oldTotalPaise=${applied.oldTotalPaise} newTotalPaise=${applied.newTotalPaise}`,
+      );
+      return [];
+    }
+
+    // ── Whole plan ──────────────────────────────────────────────────
+    const earliest = DeliveryBillingService.earliestChangeableDate();
+    const deliveries = await tx.planDelivery.findMany({
+      where: {
+        selectionId: selection.id,
+        status: DeliveryStatus.SCHEDULED,
+        deliveryDate: { gte: earliest },
+      },
+      orderBy: { deliveryDate: 'asc' },
+      include: {
+        order: { select: { id: true, status: true, orderNumber: true } },
+      },
+    });
+
+    const warnings: string[] = [];
+    let balanceChecked = false;
+    for (const delivery of deliveries) {
+      if (!delivery.order) {
+        await tx.planDelivery.update({
+          where: { id: delivery.id },
+          data: { quantityLitres: quantity },
+        });
+        continue;
+      }
+      if (
+        !QUANTITY_EDITABLE_ORDER_STATUSES.includes(
+          delivery.order.status as OrderStatus,
+        )
+      ) {
+        warnings.push(
+          `Order ${delivery.order.orderNumber} is already ${delivery.order.status} and kept its quantity.`,
+        );
+        continue;
+      }
+      // The wallet must cover the earliest affected delivery; every later one
+      // is checked again when it is actually charged.
+      await this.deliveryBilling.applyOrderQuantityChange(
+        tx,
+        delivery.order.id,
+        quantity,
+        { checkBalance: !balanceChecked },
+      );
+      balanceChecked = true;
+    }
+
+    await tx.planSelection.update({
+      where: { id: selection.id },
+      data: {
+        quantityMode: QuantityMode.FIXED,
+        quantity,
+        quantityA: null,
+        quantityB: null,
+      },
+    });
+
+    return warnings;
   }
 
   private async applyFrequencyChange(
@@ -1382,6 +1686,36 @@ export class ManageDeliveryService {
     }
   }
 
+  /**
+   * The order and money side of a change request, for admin screens: which
+   * order and scheduled date it targets, the amount before and after, the
+   * customer's current wallet balance, and how much more a pending increase
+   * would need.
+   */
+  private formatRequestBilling(r: any, walletBalancePaise: number) {
+    const current: number | null = r.currentAmountPaise ?? null;
+    const requested: number | null = r.requestedAmountPaise ?? null;
+    const isPendingIncrease =
+      r.status === ChangeRequestStatus.PENDING &&
+      current != null &&
+      requested != null &&
+      requested > current;
+    return {
+      orderId: r.orderId ?? null,
+      orderNumber: r.order?.orderNumber ?? null,
+      orderStatus: r.order?.status ?? null,
+      deliveryDate: r.order?.deliveryDate
+        ? toIsoDateString(new Date(r.order.deliveryDate))
+        : null,
+      currentAmountPaise: current,
+      requestedAmountPaise: requested,
+      walletBalancePaise,
+      shortfallPaise: isPendingIncrease
+        ? Math.max(0, requested - walletBalancePaise)
+        : 0,
+    };
+  }
+
   private formatCustomerRequest(r: any) {
     const base: any = {
       id: r.id,
@@ -1389,6 +1723,9 @@ export class ManageDeliveryService {
       status: r.status,
       currentConfiguration: r.currentConfiguration,
       requestedConfiguration: r.requestedConfiguration,
+      orderId: r.orderId ?? null,
+      currentAmountPaise: r.currentAmountPaise ?? null,
+      requestedAmountPaise: r.requestedAmountPaise ?? null,
       createdAt: r.createdAt,
       reviewedAt: r.reviewedAt,
     };
@@ -1419,12 +1756,19 @@ export class ManageDeliveryService {
       quantityB: number | null;
       startDate: Date | null;
       endDate: Date | null;
+      billingModel?: string;
     },
     deliveries: Array<{
       deliveryDate: Date;
       occurrence: number;
       quantityLitres: number;
       status: string;
+      order?: {
+        id: string;
+        orderNumber: string;
+        totalPaise: number;
+        settlementStatus: string | null;
+      } | null;
     }>,
     deliveryStartTime?: string | null,
     deliveryEndTime?: string | null,
@@ -1435,6 +1779,9 @@ export class ManageDeliveryService {
       selectionId: selection.id,
       planType: selection.planType,
       status: selection.status,
+      ...(selection.billingModel
+        ? { billingModel: selection.billingModel }
+        : {}),
       frequency: selection.frequency,
       quantityMode: selection.quantityMode,
       startDate: this.fmt(selection.startDate),
@@ -1464,6 +1811,10 @@ export class ManageDeliveryService {
           status: d.status,
           canSkip: modifiable,
           canModify: modifiable,
+          orderId: d.order?.id ?? null,
+          orderNumber: d.order?.orderNumber ?? null,
+          expectedAmountPaise: d.order?.totalPaise ?? null,
+          settlementStatus: d.order?.settlementStatus ?? null,
         };
       });
 

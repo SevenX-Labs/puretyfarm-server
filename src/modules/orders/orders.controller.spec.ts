@@ -176,13 +176,31 @@ describe('AdminOrdersController', () => {
     expect(mockService.getAdminOrder).toHaveBeenCalledWith('order-1');
   });
 
+  const admin = {
+    sub: 'admin-1',
+    role: 'ADMIN',
+    sessionId: 'session-1',
+    type: 'access',
+  } as const;
+
+  it('settleOrder delegates to the service with the admin id', async () => {
+    mockService.settleOutstandingOrder = jest.fn();
+    await adminController.settleOrder(admin, 'order-1');
+    expect(mockService.settleOutstandingOrder).toHaveBeenCalledWith(
+      'order-1',
+      'admin-1',
+    );
+  });
+
   it('updateStatus delegates to service', async () => {
-    await adminController.updateStatus('order-1', {
+    await adminController.updateStatus(admin, 'order-1', {
       status: 'CONFIRMED' as any,
     });
-    expect(mockService.updateOrderStatus).toHaveBeenCalledWith('order-1', {
-      status: 'CONFIRMED',
-    });
+    expect(mockService.updateOrderStatus).toHaveBeenCalledWith(
+      'order-1',
+      { status: 'CONFIRMED' },
+      'admin-1',
+    );
   });
 
   it('bulkUpdateStatus delegates to service', async () => {
@@ -190,8 +208,11 @@ describe('AdminOrdersController', () => {
       orderIds: ['11111111-1111-4111-8111-111111111111'],
       status: 'DELIVERED' as any,
     };
-    await adminController.bulkUpdateStatus(dto);
-    expect(mockService.bulkUpdateOrderStatus).toHaveBeenCalledWith(dto);
+    await adminController.bulkUpdateStatus(admin, dto);
+    expect(mockService.bulkUpdateOrderStatus).toHaveBeenCalledWith(
+      dto,
+      'admin-1',
+    );
   });
 
   it('bulkUpdateQuantity delegates to service', async () => {
@@ -199,8 +220,11 @@ describe('AdminOrdersController', () => {
       orderIds: ['11111111-1111-4111-8111-111111111111'],
       quantity: 2,
     };
-    await adminController.bulkUpdateQuantity(dto);
-    expect(mockService.bulkUpdateOrderQuantity).toHaveBeenCalledWith(dto);
+    await adminController.bulkUpdateQuantity(admin, dto);
+    expect(mockService.bulkUpdateOrderQuantity).toHaveBeenCalledWith(
+      dto,
+      'admin-1',
+    );
   });
 
   describe('completeOrder', () => {

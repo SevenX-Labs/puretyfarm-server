@@ -16,6 +16,7 @@ import {
   QuantityMode,
   PlanQuoteStatus,
   PlanSelectionStatus,
+  PlanBillingModel,
   DeliveryStatus,
   QUOTE_EXPIRY_MINUTES,
   TRIAL_MAX_USES,
@@ -64,6 +65,8 @@ export interface PlanAvailability {
 }
 
 export interface PlansOverviewResponse {
+  /** The customer's most recent live or pending plan, or null. */
+  subscription?: CustomerSubscriptionSummary | null;
   plans: PlanAvailability[];
   /**
    * The order cut-off policy, so the customer app can state it accurately
@@ -179,8 +182,65 @@ export interface ConfirmationResponse {
   plan: string;
   status: string;
   paymentMethod: string;
+  /**
+   * What was debited at purchase. Always 0 for a per-delivery plan: nothing is
+   * charged until a delivery is confirmed delivered.
+   */
   paidAmountPaise: number;
   cashCollectionId?: string;
+  billingModel?: string;
+  /** The plan's total at the quoted price, for display only. Not charged. */
+  expectedTotalPaise?: number;
+  funding?: FundingSummary;
+  message?: string;
+}
+
+/** Whether a customer's wallet funding has been confirmed. */
+export type FundingStatus = 'CONFIRMED' | 'PENDING_APPROVAL' | 'NOT_FUNDED';
+
+export interface FundingSummary {
+  status: FundingStatus;
+  walletBalancePaise: number;
+  /** True once the wallet has received at least one completed credit. */
+  hasCompletedCredit: boolean;
+  /** Top-ups still waiting for payment verification or admin approval. */
+  pendingCreditCount: number;
+  pendingCreditPaise: number;
+}
+
+/** A customer's current plan as shown on their Plans page. */
+export interface CustomerSubscriptionSummary {
+  selectionId: string;
+  planType: string;
+  status: string;
+  billingModel: string;
+  frequency: string | null;
+  quantityMode: string | null;
+  quantity: number | null;
+  quantityA: number | null;
+  quantityB: number | null;
+  startDate: string | null;
+  endDate: string | null;
+  purchasedAt: Date;
+  funding: FundingSummary;
+  /** PENDING until an admin approves the plan. */
+  approvalStatus: 'PENDING' | 'APPROVED';
+  approvedAt: Date | null;
+  /** SCHEDULED once daily orders exist. */
+  schedulingStatus: 'NOT_SCHEDULED' | 'SCHEDULED';
+  /** Plan total at the quoted price. Informational for per-delivery plans. */
+  expectedTotalPaise: number;
+  sellingPricePerLitrePaise: number;
+  deliveries: {
+    total: number;
+    delivered: number;
+    upcoming: number;
+    skipped: number;
+    cancelled: number;
+  };
+  /** Sum of delivery charges debited so far, and those still outstanding. */
+  chargedPaise: number;
+  outstandingPaise: number;
 }
 
 // ─── Delivery calculation utility ───────────────────────────────────
@@ -380,6 +440,7 @@ export function enabledQuantityModes(config: PlanConfig): QuantityMode[] {
  * decided lifecycle.
  */
 const APPROVABLE_SELECTION_STATUSES: string[] = [
+  PlanSelectionStatus.PENDING_APPROVAL,
   PlanSelectionStatus.PENDING_PAYMENT,
   PlanSelectionStatus.CONFIRMED,
   PlanSelectionStatus.ACTIVE,
@@ -454,16 +515,24 @@ export class PlansService {
   // ── Plans Overview ──────────────────────────────────────────────
 
   async getPlansOverview(userId: string): Promise<PlansOverviewResponse> {
-    const [buyOnceElig, trialElig, monthlyConfig, buyOnceConfig, trialConfig] =
-      await Promise.all([
-        this.getBuyOnceEligibility(userId),
-        this.getTrialEligibility(userId),
-        this.getActiveConfig(PlanType.MONTHLY),
-        this.getActiveConfig(PlanType.BUY_ONCE),
-        this.getActiveConfig(PlanType.SEVEN_DAY_TRIAL),
-      ]);
+    const [
+      buyOnceElig,
+      trialElig,
+      monthlyConfig,
+      buyOnceConfig,
+      trialConfig,
+      subscription,
+    ] = await Promise.all([
+      this.getBuyOnceEligibility(userId),
+      this.getTrialEligibility(userId),
+      this.getActiveConfig(PlanType.MONTHLY),
+      this.getActiveConfig(PlanType.BUY_ONCE),
+      this.getActiveConfig(PlanType.SEVEN_DAY_TRIAL),
+      this.getCustomerSubscriptionSummary(userId),
+    ]);
 
     return {
+      subscription,
       plans: [
         {
           type: PlanType.BUY_ONCE,
@@ -948,16 +1017,26 @@ export class PlansService {
       }
 
       const schedule = this.resolveScheduleFromQuote(quote);
-      const paymentAmount = quote.totalSellingAmount;
 
-      // Step 1: Create PlanSelection in PENDING_PAYMENT state first, so we have
-      // the ID for the wallet ledger reference before the debit.
+      // Per-delivery billing: a purchase is an ENROLMENT, not a payment.
+      // Nothing is debited here and no schedule or orders are created. The
+      // wallet is charged one delivery at a time, when an admin confirms that
+      // delivery (see DeliveryBillingService.settleDelivery). The plan waits in
+      // PENDING_APPROVAL until an admin approves it and picks the first
+      // delivery date; the dates stored below are the quote's provisional
+      // window and are replaced at approval.
+      //
+      // `paymentMethod` records how the customer intends to fund the wallet
+      // (WALLET balance / online top-up, or CASH top-up). It never triggers a
+      // charge, and a CASH choice no longer creates a plan-priced cash
+      // collection: cash reaches the wallet through the existing cash top-up.
       const selection = await tx.planSelection.create({
         data: {
           userId,
           quoteId: quote.id,
           planType: quote.planType as PlanType,
-          status: PlanSelectionStatus.PENDING_PAYMENT,
+          status: PlanSelectionStatus.PENDING_APPROVAL,
+          billingModel: PlanBillingModel.PER_DELIVERY,
           paymentMethod: dto.paymentMethod,
           frequency: schedule.frequency,
           quantityMode: schedule.quantityMode,
@@ -969,95 +1048,200 @@ export class PlansService {
         },
       });
 
-      if (dto.paymentMethod === PlanPaymentMethod.WALLET) {
-        // Check balance before attempting debit for a clearer error.
-        const wallet = await tx.wallet.findUnique({ where: { userId } });
-        const currentBalancePaise = wallet?.balancePaise ?? 0;
-        if (!wallet || currentBalancePaise < paymentAmount) {
-          const shortfallPaise = paymentAmount - currentBalancePaise;
-          const shortfallRupees = Math.ceil(shortfallPaise / 100);
-          // Rollback: delete the PENDING_PAYMENT selection so it doesn't
-          // block future attempts via the partial unique index.
-          await tx.planSelection.delete({ where: { id: selection.id } });
-          throw new BadRequestException({
-            error: 'INSUFFICIENT_WALLET_BALANCE',
-            message: `Insufficient wallet balance. Please top up your wallet by ₹${shortfallRupees} first or choose Doorstep Cash.`,
-            currentBalancePaise,
-            requiredPaise: paymentAmount,
-            shortfallPaise,
-            shortfallRupees,
-          });
-        }
-
-        // Debit wallet using the existing atomic balance path.
-        await this.walletService.debitWalletWithin(
-          tx,
-          userId,
-          paymentAmount,
-          WalletTransactionReferenceType.PLAN_SELECTION,
-          selection.id,
-          `Plan payment (${quote.planType})`,
-        );
-
-        // Payment succeeded — confirm everything atomically.
-        const now = new Date();
-        await tx.planSelection.update({
-          where: { id: selection.id },
-          data: {
-            status: PlanSelectionStatus.CONFIRMED,
-            paidAt: now,
-            paidAmountPaise: paymentAmount,
-          },
-        });
-
-        await tx.planQuote.updateMany({
-          where: { id: quote.id, status: PlanQuoteStatus.PENDING },
-          data: { status: PlanQuoteStatus.CONFIRMED },
-        });
-
-        // Materialise delivery rows only after payment. Pass the actual plan
-        // type so orders are priced and typed from the correct PlanConfig
-        // (never the Buy Once / ₹80 fallback).
-        await this.materializeDeliveries(
-          tx,
-          selection.id,
-          userId,
-          schedule,
-          quote.planType as PlanType,
-        );
-
-        return {
-          selectionId: selection.id,
-          quoteId: quote.id,
-          plan: quote.planType,
-          status: PlanSelectionStatus.CONFIRMED,
-          paymentMethod: dto.paymentMethod,
-          paidAmountPaise: paymentAmount,
-        };
+      // Conditional update: a concurrent confirmation of the same quote loses
+      // here and the whole transaction rolls back.
+      const claimedQuote = await tx.planQuote.updateMany({
+        where: { id: quote.id, status: PlanQuoteStatus.PENDING },
+        data: { status: PlanQuoteStatus.CONFIRMED },
+      });
+      if (claimedQuote.count === 0) {
+        throw new BadRequestException('Quote is no longer pending');
       }
 
-      // CASH payment: create CashCollection, do NOT activate plan.
-      const cashCollection = await tx.cashCollection.create({
-        data: {
-          userId,
-          planSelectionId: selection.id,
-          amountPaise: paymentAmount,
-          status: 'PENDING',
-        },
-      });
+      const funding = (await this.loadFunding(tx, [userId])).get(userId)!;
 
-      // Quote stays PENDING until admin confirms the cash.
+      this.logger.log(
+        `PLAN ENROLLED selectionId=${selection.id} planType=${quote.planType} ` +
+          `billing=PER_DELIVERY fundingStatus=${funding.status}`,
+      );
 
       return {
         selectionId: selection.id,
         quoteId: quote.id,
         plan: quote.planType,
-        status: PlanSelectionStatus.PENDING_PAYMENT,
+        status: PlanSelectionStatus.PENDING_APPROVAL,
         paymentMethod: dto.paymentMethod,
-        paidAmountPaise: paymentAmount,
-        cashCollectionId: cashCollection.id,
+        paidAmountPaise: 0,
+        billingModel: PlanBillingModel.PER_DELIVERY,
+        expectedTotalPaise: quote.totalSellingAmount,
+        funding,
+        message:
+          funding.status === 'CONFIRMED'
+            ? 'Your plan is awaiting admin approval. Your wallet is charged per delivery, only when each order is delivered.'
+            : 'Your plan is awaiting wallet funding confirmation and admin approval. Your wallet is charged per delivery, only when each order is delivered.',
       };
     });
+  }
+
+  // ── Funding ─────────────────────────────────────────────────────
+
+  /**
+   * Wallet funding state per customer, resolved in three queries regardless of
+   * how many customers are asked about.
+   *
+   * "Funded" means the wallet has received at least one completed credit — the
+   * same event that ends the first-time top-up approval requirement. It is
+   * deliberately not a balance threshold: no minimum balance is defined.
+   */
+  async loadFunding(
+    client: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
+    userIds: string[],
+  ): Promise<Map<string, FundingSummary>> {
+    const out = new Map<string, FundingSummary>();
+    for (const id of userIds) {
+      out.set(id, {
+        status: 'NOT_FUNDED',
+        walletBalancePaise: 0,
+        hasCompletedCredit: false,
+        pendingCreditCount: 0,
+        pendingCreditPaise: 0,
+      });
+    }
+    if (userIds.length === 0) return out;
+
+    const wallets = await client.wallet.findMany({
+      where: { userId: { in: userIds } },
+      select: { id: true, userId: true, balancePaise: true },
+    });
+    if (wallets.length === 0) return out;
+    const walletIds = wallets.map((w) => w.id);
+
+    const [credits, pending] = await Promise.all([
+      client.walletTransaction.groupBy({
+        by: ['walletId'],
+        where: { walletId: { in: walletIds }, type: 'CREDIT' },
+        _count: { _all: true },
+      }),
+      client.walletCreditRequest.groupBy({
+        by: ['walletId'],
+        where: { walletId: { in: walletIds }, status: 'PENDING' },
+        _count: { _all: true },
+        _sum: { amountPaise: true },
+      }),
+    ]);
+    const creditCount = new Map(
+      credits.map((c) => [c.walletId, c._count._all]),
+    );
+    const pendingByWallet = new Map(pending.map((p) => [p.walletId, p]));
+
+    for (const w of wallets) {
+      const hasCompletedCredit = (creditCount.get(w.id) ?? 0) > 0;
+      const p = pendingByWallet.get(w.id);
+      const pendingCreditCount = p?._count._all ?? 0;
+      out.set(w.userId, {
+        status: hasCompletedCredit
+          ? 'CONFIRMED'
+          : pendingCreditCount > 0
+            ? 'PENDING_APPROVAL'
+            : 'NOT_FUNDED',
+        walletBalancePaise: w.balancePaise,
+        hasCompletedCredit,
+        pendingCreditCount,
+        pendingCreditPaise: p?._sum.amountPaise ?? 0,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * The customer's most recent plan that is pending, live or paused, with the
+   * separate funding / approval / scheduling states the Plans page shows.
+   */
+  async getCustomerSubscriptionSummary(
+    userId: string,
+  ): Promise<CustomerSubscriptionSummary | null> {
+    const selection = await this.prisma.planSelection.findFirst({
+      where: {
+        userId,
+        status: {
+          in: [
+            PlanSelectionStatus.PENDING_APPROVAL,
+            PlanSelectionStatus.PENDING_PAYMENT,
+            PlanSelectionStatus.CONFIRMED,
+            PlanSelectionStatus.ACTIVE,
+            PlanSelectionStatus.PAUSED,
+          ],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { quote: true },
+    });
+    if (!selection) return null;
+
+    const [funding, deliveryGroups, orders] = await Promise.all([
+      this.loadFunding(this.prisma, [userId]),
+      this.prisma.planDelivery.groupBy({
+        by: ['status'],
+        where: { selectionId: selection.id },
+        _count: { _all: true },
+      }),
+      this.prisma.order.findMany({
+        where: { planSelectionId: selection.id },
+        select: { status: true, settlementStatus: true, totalPaise: true },
+      }),
+    ]);
+
+    const countOf = (status: string) =>
+      deliveryGroups.find((g) => g.status === status)?._count._all ?? 0;
+    const delivered = countOf(DeliveryStatus.DELIVERED);
+    const upcoming = countOf(DeliveryStatus.SCHEDULED);
+    const skipped = countOf(DeliveryStatus.SKIPPED);
+
+    const awaitingApproval =
+      selection.status === PlanSelectionStatus.PENDING_APPROVAL ||
+      selection.status === PlanSelectionStatus.PENDING_PAYMENT;
+
+    return {
+      selectionId: selection.id,
+      planType: selection.planType,
+      status: selection.status,
+      billingModel: selection.billingModel,
+      frequency: selection.frequency,
+      quantityMode: selection.quantityMode,
+      quantity: selection.quantity,
+      quantityA: selection.quantityA,
+      quantityB: selection.quantityB,
+      // The dates are provisional until an admin approves and schedules.
+      startDate:
+        !awaitingApproval && selection.startDate
+          ? toIsoDateString(selection.startDate)
+          : null,
+      endDate:
+        !awaitingApproval && selection.endDate
+          ? toIsoDateString(selection.endDate)
+          : null,
+      purchasedAt: selection.createdAt,
+      funding: funding.get(userId)!,
+      approvalStatus: awaitingApproval ? 'PENDING' : 'APPROVED',
+      approvedAt: selection.approvedAt,
+      schedulingStatus:
+        delivered + upcoming + skipped > 0 ? 'SCHEDULED' : 'NOT_SCHEDULED',
+      expectedTotalPaise: selection.quote.totalSellingAmount,
+      sellingPricePerLitrePaise: selection.quote.sellingPricePerLitre,
+      deliveries: {
+        total: delivered + upcoming + skipped,
+        delivered,
+        upcoming,
+        skipped,
+        cancelled: orders.filter((o) => o.status === 'CANCELLED').length,
+      },
+      chargedPaise: orders
+        .filter((o) => o.settlementStatus === 'SETTLED')
+        .reduce((sum, o) => sum + o.totalPaise, 0),
+      outstandingPaise: orders
+        .filter((o) => o.settlementStatus === 'OUTSTANDING')
+        .reduce((sum, o) => sum + o.totalPaise, 0),
+    };
   }
 
   /**
@@ -1209,6 +1393,7 @@ export class PlansService {
     userId: string,
     schedule: ReturnType<PlansService['resolveScheduleFromQuote']>,
     planType: PlanType,
+    priceSnapshot?: OrderPriceSnapshot,
   ): Promise<void> {
     const dates = generateDeliveryDates(
       schedule.frequency,
@@ -1246,7 +1431,13 @@ export class PlansService {
       ),
     );
 
-    await this.materializeOrdersForSchedule(tx, selectionId, userId, planType);
+    await this.materializeOrdersForSchedule(
+      tx,
+      selectionId,
+      userId,
+      planType,
+      priceSnapshot,
+    );
   }
 
   /**
@@ -1316,9 +1507,20 @@ export class PlansService {
       deliveryEndTime = config.deliveryEndTime;
     }
 
+    // The plan's billing model decides how each order is born. A per-delivery
+    // order is unpaid, unsettled and not yet invoiced: it is charged — and
+    // invoiced — only when its delivery is confirmed. A prepaid (legacy) plan
+    // keeps the original behaviour, PAID with an invoice.
+    const billing = await (tx as any).planSelection.findUnique({
+      where: { id: selectionId },
+      select: { billingModel: true },
+    });
+    const isPerDelivery =
+      billing?.billingModel === PlanBillingModel.PER_DELIVERY;
+
     // Materialize orders for dispatch visibility. Any failure here propagates
-    // and rolls back the transaction — a paid plan must never be confirmed
-    // with missing or mis-priced orders.
+    // and rolls back the transaction — a plan must never be scheduled with
+    // missing or mis-priced orders.
     // SCHEDULED only. Reconciliation marks stood-down deliveries SKIPPED
     // rather than deleting them, so an unfiltered query would mint a fresh
     // dispatch order for a delivery that is no longer happening.
@@ -1379,7 +1581,9 @@ export class PlansService {
       if (deliveryIdsWithOrder.has(d.id)) continue;
 
       const orderNumber = await generateOrderNumber(tx);
-      const invoiceNumber = await generateInvoiceNumber(tx);
+      const invoiceNumber = isPerDelivery
+        ? null
+        : await generateInvoiceNumber(tx);
 
       const qty = d.quantityLitres || 1;
       const itemTotal = unitPrice * qty;
@@ -1393,7 +1597,8 @@ export class PlansService {
           planDeliveryId: d.id,
           planType,
           status: 'CONFIRMED',
-          paymentStatus: 'PAID',
+          paymentStatus: isPerDelivery ? 'PENDING' : 'PAID',
+          ...(isPerDelivery ? { settlementStatus: 'PENDING' } : {}),
           subtotalPaise: itemTotal,
           discountPaise: 0,
           taxPaise: 0,
@@ -1419,19 +1624,23 @@ export class PlansService {
               totalPaise: itemTotal,
             },
           },
-          invoice: {
-            create: {
-              invoiceNumber,
-              addressSnapshot,
-              financialSnapshot: {
-                subtotalPaise: itemTotal,
-                discountPaise: 0,
-                taxPaise: 0,
-                deliveryFeePaise: deliveryFee,
-                totalPaise: total,
-              },
-            },
-          },
+          ...(invoiceNumber
+            ? {
+                invoice: {
+                  create: {
+                    invoiceNumber,
+                    addressSnapshot,
+                    financialSnapshot: {
+                      subtotalPaise: itemTotal,
+                      discountPaise: 0,
+                      taxPaise: 0,
+                      deliveryFeePaise: deliveryFee,
+                      totalPaise: total,
+                    },
+                  },
+                },
+              }
+            : {}),
         },
       });
     }
@@ -1453,6 +1662,18 @@ export class PlansService {
 
     if (!selection) {
       throw new NotFoundException('Plan selection not found');
+    }
+
+    // This path completes a PREPAID plan bought with cash before per-delivery
+    // billing existed. A per-delivery plan is never paid for as a whole, so it
+    // can never arrive here; refusing it guarantees the cash credit + full-plan
+    // debit below cannot run for a new purchase.
+    if (selection.billingModel === PlanBillingModel.PER_DELIVERY) {
+      throw new BadRequestException({
+        error: 'PLAN_NOT_PREPAID',
+        message:
+          'This plan is billed per delivery and has no plan-level cash payment to confirm.',
+      });
     }
 
     if (selection.status !== PlanSelectionStatus.PENDING_PAYMENT) {
@@ -1543,7 +1764,31 @@ export class PlansService {
       // other (or null, legacy) payment method passed straight through with
       // `paidAt` null. Inverting it makes payment the precondition and the
       // cash wording merely a more helpful message.
-      if (!selection.paidAt) {
+      const isPerDelivery =
+        selection.billingModel === PlanBillingModel.PER_DELIVERY;
+
+      // Per-delivery plans are never paid as a whole, so `paidAt` stays null
+      // for them. Their precondition is confirmed wallet funding: the wallet
+      // must have received at least one completed credit (which is also what
+      // ends the first-time top-up approval). No minimum balance is required.
+      if (isPerDelivery) {
+        const funding = (await this.loadFunding(tx, [selection.userId])).get(
+          selection.userId,
+        )!;
+        if (!funding.hasCompletedCredit) {
+          throw new BadRequestException({
+            error: 'WALLET_FUNDING_NOT_CONFIRMED',
+            message:
+              funding.pendingCreditCount > 0
+                ? "This customer's wallet top-up is still pending. Approve the wallet credit in Payments/Wallets first, then approve the plan."
+                : 'This customer has not funded their wallet yet. A wallet credit must be confirmed before the plan can be approved.',
+            customerId: selection.userId,
+            funding,
+          });
+        }
+      }
+
+      if (!isPerDelivery && !selection.paidAt) {
         if (
           selection.paymentMethod === PlanPaymentMethod.CASH &&
           selection.cashCollection?.status !== 'CONFIRMED'
@@ -1614,12 +1859,39 @@ export class PlansService {
         data: { status: PlanQuoteStatus.CONFIRMED },
       });
 
+      // A per-delivery plan may be approved long after it was quoted. Its
+      // orders are priced at the per-litre price the customer was quoted, so an
+      // admin price edit in between cannot change what each delivery costs.
+      // The delivery fee and window are not part of the quote and come from
+      // the plan configuration, which must exist.
+      let priceSnapshot: OrderPriceSnapshot | undefined;
+      if (isPerDelivery) {
+        const config: PlanConfig | null = await (
+          tx as any
+        ).planConfig.findUnique({ where: { planType: selection.planType } });
+        if (!config) {
+          throw new BadRequestException({
+            error: 'PLAN_CONFIG_MISSING',
+            message: `Plan configuration for ${selection.planType} is missing; cannot materialise priced orders`,
+            planType: selection.planType,
+          });
+        }
+        priceSnapshot = {
+          sellingPricePerLitrePaise: selection.quote.sellingPricePerLitre,
+          actualPricePerLitrePaise: selection.quote.actualPricePerLitre,
+          deliveryFeePaise: config.deliveryFeePaise ?? 0,
+          deliveryStartTime: config.deliveryStartTime,
+          deliveryEndTime: config.deliveryEndTime,
+        };
+      }
+
       await this.materializeDeliveries(
         tx,
         subscriptionId,
         selection.userId,
         schedule,
         selection.planType as PlanType,
+        priceSnapshot,
       );
 
       return {
@@ -2190,6 +2462,13 @@ export class PlansService {
     const configs = await this.prisma.planConfig.findMany();
     const configByType = new Map(configs.map((c) => [c.planType as string, c]));
 
+    // Wallet funding per customer, so the approval screen can show whether the
+    // funding step is done before the admin approves and schedules.
+    const fundingByUser = await this.loadFunding(
+      this.prisma,
+      Array.from(new Set(selections.map((s: any) => s.userId as string))),
+    );
+
     return {
       data: selections.map((s: any) => ({
         id: s.id,
@@ -2204,6 +2483,17 @@ export class PlansService {
         paymentMethod: s.paymentMethod,
         paidAmountPaise: s.paidAmountPaise,
         paidAt: s.paidAt,
+        billingModel: s.billingModel,
+        funding: fundingByUser.get(s.userId) ?? null,
+        deliveredCount: (s.deliveries || []).filter(
+          (d: any) => d.status === DeliveryStatus.DELIVERED,
+        ).length,
+        upcomingCount: (s.deliveries || []).filter(
+          (d: any) => d.status === DeliveryStatus.SCHEDULED,
+        ).length,
+        skippedCount: (s.deliveries || []).filter(
+          (d: any) => d.status === DeliveryStatus.SKIPPED,
+        ).length,
         approvedByAdminId: s.approvedByAdminId ?? null,
         approvedAt: s.approvedAt ?? null,
         approvalNote: s.approvalNote ?? null,

@@ -17,6 +17,16 @@ export enum PaymentStatus {
   PARTIALLY_REFUNDED = 'PARTIALLY_REFUNDED',
 }
 
+/** Per-delivery billing state of an order (mirrors the Prisma enum). */
+export enum OrderSettlementStatus {
+  PENDING = 'PENDING',
+  SETTLED = 'SETTLED',
+  OUTSTANDING = 'OUTSTANDING',
+}
+
+/** Most orders one bulk delivery/quantity request may carry. */
+export const BULK_ORDER_BATCH_MAX = 200;
+
 /** Valid admin-initiated status transitions. */
 export const ALLOWED_STATUS_TRANSITIONS: Record<string, string[]> = {
   [OrderStatus.PENDING]: [

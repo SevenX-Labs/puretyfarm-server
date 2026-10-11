@@ -337,6 +337,8 @@ export class WalletService {
       this.prisma.walletTransaction.count({ where }),
     ]);
 
+    const orderRefs = await this.loadOrderReferences(transactions);
+
     return {
       data: transactions.map((t) => ({
         id: t.id,
@@ -347,9 +349,64 @@ export class WalletService {
         referenceId: t.referenceId,
         description: t.description,
         createdAt: t.createdAt,
+        order: orderRefs.get(t.id) ?? null,
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
+  }
+
+  /**
+   * For ledger rows that reference an order (delivery charges and order
+   * payments), resolves the order number, its scheduled date and when it was
+   * delivered — in one query — so wallet history can name the delivery each
+   * debit paid for. Keyed by ledger row id.
+   */
+  private async loadOrderReferences(
+    transactions: Array<{
+      id: string;
+      referenceType: string;
+      referenceId: string;
+    }>,
+  ): Promise<
+    Map<
+      string,
+      {
+        id: string;
+        orderNumber: string;
+        scheduledDate: string | null;
+        deliveredAt: Date | null;
+      }
+    >
+  > {
+    const out = new Map();
+    const orderTxns = transactions.filter(
+      (t) => t.referenceType === WalletTransactionReferenceType.ORDER,
+    );
+    if (orderTxns.length === 0) return out;
+
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: orderTxns.map((t) => t.referenceId) } },
+      select: {
+        id: true,
+        orderNumber: true,
+        deliveryDate: true,
+        deliveredAt: true,
+      },
+    });
+    const byId = new Map(orders.map((o) => [o.id, o]));
+    for (const t of orderTxns) {
+      const o = byId.get(t.referenceId);
+      if (!o) continue;
+      out.set(t.id, {
+        id: o.id,
+        orderNumber: o.orderNumber,
+        scheduledDate: o.deliveryDate
+          ? new Date(o.deliveryDate).toISOString().slice(0, 10)
+          : null,
+        deliveredAt: o.deliveredAt,
+      });
+    }
+    return out;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -745,6 +802,8 @@ export class WalletService {
       }),
     ]);
 
+    const orderRefs = await this.loadOrderReferences(wallet.transactions);
+
     return {
       customer: {
         id: wallet.user.id,
@@ -770,6 +829,7 @@ export class WalletService {
         referenceId: t.referenceId,
         description: t.description,
         createdAt: t.createdAt,
+        order: orderRefs.get(t.id) ?? null,
       })),
       createdAt: wallet.createdAt,
       updatedAt: wallet.updatedAt,
