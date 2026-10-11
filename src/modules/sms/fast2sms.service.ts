@@ -60,6 +60,7 @@ export class Fast2SmsService {
           message: `Your Purety Farm verification code is ${otp}. Valid for 5 minutes.`,
           numbers: cleanPhone,
         }),
+        signal: AbortSignal.timeout(4000),
       });
 
       const quickData = await quickResponse.json().catch(() => null);
@@ -95,6 +96,7 @@ export class Fast2SmsService {
           variables_values: otp,
           numbers: cleanPhone,
         }),
+        signal: AbortSignal.timeout(4000),
       });
 
       const otpData = await otpResponse.json().catch(() => null);
