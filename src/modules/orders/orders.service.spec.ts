@@ -422,7 +422,7 @@ describe('OrdersService', () => {
         frequency: DeliveryFrequency.DAILY,
         quantityMode: QuantityMode.FIXED,
         quantity: 2,
-        quote: { totalSellingAmount: 450000, sellingPricePerLitrePaise: 7500 },
+        quote: { totalSellingAmount: 450000, sellingPricePerLitre: 7500 },
         deliveries: [],
         createdAt: new Date('2026-10-10T10:00:00.000Z'),
       });

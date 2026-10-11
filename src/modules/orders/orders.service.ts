@@ -376,7 +376,7 @@ export class OrdersService {
             expectedAmountPaise:
               pendingSelection.quote?.totalSellingAmount ?? 0,
             unitPricePaise:
-              pendingSelection.quote?.sellingPricePerLitrePaise ?? 0,
+              pendingSelection.quote?.sellingPricePerLitre ?? 0,
             funding: {
               status: fundingStatus,
               walletBalancePaise,
