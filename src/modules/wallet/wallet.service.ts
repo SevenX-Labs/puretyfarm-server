@@ -1349,12 +1349,7 @@ export class WalletService {
       });
     }
 
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { id: true, email: true },
-    });
-    const adminTag = admin?.email || adminId;
-    const description = `[Admin: ${adminTag}] ${remark}`;
+    const description = remark;
     const referenceId = idempotencyKey?.trim() || crypto.randomUUID();
 
     return this.prisma.$transaction(async (tx) => {
@@ -1439,12 +1434,7 @@ export class WalletService {
       });
     }
 
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { id: true, email: true },
-    });
-    const adminTag = admin?.email || adminId;
-    const description = `[Admin: ${adminTag}] ${remark}`;
+    const description = remark;
     const referenceId = idempotencyKey?.trim() || crypto.randomUUID();
 
     return this.prisma.$transaction(async (tx) => {

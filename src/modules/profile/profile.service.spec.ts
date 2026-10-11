@@ -123,9 +123,16 @@ describe('ProfileService', () => {
       expect(mockStorageService.createSignedUrl).not.toHaveBeenCalled();
     });
 
+    // A second profile for the same user is rejected by the unique index on
+    // customer_profiles.userId rather than by a pre-flight read, so the
+    // duplicate surfaces as the insert's P2002.
     it('should throw ConflictException if profile already exists', async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(
-        mockProfile,
+      mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
+      mockPrismaService.customerProfile.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint', {
+          code: 'P2002',
+          clientVersion: '6.0.0',
+        }),
       );
       await expect(
         service.createCustomerProfile('user-123', {
@@ -156,9 +163,16 @@ describe('ProfileService', () => {
       ).rejects.toThrow(ConflictException);
     });
 
+    // An unknown user is rejected by the foreign key on
+    // customer_profiles.userId, which Prisma reports as P2003.
     it('should throw NotFoundException if user is not found', async () => {
-      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
       mockPrismaService.user.findUnique.mockResolvedValue(null);
+      mockPrismaService.customerProfile.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Foreign key constraint', {
+          code: 'P2003',
+          clientVersion: '6.0.0',
+        }),
+      );
       await expect(
         service.createCustomerProfile('user-123', {
           firstName: 'Sahil',

@@ -37,6 +37,13 @@ export class PrismaExceptionFilter implements ExceptionFilter {
           message: 'The requested record was not found',
         });
         return;
+      case 'P2028':
+        response.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+          statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+          error: 'TRANSACTION_TIMEOUT',
+          message: 'Database transaction timed out. Please try again.',
+        });
+        return;
       default:
         response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
           statusCode: HttpStatus.INTERNAL_SERVER_ERROR,

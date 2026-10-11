@@ -169,16 +169,17 @@ describe('AuthService', () => {
   });
 
   describe('customerLogin', () => {
-    it('should generate secure OTP, hash with Argon2, store in Valkey, and set cooldown', async () => {
+    it('should generate secure OTP, store only its keyed hash in Valkey, and set cooldown', async () => {
       const result = await service.customerLogin({ mobile: '9876543210' });
 
       expect(result.success).toBe(true);
       expect(result.message).toBe('OTP sent successfully');
 
-      // Stored OTP hash in Valkey
+      // Valkey holds the keyed hash (see secret-hash.util.ts), never the OTP.
       const otpHash = valkeyStore.get('auth:customer:otp:+919876543210');
       expect(otpHash).toBeDefined();
-      expect(otpHash).toContain('$argon2');
+      expect(otpHash).toMatch(/^h1:/);
+      expect(otpHash).not.toMatch(/^\d{6}$/);
 
       // Cooldown set
       expect(valkeyStore.get('auth:customer:otp:cooldown:+919876543210')).toBe(

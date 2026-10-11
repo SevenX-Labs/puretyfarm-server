@@ -908,7 +908,8 @@ export class ManageDeliveryService {
   // ══════════════════════════════════════════════════════════════════
 
   async approveRequest(adminId: string, requestId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(
+      async (tx) => {
       // Atomic state transition: only the first admin to reach a PENDING row wins.
       const updated = await tx.manageDeliveryChangeRequest.updateMany({
         where: { id: requestId, status: ChangeRequestStatus.PENDING },
@@ -950,6 +951,10 @@ export class ManageDeliveryService {
           requestType: request.requestType,
         },
       };
+    },
+    {
+      maxWait: 15_000,
+      timeout: 60_000,
     });
   }
 

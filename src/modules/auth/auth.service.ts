@@ -30,12 +30,27 @@ import {
   hashValue,
   verifyHash,
 } from '../../common/utils/crypto.util';
+import { hashSecret, verifySecret } from '../../common/utils/secret-hash.util';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+
+  // Contexts that bind each hashed secret to its subject, so a hash lifted
+  // from one mobile/user/session cannot be replayed against another.
+  private static otpContext(mobile: string): string {
+    return `customer-otp:${mobile}`;
+  }
+
+  private static emailOtpContext(userId: string): string {
+    return `customer-email-otp:${userId}`;
+  }
+
+  private static refreshTokenContext(sessionId: string): string {
+    return `refresh-token:${sessionId}`;
+  }
 
   constructor(
     private readonly configService: ConfigService,
@@ -155,16 +170,20 @@ export class AuthService {
       );
     }
 
-    // 2. Generate a cryptographically secure OTP and store only its Argon2 hash.
+    // 2. Generate a cryptographically secure OTP and store only its keyed
+    //    hash (peppered HMAC; see secret-hash.util.ts for why not Argon2).
     const otp = generateSecureOtp();
-    const hashedOtp = await hashValue(otp);
+    const hashedOtp = hashSecret(otp, AuthService.otpContext(normalizedMobile));
     const otpKey = `auth:customer:otp:${normalizedMobile}`;
-    await this.valkeyService.set(otpKey, hashedOtp, this.otpExpirySeconds);
 
-    // 3. Reset verification attempts for the fresh OTP.
-    await this.valkeyService.delete(
-      `auth:customer:otp:attempts:${normalizedMobile}`,
-    );
+    // 3. Store the OTP and reset the previous OTP's verification attempts.
+    //    Independent keys, so one round-trip instead of two.
+    await Promise.all([
+      this.valkeyService.set(otpKey, hashedOtp, this.otpExpirySeconds),
+      this.valkeyService.delete(
+        `auth:customer:otp:attempts:${normalizedMobile}`,
+      ),
+    ]);
 
     // 4. Send SMS via Fast2SMS
     await this.fast2SmsService.sendOtp(normalizedMobile, otp);
@@ -188,14 +207,19 @@ export class AuthService {
     const otpKey = `auth:customer:otp:${normalizedMobile}`;
     const attemptsKey = `auth:customer:otp:attempts:${normalizedMobile}`;
 
-    // 1. Retrieve OTP hash from Valkey
-    const storedHash = await this.valkeyService.get(otpKey);
+    // 1. Retrieve the OTP hash and the attempt counter. Both reads are
+    //    independent, so they are issued together: the Glide client
+    //    multiplexes them over one connection, costing a single round-trip to
+    //    Valkey instead of two sequential ones.
+    const [storedHash, attemptsStr] = await Promise.all([
+      this.valkeyService.get(otpKey),
+      this.valkeyService.get(attemptsKey),
+    ]);
     if (!storedHash) {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
     // 2. Check maximum verification attempts
-    const attemptsStr = await this.valkeyService.get(attemptsKey);
     const currentAttempts = attemptsStr ? Number(attemptsStr) : 0;
     if (currentAttempts >= this.otpMaxVerifyAttempts) {
       await this.valkeyService.delete(otpKey);
@@ -204,8 +228,12 @@ export class AuthService {
       );
     }
 
-    // 3. Verify OTP against stored Argon2 hash
-    const isValid = await verifyHash(storedHash, dto.otp);
+    // 3. Verify OTP against the stored keyed hash
+    const isValid = await verifySecret(
+      storedHash,
+      dto.otp,
+      AuthService.otpContext(normalizedMobile),
+    );
     if (!isValid) {
       const attempts = await this.valkeyService.incr(attemptsKey);
       if (attempts === 1) {
@@ -226,14 +254,15 @@ export class AuthService {
     // 4. Single-use: atomically delete the OTP only if it still matches the
     //    hash we just verified. If a concurrent request already consumed it,
     //    this returns false and we reject — preventing OTP reuse / double login.
-    const consumed = await this.valkeyService.compareAndDelete(
-      otpKey,
-      storedHash,
-    );
+    //    The attempt counter is cleared in the same round-trip; it is a
+    //    different key, so it cannot affect the compare-and-delete.
+    const [consumed] = await Promise.all([
+      this.valkeyService.compareAndDelete(otpKey, storedHash),
+      this.valkeyService.delete(attemptsKey),
+    ]);
     if (!consumed) {
       throw new BadRequestException('Invalid or expired OTP');
     }
-    await this.valkeyService.delete(attemptsKey);
 
     // 5. Find or create customer (concurrency-safe against the unique mobile
     //    constraint).
@@ -242,22 +271,43 @@ export class AuthService {
     // 6. Build the session and its tokens with a pre-generated session id so
     //    the refresh token can embed it and the session row is created exactly
     //    once with its real hash — no 'PENDING' placeholder, no mid-flow update.
+    //    Both tokens are signed up front: signing is pure CPU on a few hundred
+    //    bytes, so there is nothing to gain by deferring the access token past
+    //    the session insert, and issuing them together keeps the insert last.
     const sessionId = randomUUID();
     const sessionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
 
-    const refreshToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        sessionId,
-        type: 'refresh',
-      },
-      {
-        secret: this.refreshSecret,
-        expiresIn: this.refreshExpiresIn as any,
-      },
+    const [refreshToken, accessToken] = await Promise.all([
+      this.jwtService.signAsync(
+        {
+          sub: user.id,
+          role: user.role,
+          sessionId,
+          type: 'refresh',
+        },
+        {
+          secret: this.refreshSecret,
+          expiresIn: this.refreshExpiresIn as any,
+        },
+      ),
+      this.jwtService.signAsync(
+        {
+          sub: user.id,
+          role: user.role,
+          sessionId,
+          type: 'access',
+        },
+        {
+          secret: this.accessSecret,
+          expiresIn: this.accessExpiresIn as any,
+        },
+      ),
+    ]);
+
+    const refreshTokenHash = hashSecret(
+      refreshToken,
+      AuthService.refreshTokenContext(sessionId),
     );
-    const refreshTokenHash = await hashValue(refreshToken);
 
     await this.prisma.session.create({
       data: {
@@ -267,19 +317,6 @@ export class AuthService {
         expiresAt: sessionExpiresAt,
       },
     });
-
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        sessionId,
-        type: 'access',
-      },
-      {
-        secret: this.accessSecret,
-        expiresIn: this.accessExpiresIn as any,
-      },
-    );
 
     return {
       success: true,
@@ -326,34 +363,58 @@ export class AuthService {
       throw new UnauthorizedException('Session has been revoked or expired');
     }
 
-    const isMatch = await verifyHash(
+    const isMatch = await verifySecret(
       session.refreshTokenHash,
       dto.refreshToken,
+      AuthService.refreshTokenContext(session.id),
     );
     if (!isMatch) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // Generate rotated refresh token
-    const newRefreshToken = await this.jwtService.signAsync(
-      {
-        sub: session.userId ?? session.adminId!,
-        role: session.user?.role ?? 'ADMIN',
-        sessionId: session.id,
-        type: 'refresh',
-      },
-      {
-        secret: this.refreshSecret,
-        expiresIn: this.refreshExpiresIn as any,
-      },
-    );
+    const subject = session.userId ?? session.adminId!;
+    const role = session.user?.role ?? 'ADMIN';
+
+    // Rotate the refresh token and issue the new access token together; both
+    // are pure CPU and neither depends on the other.
+    const [newRefreshToken, accessToken] = await Promise.all([
+      this.jwtService.signAsync(
+        {
+          sub: subject,
+          role,
+          sessionId: session.id,
+          type: 'refresh',
+        },
+        {
+          secret: this.refreshSecret,
+          expiresIn: this.refreshExpiresIn as any,
+        },
+      ),
+      this.jwtService.signAsync(
+        {
+          sub: subject,
+          role,
+          sessionId: session.id,
+          type: 'access',
+        },
+        {
+          secret: this.accessSecret,
+          expiresIn: this.accessExpiresIn as any,
+        },
+      ),
+    ]);
 
     // Store new hash via a conditional (compare-and-swap) update: the row is
     // only updated while it still holds the exact old hash and is not revoked.
     // If two requests present the same old refresh token concurrently, only the
     // first update matches a row (count === 1); the second matches none
     // (count === 0) and is rejected — so an old token can be rotated only once.
-    const newHash = await hashValue(newRefreshToken);
+    // Rotation also upgrades the stored hash: a session created under the old
+    // Argon2 scheme ends up with the new keyed hash the first time it is used.
+    const newHash = hashSecret(
+      newRefreshToken,
+      AuthService.refreshTokenContext(session.id),
+    );
     const rotation = await this.prisma.session.updateMany({
       where: {
         id: session.id,
@@ -369,20 +430,6 @@ export class AuthService {
     if (rotation.count === 0) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
-
-    // Generate new access token
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: session.userId ?? session.adminId!,
-        role: session.user?.role ?? 'ADMIN',
-        sessionId: session.id,
-        type: 'access',
-      },
-      {
-        secret: this.accessSecret,
-        expiresIn: this.accessExpiresIn as any,
-      },
-    );
 
     return {
       success: true,
@@ -466,20 +513,20 @@ export class AuthService {
 
     // Generate secure OTP
     const otp = generateSecureOtp();
-    const hashedOtp = await hashValue(otp);
+    const hashedOtp = hashSecret(otp, AuthService.emailOtpContext(userId));
 
-    // Store in Valkey bound to user and email
+    // Store in Valkey bound to user and email, and reset the attempt counter
+    // for the fresh OTP. Independent keys, so one round-trip instead of two.
+    // The cooldown was already armed atomically by reserveSendSlot above.
     const emailOtpKey = `auth:customer:email:${userId}`;
-    await this.valkeyService.set(
-      emailOtpKey,
-      JSON.stringify({ email: normalizedEmail, hash: hashedOtp }),
-      this.otpExpirySeconds,
-    );
-
-    // Cooldown was already armed atomically by reserveSendSlot above.
-
-    // Reset attempt counter for the fresh OTP.
-    await this.valkeyService.delete(`auth:customer:email:attempts:${userId}`);
+    await Promise.all([
+      this.valkeyService.set(
+        emailOtpKey,
+        JSON.stringify({ email: normalizedEmail, hash: hashedOtp }),
+        this.otpExpirySeconds,
+      ),
+      this.valkeyService.delete(`auth:customer:email:attempts:${userId}`),
+    ]);
 
     if (process.env.NODE_ENV !== 'production') {
       this.logger.log(
@@ -502,8 +549,12 @@ export class AuthService {
     const attemptsKey = `auth:customer:email:attempts:${userId}`;
     const cooldownKey = `auth:customer:email:cooldown:${userId}`;
 
-    // 1. Retrieve stored state from Valkey
-    const storedData = await this.valkeyService.get(emailOtpKey);
+    // 1. Retrieve the stored state and the attempt counter in one round-trip
+    //    (independent keys, multiplexed over the single Valkey connection).
+    const [storedData, attemptsStr] = await Promise.all([
+      this.valkeyService.get(emailOtpKey),
+      this.valkeyService.get(attemptsKey),
+    ]);
     if (!storedData) {
       throw new BadRequestException(
         'Invalid or expired email verification OTP',
@@ -511,7 +562,6 @@ export class AuthService {
     }
 
     // 2. Check maximum verification attempts
-    const attemptsStr = await this.valkeyService.get(attemptsKey);
     const currentAttempts = attemptsStr ? Number(attemptsStr) : 0;
     if (currentAttempts >= this.otpMaxVerifyAttempts) {
       await this.valkeyService.delete(emailOtpKey);
@@ -536,7 +586,11 @@ export class AuthService {
     }
 
     // 3. Verify submitted OTP against hash
-    const isValid = await verifyHash(parsed.hash, dto.otp);
+    const isValid = await verifySecret(
+      parsed.hash,
+      dto.otp,
+      AuthService.emailOtpContext(userId),
+    );
     if (!isValid) {
       const attempts = await this.valkeyService.incr(attemptsKey);
       if (attempts === 1) {
@@ -567,16 +621,11 @@ export class AuthService {
       );
     }
 
-    // 5. Check if email was claimed by another user in the interim
-    const existing = await this.usersService.findByEmail(normalizedEmail);
-    if (existing && existing.id !== userId) {
-      throw new ConflictException(
-        'Email is already associated with another account',
-      );
-    }
-
-    // 6. Update user email and set emailVerified = true. Guard against a
-    //    concurrent unique-email race at the database level.
+    // 5. Update user email and set emailVerified = true. The unique index on
+    //    users.email is the authority on whether the address was claimed by
+    //    another account in the interim: it rejects the write with P2002,
+    //    which maps to the same ConflictException a pre-read would have
+    //    produced. Relying on it drops a round-trip from every verification.
     try {
       await this.usersService.updateEmail(userId, normalizedEmail, true);
     } catch (error) {
@@ -591,9 +640,11 @@ export class AuthService {
       throw error;
     }
 
-    // 7. Clear remaining state
-    await this.valkeyService.delete(attemptsKey);
-    await this.valkeyService.delete(cooldownKey);
+    // 6. Clear remaining state (one round-trip for both keys).
+    await Promise.all([
+      this.valkeyService.delete(attemptsKey),
+      this.valkeyService.delete(cooldownKey),
+    ]);
 
     return {
       success: true,
@@ -628,19 +679,37 @@ export class AuthService {
     const sessionId = randomUUID();
     const sessionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
 
-    const refreshToken = await this.jwtService.signAsync(
-      {
-        sub: admin.id,
-        role: 'ADMIN',
-        sessionId,
-        type: 'refresh',
-      },
-      {
-        secret: this.refreshSecret,
-        expiresIn: this.refreshExpiresIn as any,
-      },
+    const [refreshToken, accessToken] = await Promise.all([
+      this.jwtService.signAsync(
+        {
+          sub: admin.id,
+          role: 'ADMIN',
+          sessionId,
+          type: 'refresh',
+        },
+        {
+          secret: this.refreshSecret,
+          expiresIn: this.refreshExpiresIn as any,
+        },
+      ),
+      this.jwtService.signAsync(
+        {
+          sub: admin.id,
+          role: 'ADMIN',
+          sessionId,
+          type: 'access',
+        },
+        {
+          secret: this.accessSecret,
+          expiresIn: this.accessExpiresIn as any,
+        },
+      ),
+    ]);
+
+    const refreshTokenHash = hashSecret(
+      refreshToken,
+      AuthService.refreshTokenContext(sessionId),
     );
-    const refreshTokenHash = await hashValue(refreshToken);
 
     await this.prisma.session.create({
       data: {
@@ -650,19 +719,6 @@ export class AuthService {
         expiresAt: sessionExpiresAt,
       },
     });
-
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: admin.id,
-        role: 'ADMIN',
-        sessionId,
-        type: 'access',
-      },
-      {
-        secret: this.accessSecret,
-        expiresIn: this.accessExpiresIn as any,
-      },
-    );
 
     return {
       success: true,

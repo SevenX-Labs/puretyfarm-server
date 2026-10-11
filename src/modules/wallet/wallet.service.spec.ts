@@ -829,7 +829,7 @@ describe('WalletService', () => {
             balanceAfterPaise: 70000,
             referenceType: WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
             description:
-              '[Admin: admin@puretyfarm.com] Approved manual wallet adjustment',
+              'Approved manual wallet adjustment',
           }),
         }),
       );
@@ -895,7 +895,7 @@ describe('WalletService', () => {
             balanceAfterPaise: 60000,
             referenceType: WalletTransactionReferenceType.ADMIN_ADJUSTMENT,
             description:
-              '[Admin: admin@puretyfarm.com] Correction for duplicate wallet credit',
+              'Correction for duplicate wallet credit',
           }),
         }),
       );

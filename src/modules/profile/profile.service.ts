@@ -50,47 +50,53 @@ export class ProfileService {
     userId: string,
     dto: CustomerCreateProfileDto,
   ): Promise<CombinedCustomerProfileResponse> {
-    const [existing, user] = await Promise.all([
-      this.prisma.customerProfile.findUnique({
-        where: { userId },
-      }),
+    // Validate before touching the database so a bad date costs no round-trip.
+    const dob = this.validateAndParseDate(dto.dateOfBirth);
+
+    // The insert is issued together with the user read rather than after a
+    // pre-flight existence check, so the whole endpoint is one round-trip to a
+    // pooled, network-hopped Postgres instead of two. Nothing is lost: the
+    // checks the pre-read performed are enforced by the schema anyway —
+    // the unique index on customer_profiles.userId rejects a second profile
+    // (P2002) and the foreign key rejects an unknown user (P2003) — and both
+    // were already the authoritative answer under concurrency. The user row is
+    // only read for the response fields (mobile, email), which the insert
+    // cannot return.
+    const [profile, user] = await Promise.all([
+      this.prisma.customerProfile
+        .create({
+          data: {
+            userId,
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            gender: dto.gender,
+            dateOfBirth: dob,
+            whatsappNumber: dto.whatsappNumber,
+          },
+        })
+        .catch((error: unknown) => {
+          if (error instanceof Prisma.PrismaClientKnownRequestError) {
+            if (error.code === 'P2002') {
+              throw new ConflictException('Customer profile already exists');
+            }
+            if (error.code === 'P2003' || error.code === 'P2025') {
+              throw new NotFoundException('User not found');
+            }
+          }
+          throw error;
+        }),
       this.prisma.user.findUnique({
         where: { id: userId },
       }),
     ]);
 
-    if (existing) {
-      throw new ConflictException('Customer profile already exists');
-    }
-
     if (!user) {
+      // Unreachable while the foreign key holds: the insert above could not
+      // have succeeded without this row.
       throw new NotFoundException('User not found');
     }
 
-    const dob = this.validateAndParseDate(dto.dateOfBirth);
-
-    try {
-      const profile = await this.prisma.customerProfile.create({
-        data: {
-          userId,
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          gender: dto.gender,
-          dateOfBirth: dob,
-          whatsappNumber: dto.whatsappNumber,
-        },
-      });
-
-      return await this.buildProfileResponse(profile, user);
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        throw new ConflictException('Customer profile already exists');
-      }
-      throw error;
-    }
+    return await this.buildProfileResponse(profile, user);
   }
 
   /**

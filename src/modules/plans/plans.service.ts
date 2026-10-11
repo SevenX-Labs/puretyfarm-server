@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import {
   Injectable,
   BadRequestException,
@@ -934,7 +935,8 @@ export class PlansService {
     userId: string,
     dto: ConfirmPlanDto,
   ): Promise<ConfirmationResponse> {
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(
+      async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
 
       const quote = await tx.planQuote.findUnique({
@@ -1082,6 +1084,10 @@ export class PlansService {
             ? 'Your plan is awaiting admin approval. Your wallet is charged per delivery, only when each order is delivered.'
             : 'Your plan is awaiting wallet funding confirmation and admin approval. Your wallet is charged per delivery, only when each order is delivered.',
       };
+    },
+    {
+      maxWait: 10_000,
+      timeout: 30_000,
     });
   }
 
@@ -1594,6 +1600,90 @@ export class PlansService {
       ? []
       : await generateInvoiceNumbers(tx, pendingDeliveries.length);
 
+    // Batch order materialisation:
+    // Bulk-create orders, order items and invoices to reduce round-trips from dozens
+    // down to 2-3 queries, preventing Prisma transaction timeout (P2028).
+    if (typeof (tx as any).order?.createMany === 'function') {
+      const orderRecords: any[] = [];
+      const itemRecords: any[] = [];
+      const invoiceRecords: any[] = [];
+
+      for (let i = 0; i < pendingDeliveries.length; i++) {
+        const d = pendingDeliveries[i];
+        const orderId = randomUUID();
+        const orderNumber = orderNumbers[i];
+        const invoiceNumber = isPerDelivery ? null : invoiceNumbers[i];
+
+        const qty = d.quantityLitres || 1;
+        const itemTotal = unitPrice * qty;
+        const total = itemTotal + deliveryFee;
+
+        orderRecords.push({
+          id: orderId,
+          orderNumber,
+          userId,
+          planSelectionId: selectionId,
+          planDeliveryId: d.id,
+          planType,
+          status: 'CONFIRMED',
+          paymentStatus: isPerDelivery ? 'PENDING' : 'PAID',
+          ...(isPerDelivery ? { settlementStatus: 'PENDING' } : {}),
+          subtotalPaise: itemTotal,
+          discountPaise: 0,
+          taxPaise: 0,
+          deliveryFeePaise: deliveryFee,
+          totalPaise: total,
+          deliveryDate: d.deliveryDate,
+          deliveryStartTime,
+          deliveryEndTime,
+          addressSnapshot,
+          actualPricePerLitrePaise: actualPrice,
+          sellingPricePerLitrePaise: unitPrice,
+        });
+
+        itemRecords.push({
+          id: randomUUID(),
+          orderId,
+          productNameSnapshot: 'A2 Desi Gir Cow Milk',
+          quantity: qty,
+          unitPricePaise: unitPrice,
+          discountPaise: 0,
+          taxPaise: 0,
+          totalPaise: itemTotal,
+        });
+
+        if (invoiceNumber) {
+          invoiceRecords.push({
+            id: randomUUID(),
+            orderId,
+            invoiceNumber,
+            addressSnapshot,
+            financialSnapshot: {
+              subtotalPaise: itemTotal,
+              discountPaise: 0,
+              taxPaise: 0,
+              deliveryFeePaise: deliveryFee,
+              totalPaise: total,
+            },
+            status: 'ISSUED',
+          });
+        }
+      }
+
+      await (tx as any).order.createMany({ data: orderRecords });
+      if (
+        itemRecords.length > 0 &&
+        typeof (tx as any).orderItem?.createMany === 'function'
+      ) {
+        await (tx as any).orderItem.createMany({ data: itemRecords });
+      }
+      if (
+        invoiceRecords.length > 0 &&
+        typeof (tx as any).invoice?.createMany === 'function'
+      ) {
+        await (tx as any).invoice.createMany({ data: invoiceRecords });
+      }
+    } else {
     for (let i = 0; i < pendingDeliveries.length; i++) {
       const d = pendingDeliveries[i];
       const orderNumber = orderNumbers[i];
@@ -1657,6 +1747,7 @@ export class PlansService {
             : {}),
         },
       });
+    }
     }
   }
 
@@ -1756,7 +1847,8 @@ export class PlansService {
     subscriptionId: string,
     dto: ApproveSubscriptionPlanDto,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(
+      async (tx) => {
       const selection = await (tx as any).planSelection.findUnique({
         where: { id: subscriptionId },
         include: { quote: true, cashCollection: true },
@@ -1918,6 +2010,10 @@ export class PlansService {
         approvedAt: now.toISOString(),
         approvalNote: dto.note ?? null,
       };
+    },
+    {
+      maxWait: 15_000,
+      timeout: 60_000,
     });
   }
 
