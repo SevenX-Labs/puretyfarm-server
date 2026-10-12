@@ -600,16 +600,13 @@ export class OrdersService {
     if (query.planType) where.planType = query.planType;
     if (query.orderNumber)
       where.orderNumber = { contains: query.orderNumber, mode: 'insensitive' };
-    if (query.deliveryDate)
+    if (query.deliveryDate) {
       where.deliveryDate = new Date(query.deliveryDate);
-    if (query.startDate || query.endDate) {
-      where.createdAt = {};
-      if (query.startDate) where.createdAt.gte = new Date(query.startDate);
-      if (query.endDate) {
-        const end = new Date(query.endDate);
-        end.setUTCDate(end.getUTCDate() + 1);
-        where.createdAt.lt = end;
-      }
+    } else if (query.startDate || query.endDate) {
+      const dateRange: any = {};
+      if (query.startDate) dateRange.gte = new Date(query.startDate);
+      if (query.endDate) dateRange.lte = new Date(query.endDate);
+      where.deliveryDate = dateRange;
     }
     if (query.customerSearch) {
       where.user = {
