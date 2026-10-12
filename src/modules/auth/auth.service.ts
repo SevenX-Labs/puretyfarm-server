@@ -26,6 +26,10 @@ import { AdminLoginDto } from './dto/admin/login.dto';
 import { AdminChangePasswordDto } from './dto/admin/change-password.dto';
 import { normalizeMobile } from '../../common/utils/phone.util';
 import {
+  getIstDateString,
+  getSecondsUntilIstMidnight,
+} from '../../common/utils/ist-date.util';
+import {
   generateSecureOtp,
   hashValue,
   verifyHash,
@@ -82,7 +86,7 @@ export class AuthService {
   }
 
   private get otpDailySendLimit(): number {
-    return Number(this.configService.get('OTP_DAILY_SEND_LIMIT')) || 15;
+    return Number(this.configService.get('OTP_DAILY_SEND_LIMIT')) || 20;
   }
 
   private get emailDailySendLimit(): number {
@@ -129,11 +133,14 @@ export class AuthService {
 
     const cooldownKey = `auth:customer:otp:cooldown:${normalizedMobile}`;
     const fiveMinKey = `auth:customer:otp:send:${normalizedMobile}:5m`;
-    const dailyKey = `auth:customer:otp:send:${normalizedMobile}:daily`;
+    const todayIst = getIstDateString();
+    const dailyKey = `auth:customer:otp:send:${normalizedMobile}:daily:${todayIst}`;
+    const secondsUntilMidnight = getSecondsUntilIstMidnight();
 
     // 1. Atomically check cooldown + both send counters and reserve a slot.
     //    Checking and incrementing in one script prevents concurrent requests
-    //    from bypassing the 60s cooldown / 5-per-5min / 15-per-day limits.
+    //    from bypassing the 60s cooldown / 5-per-5min / 20-per-day limits.
+    //    The daily key is scoped to the IST calendar day and expires at 12:00 AM IST midnight.
     const reservation = await this.valkeyService.reserveSendSlot(
       cooldownKey,
       this.otpResendCooldownSeconds,
@@ -146,7 +153,7 @@ export class AuthService {
         {
           key: dailyKey,
           limit: this.otpDailySendLimit,
-          ttlSeconds: 86400,
+          ttlSeconds: secondsUntilMidnight,
         },
       ],
     );

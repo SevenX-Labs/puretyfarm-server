@@ -8,6 +8,8 @@ import {
   parseHhMmToMinutes,
   formatMinutesTo12h,
   formatHhMmTo12h,
+  getIstDateString,
+  getSecondsUntilIstMidnight,
 } from './ist-date.util';
 
 /** The UTC instant at which it is `hh:mm` IST on the given Indian date. */
@@ -150,6 +152,27 @@ describe('ist-date.util', () => {
       expect(formatHhMmTo12h(null)).toBeNull();
       expect(formatHhMmTo12h(undefined)).toBeNull();
       expect(formatHhMmTo12h('nope')).toBeNull();
+    });
+  });
+  describe("getIstDateString", () => {
+    it("returns correct YYYY-MM-DD for IST calendar days", () => {
+      // 18:29 UTC on 10 Oct is 23:59 IST on 10 Oct
+      expect(getIstDateString(new Date("2026-10-10T18:29:00Z"))).toBe("2026-10-10");
+      // 18:30 UTC on 10 Oct is 00:00 IST on 11 Oct
+      expect(getIstDateString(new Date("2026-10-10T18:30:00Z"))).toBe("2026-10-11");
+    });
+  });
+
+  describe("getSecondsUntilIstMidnight", () => {
+    it("calculates exact seconds remaining until 12:00 AM IST", () => {
+      // 18:29:00 UTC is 23:59:00 IST -> 60 seconds until midnight
+      expect(getSecondsUntilIstMidnight(new Date("2026-10-10T18:29:00Z"))).toBe(60);
+      // 18:29:59 UTC is 23:59:59 IST -> 1 second until midnight
+      expect(getSecondsUntilIstMidnight(new Date("2026-10-10T18:29:59Z"))).toBe(1);
+      // 18:30:00 UTC is 00:00:00 IST -> start of new day, 86400s until next midnight
+      expect(getSecondsUntilIstMidnight(new Date("2026-10-10T18:30:00Z"))).toBe(86400);
+      // 00:00:00 UTC is 05:30:00 IST -> 18.5 hours (66,600s) until midnight
+      expect(getSecondsUntilIstMidnight(new Date("2026-10-10T00:00:00Z"))).toBe(18.5 * 3600);
     });
   });
 });

@@ -15,6 +15,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { ValkeyService } from '../../valkey/valkey.service';
 import { hashValue } from '../../common/utils/crypto.util';
+import { getIstDateString } from '../../common/utils/ist-date.util';
 
 jest.mock('@nestjs/config', () => ({
   ConfigService: jest.fn().mockImplementation(() => ({
@@ -40,7 +41,7 @@ describe('AuthService', () => {
         OTP_MAX_VERIFY_ATTEMPTS: 5,
         OTP_SEND_LIMIT: 5,
         OTP_SEND_WINDOW_SECONDS: 300,
-        OTP_DAILY_SEND_LIMIT: 15,
+        OTP_DAILY_SEND_LIMIT: 20,
         JWT_ACCESS_SECRET: 'test-access-secret',
         JWT_REFRESH_SECRET: 'test-refresh-secret',
         JWT_ACCESS_EXPIRES_IN: '30m',
@@ -204,14 +205,17 @@ describe('AuthService', () => {
     });
 
     it('should reject when daily send limit reached (429)', async () => {
-      valkeyStore.set('auth:customer:otp:send:+919876543210:daily', '15');
+      valkeyStore.set(
+        `auth:customer:otp:send:+919876543210:daily:${getIstDateString()}`,
+        '20',
+      );
 
       await expect(
         service.customerLogin({ mobile: '9876543210' }),
       ).rejects.toThrow(HttpException);
     });
 
-    it('should reserve the send slot with the exact preserved limits (5/5min, 15/day, 60s cooldown)', async () => {
+    it('should reserve the send slot with the exact preserved limits (5/5min, 20/day, 60s cooldown)', async () => {
       await service.customerLogin({ mobile: '9876543210' });
 
       expect(mockValkeyService.reserveSendSlot).toHaveBeenCalledWith(
@@ -224,12 +228,24 @@ describe('AuthService', () => {
             ttlSeconds: 300,
           },
           {
-            key: 'auth:customer:otp:send:+919876543210:daily',
-            limit: 15,
-            ttlSeconds: 86400,
+            key: `auth:customer:otp:send:+919876543210:daily:${getIstDateString()}`,
+            limit: 20,
+            ttlSeconds: expect.any(Number),
           },
         ],
       );
+    });
+
+    it('should reset daily limit day-wise (exhausted yesterday does not block today)', async () => {
+      // Suppose yesterday was exhausted with 20 attempts
+      valkeyStore.set(
+        'auth:customer:otp:send:+919876543210:daily:2026-10-10',
+        '20',
+      );
+
+      // Today (current date) is clean, so customer login succeeds
+      const res = await service.customerLogin({ mobile: '9876543210' });
+      expect(res.success).toBe(true);
     });
 
     it('should block a second immediate send via the armed cooldown', async () => {

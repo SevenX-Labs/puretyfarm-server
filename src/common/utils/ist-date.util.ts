@@ -71,6 +71,25 @@ export function toIsoDateString(dateOnly: Date): string {
   return dateOnly.toISOString().slice(0, 10);
 }
 
+/**
+ * Current date string in India Standard Time (`YYYY-MM-DD`).
+ */
+export function getIstDateString(instant: Date = new Date()): string {
+  return toIsoDateString(toIstDateOnly(instant));
+}
+
+/**
+ * Seconds remaining until the next midnight in India Standard Time (12:00 AM IST).
+ * Minimum return value is 1 second.
+ */
+export function getSecondsUntilIstMidnight(instant: Date = new Date()): number {
+  const todayIst = toIstDateOnly(instant);
+  const tomorrowIst = addDays(todayIst, 1);
+  const nextMidnightMs =
+    tomorrowIst.getTime() - IST_UTC_OFFSET_MINUTES * MS_PER_MINUTE;
+  return Math.max(1, Math.ceil((nextMidnightMs - instant.getTime()) / 1000));
+}
+
 /** 24-hour `HH:MM` — the only accepted wire format for a time of day. */
 export const HH_MM_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
