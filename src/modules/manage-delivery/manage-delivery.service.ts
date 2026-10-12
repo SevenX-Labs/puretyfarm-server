@@ -1532,6 +1532,29 @@ export class ManageDeliveryService {
         },
         data: { status: DeliveryStatus.SCHEDULED },
       });
+
+      // Restore dispatch orders for revived deliveries back to CONFIRMED.
+      // applyPause cancelled them while suspended; now that the deliveries are
+      // SCHEDULED again, their orders must be active for dispatch and reporting.
+      const revivedDeliveries = await tx.planDelivery.findMany({
+        where: {
+          id: { in: pausedIds },
+          selectionId: selection.id,
+          status: DeliveryStatus.SCHEDULED,
+          deliveryDate: { gt: today },
+        },
+        select: { id: true },
+      });
+      const revivedDeliveryIds = revivedDeliveries.map((d: any) => d.id);
+      if (revivedDeliveryIds.length > 0) {
+        await tx.order.updateMany({
+          where: {
+            planDeliveryId: { in: revivedDeliveryIds },
+            status: 'CANCELLED',
+          },
+          data: { status: OrderStatus.CONFIRMED },
+        });
+      }
     }
 
     if (!selection.endDate) return;

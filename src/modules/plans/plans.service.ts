@@ -1600,8 +1600,21 @@ export class PlansService {
     const deliveryIds = deliveries.map((d: any) => d.id);
     const existingOrders = await (tx as any).order.findMany({
       where: { planDeliveryId: { in: deliveryIds } },
-      select: { planDeliveryId: true },
+      select: { id: true, planDeliveryId: true, status: true },
     });
+
+    // If any scheduled delivery has an order that was marked CANCELLED (e.g. from a pause),
+    // restore it to CONFIRMED so dispatch, billing and reporting stay consistent.
+    const cancelledOrderIds = existingOrders
+      .filter((o: any) => o.status === 'CANCELLED')
+      .map((o: any) => o.id);
+    if (cancelledOrderIds.length > 0) {
+      await (tx as any).order.updateMany({
+        where: { id: { in: cancelledOrderIds } },
+        data: { status: 'CONFIRMED' },
+      });
+    }
+
     const deliveryIdsWithOrder = new Set<string>(
       existingOrders.map((o: any) => o.planDeliveryId),
     );
