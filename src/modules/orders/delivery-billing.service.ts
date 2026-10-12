@@ -1,4 +1,6 @@
+import { RealtimeEventsService } from '../realtime/realtime-events.service';
 import {
+  Optional,
   BadRequestException,
   ConflictException,
   Inject,
@@ -100,6 +102,7 @@ export class DeliveryBillingService {
     private readonly prisma: PrismaService,
     @Inject(forwardRef(() => WalletService))
     private readonly walletService: WalletService,
+    @Optional() private readonly realtimeService?: RealtimeEventsService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════
@@ -124,9 +127,19 @@ export class DeliveryBillingService {
     now: Date = new Date(),
   ): Promise<SettlementResult> {
     try {
-      return await this.prisma.$transaction((tx) =>
+      const result = await this.prisma.$transaction((tx) =>
         this.settleDeliveryWithin(tx, orderId, adminId, now),
       );
+      try {
+        if (result.outcome === 'SETTLED') {
+          this.realtimeService?.publishToCustomer(result.customerId, ['orders.updated', 'wallet.updated']);
+          this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.deliveries.updated', 'admin.wallets.updated', 'admin.dashboard.updated']);
+        } else if (result.outcome === 'DELIVERED_PREPAID' || result.outcome === 'INSUFFICIENT_BALANCE') {
+          this.realtimeService?.publishToCustomer(result.customerId, ['orders.updated']);
+          this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.deliveries.updated', 'admin.dashboard.updated']);
+        }
+      } catch {}
+      return result;
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&

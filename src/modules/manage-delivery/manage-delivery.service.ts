@@ -1,5 +1,7 @@
+import { RealtimeEventsService } from '../realtime/realtime-events.service';
 import {
   Injectable,
+  Optional,
   BadRequestException,
   NotFoundException,
   ConflictException,
@@ -112,6 +114,7 @@ export class ManageDeliveryService {
     private readonly prisma: PrismaService,
     private readonly plansService: PlansService,
     private readonly deliveryBilling: DeliveryBillingService,
+    @Optional() private readonly realtimeService?: RealtimeEventsService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════
@@ -237,6 +240,10 @@ export class ManageDeliveryService {
     });
 
     const view = await this.getManageDelivery(userId);
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['plan.updated', 'orders.updated']);
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+    } catch {}
     return {
       success: true,
       message: 'Delivery skipped successfully.',
@@ -311,6 +318,10 @@ export class ManageDeliveryService {
       },
     });
 
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['plan.updated']);
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+    } catch {}
     return {
       success: true,
       message:
@@ -359,6 +370,10 @@ export class ManageDeliveryService {
       },
     });
 
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['plan.updated']);
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+    } catch {}
     return {
       success: true,
       message:
@@ -405,6 +420,10 @@ export class ManageDeliveryService {
       },
     });
 
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['plan.updated']);
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+    } catch {}
     return {
       success: true,
       message:
@@ -908,7 +927,7 @@ export class ManageDeliveryService {
   // ══════════════════════════════════════════════════════════════════
 
   async approveRequest(adminId: string, requestId: string) {
-    return this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
       // Atomic state transition: only the first admin to reach a PENDING row wins.
       const updated = await tx.manageDeliveryChangeRequest.updateMany({
@@ -956,6 +975,17 @@ export class ManageDeliveryService {
       maxWait: 15_000,
       timeout: 60_000,
     });
+    try {
+      const req = await this.prisma.manageDeliveryChangeRequest.findUnique({
+        where: { id: requestId },
+        select: { userId: true },
+      });
+      if (req?.userId) {
+        this.realtimeService?.publishToCustomer(req.userId, ['plan.updated', 'orders.updated', 'wallet.updated']);
+      }
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated', 'admin.orders.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -967,7 +997,7 @@ export class ManageDeliveryService {
     requestId: string,
     dto: RejectRequestDto,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.manageDeliveryChangeRequest.updateMany({
         where: { id: requestId, status: ChangeRequestStatus.PENDING },
         data: {
@@ -998,6 +1028,17 @@ export class ManageDeliveryService {
         },
       };
     });
+    try {
+      const req = await this.prisma.manageDeliveryChangeRequest.findUnique({
+        where: { id: requestId },
+        select: { userId: true },
+      });
+      if (req?.userId) {
+        this.realtimeService?.publishToCustomer(req.userId, ['plan.updated']);
+      }
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════

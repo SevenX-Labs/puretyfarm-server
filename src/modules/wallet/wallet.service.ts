@@ -1,4 +1,5 @@
-import {
+import { RealtimeEventsService } from '../realtime/realtime-events.service';
+import { Optional,
   Injectable,
   BadRequestException,
   NotFoundException,
@@ -33,6 +34,7 @@ export class WalletService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    @Optional() private readonly realtimeService?: RealtimeEventsService,
   ) {
     this.minCreditPaise = parseInt(
       this.config.get<string>('WALLET_CREDIT_MIN_PAISE') ||
@@ -178,7 +180,7 @@ export class WalletService {
 
     const requestHash = this.computeRequestHash(amountPaise);
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const wallet = await this.getOrCreateWallet(userId, tx);
 
       // Lock the wallet row
@@ -265,6 +267,13 @@ export class WalletService {
 
       return this.formatCreditRequestResponse(updated!, false);
     });
+    try {
+      this.realtimeService?.publishToAdmins(['admin.wallets.updated', 'admin.dashboard.updated']);
+      if (result && !(result as any).replayed && (result as any).status === 'COMPLETED') {
+        this.realtimeService?.publishToCustomer(userId, ['wallet.updated']);
+      }
+    } catch {}
+    return result;
   }
 
   /**
@@ -449,9 +458,20 @@ export class WalletService {
   // ══════════════════════════════════════════════════════════════════
 
   async approveCreditRequest(requestId: string, adminId: string) {
-    return this.prisma.$transaction(async (tx) =>
+    const result = await this.prisma.$transaction(async (tx) =>
       this.approveCreditRequestWithin(tx, requestId, adminId),
     );
+    try {
+      const req = await this.prisma.walletCreditRequest.findUnique({
+        where: { id: requestId },
+        select: { wallet: { select: { userId: true } } },
+      });
+      if (req?.wallet?.userId) {
+        this.realtimeService?.publishToCustomer(req.wallet.userId, ['wallet.updated']);
+      }
+      this.realtimeService?.publishToAdmins(['admin.wallets.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   /**
@@ -543,7 +563,7 @@ export class WalletService {
     adminId: string,
     dto: RejectCreditRequestDto,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const now = new Date();
 
       const updated = await tx.walletCreditRequest.updateMany({
@@ -584,6 +604,17 @@ export class WalletService {
         },
       };
     });
+    try {
+      const req = await this.prisma.walletCreditRequest.findUnique({
+        where: { id: requestId },
+        select: { wallet: { select: { userId: true } } },
+      });
+      if (req?.wallet?.userId) {
+        this.realtimeService?.publishToCustomer(req.wallet.userId, ['wallet.updated']);
+      }
+      this.realtimeService?.publishToAdmins(['admin.wallets.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -1352,7 +1383,7 @@ export class WalletService {
     const description = remark;
     const referenceId = idempotencyKey?.trim() || crypto.randomUUID();
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // Idempotency check
       const existing = await tx.walletTransaction.findUnique({
         where: {
@@ -1399,6 +1430,11 @@ export class WalletService {
         transactionId: result.transactionId,
       };
     });
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['wallet.updated']);
+      this.realtimeService?.publishToAdmins(['admin.wallets.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   async adminManualDebit(
@@ -1437,7 +1473,7 @@ export class WalletService {
     const description = remark;
     const referenceId = idempotencyKey?.trim() || crypto.randomUUID();
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // Idempotency check
       const existing = await tx.walletTransaction.findUnique({
         where: {
@@ -1484,5 +1520,10 @@ export class WalletService {
         transactionId: result.transactionId,
       };
     });
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['wallet.updated']);
+      this.realtimeService?.publishToAdmins(['admin.wallets.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 }

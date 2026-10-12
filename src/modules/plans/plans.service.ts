@@ -1,6 +1,8 @@
+import { RealtimeEventsService } from '../realtime/realtime-events.service';
 import { randomUUID } from 'crypto';
 import {
   Injectable,
+  Optional,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
@@ -522,6 +524,7 @@ export class PlansService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly walletService: WalletService,
+    @Optional() private readonly realtimeService?: RealtimeEventsService,
   ) {}
 
   // ── Plans Overview ──────────────────────────────────────────────
@@ -942,7 +945,7 @@ export class PlansService {
     userId: string,
     dto: ConfirmPlanDto,
   ): Promise<ConfirmationResponse> {
-    return this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
 
@@ -1104,6 +1107,11 @@ export class PlansService {
       maxWait: 10_000,
       timeout: 30_000,
     });
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['plan.updated', 'orders.updated']);
+      this.realtimeService?.publishToAdmins(['admin.plans.updated', 'admin.orders.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ── Funding ─────────────────────────────────────────────────────
@@ -1875,7 +1883,7 @@ export class PlansService {
     subscriptionId: string,
     dto: ApproveSubscriptionPlanDto,
   ) {
-    return this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
       const selection = await (tx as any).planSelection.findUnique({
         where: { id: subscriptionId },
@@ -2049,6 +2057,17 @@ export class PlansService {
       maxWait: 15_000,
       timeout: 60_000,
     });
+    try {
+      const selection = await this.prisma.planSelection.findUnique({
+        where: { id: subscriptionId },
+        select: { userId: true },
+      });
+      if (selection?.userId) {
+        this.realtimeService?.publishToCustomer(selection.userId, ['plan.updated', 'orders.updated']);
+      }
+      this.realtimeService?.publishToAdmins(['admin.plans.updated', 'admin.orders.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ── Admin: Plan Configuration ───────────────────────────────────
@@ -2095,7 +2114,7 @@ export class PlansService {
   ): Promise<AdminPlanConfigResponse> {
     const dto = await parseUpdateAdminPlanDto(planType, body);
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // Serialise concurrent edits of the same plan so two partial updates
       // (e.g. min=4 and max=2) cannot each pass validation against a stale row.
       const lockKey = `plan_config:${planType}`;
@@ -2132,6 +2151,11 @@ export class PlansService {
       });
       return toAdminPlanResponse(created);
     });
+    try {
+      this.realtimeService?.broadcastToCustomers(['plans.catalog.updated']);
+      this.realtimeService?.publishToAdmins(['admin.plans.updated']);
+    } catch {}
+    return result;
   }
 
   /**

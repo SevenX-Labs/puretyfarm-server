@@ -1,3 +1,4 @@
+import { RealtimeModule } from "./modules/realtime/realtime.module";
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
@@ -21,6 +22,7 @@ import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.
 
 @Module({
   imports: [
+    RealtimeModule,
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnv,

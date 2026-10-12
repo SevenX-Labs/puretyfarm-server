@@ -1,5 +1,7 @@
+import { RealtimeEventsService } from '../realtime/realtime-events.service';
 import {
   Injectable,
+  Optional,
   BadRequestException,
   NotFoundException,
   ConflictException,
@@ -54,6 +56,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveryBilling: DeliveryBillingService,
+    @Optional() private readonly realtimeService?: RealtimeEventsService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════
@@ -102,7 +105,7 @@ export class OrdersService {
   // ══════════════════════════════════════════════════════════════════
 
   async createOrder(userId: string, dto: CreateOrderDto) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // 1. Verify the PlanDelivery belongs to this user and is SCHEDULED.
       const delivery = await tx.planDelivery.findFirst({
         where: { id: dto.planDeliveryId, userId },
@@ -258,6 +261,11 @@ export class OrdersService {
         order: this.formatOrderResponse(order, order.items, invoice),
       };
     });
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['orders.updated']);
+      this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -445,7 +453,7 @@ export class OrdersService {
   // ══════════════════════════════════════════════════════════════════
 
   async reorder(userId: string, orderId: string, dto: ReorderDto) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // 1. Verify original order belongs to customer and is eligible.
       const original = await tx.order.findFirst({
         where: { id: orderId, userId },
@@ -571,6 +579,11 @@ export class OrdersService {
         order: this.formatOrderResponse(newOrder, newOrder.items, invoice),
       };
     });
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['orders.updated']);
+      this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -730,7 +743,7 @@ export class OrdersService {
       return this.markDelivered(orderId, adminId);
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id: orderId } });
       if (!order) throw new NotFoundException('Order not found');
 
@@ -812,6 +825,17 @@ export class OrdersService {
         ),
       };
     });
+    try {
+      const ord = await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: { userId: true },
+      });
+      if (ord?.userId) {
+        this.realtimeService?.publishToCustomer(ord.userId, ['orders.updated']);
+      }
+      this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.deliveries.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -1098,6 +1122,7 @@ export class OrdersService {
           orderNumber: order.orderNumber,
           success: true,
           status: dto.status,
+          customerId: order.userId,
         });
       } catch (err: any) {
         results.push({
@@ -1110,6 +1135,20 @@ export class OrdersService {
     }
 
     const successCount = results.filter((r) => r.success).length;
+    try {
+      const affectedUserIds = new Set<string>();
+      for (const r of results) {
+        if (r.success && r.customerId) {
+          affectedUserIds.add(r.customerId);
+        }
+      }
+      for (const uid of affectedUserIds) {
+        this.realtimeService?.publishToCustomer(uid, ['orders.updated']);
+      }
+      if (successCount > 0) {
+        this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.deliveries.updated', 'admin.dashboard.updated']);
+      }
+    } catch {}
     return {
       totalCount: dto.orderIds.length,
       successCount,
@@ -1362,6 +1401,20 @@ export class OrdersService {
     }
 
     const successCount = results.filter((r) => r.success).length;
+    try {
+      const affectedUserIds = new Set<string>();
+      for (const r of results) {
+        if (r.success && (r as any).customerId) {
+          affectedUserIds.add((r as any).customerId);
+        }
+      }
+      for (const uid of affectedUserIds) {
+        this.realtimeService?.publishToCustomer(uid, ['orders.updated', 'wallet.updated']);
+      }
+      if (successCount > 0) {
+        this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.deliveries.updated']);
+      }
+    } catch {}
     return {
       totalCount: dto.orderIds.length,
       successCount,
@@ -1397,7 +1450,7 @@ export class OrdersService {
    * returned unchanged.
    */
   async completeOrder(orderId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
         include: { planDelivery: true, items: true, invoice: true },
@@ -1503,6 +1556,17 @@ export class OrdersService {
         ),
       };
     });
+    try {
+      const ord = await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: { userId: true },
+      });
+      if (ord?.userId) {
+        this.realtimeService?.publishToCustomer(ord.userId, ['orders.updated']);
+      }
+      this.realtimeService?.publishToAdmins(['admin.orders.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════

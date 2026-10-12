@@ -1,4 +1,5 @@
-import {
+import { RealtimeEventsService } from '../realtime/realtime-events.service';
+import { Optional,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -92,6 +93,7 @@ export class PaymentsService {
     private readonly plansService: PlansService,
     @Inject(PAYMENT_PROVIDER)
     private readonly provider: IPaymentProvider,
+    @Optional() private readonly realtimeService?: RealtimeEventsService,
   ) {
     const configured = parseInt(
       this.config.get<string>('PAYMENT_EXPIRY_MINUTES') ||
@@ -160,7 +162,11 @@ export class PaymentsService {
     const requestHash = this.computeRequestHash(dto);
 
     if (dto.paymentMethod === PaymentMethod.CASH) {
-      return this.createCashTopUp(userId, dto, idempotencyKey);
+      const res = await this.createCashTopUp(userId, dto, idempotencyKey);
+      try {
+        this.realtimeService?.publishToAdmins(['admin.payments.updated', 'admin.wallets.updated', 'admin.dashboard.updated']);
+      } catch {}
+      return res;
     }
     return this.createOnlineTopUp(userId, dto, idempotencyKey, requestHash);
   }
@@ -821,15 +827,20 @@ export class PaymentsService {
       });
     }
 
+    let result: AppliedOutcome;
     switch (verification.status) {
       case PaymentTransactionStatus.SUCCESS:
-        return this.applySuccess(payment.id, verification, source);
+        result = await this.applySuccess(payment.id, verification, source);
+        break;
       case PaymentTransactionStatus.FAILED:
-        return this.applyFailure(payment.id, verification, source);
+        result = await this.applyFailure(payment.id, verification, source);
+        break;
       case PaymentTransactionStatus.REFUNDED:
-        return this.applyRefunded(payment.id, verification, source);
+        result = await this.applyRefunded(payment.id, verification, source);
+        break;
       case PaymentTransactionStatus.PROCESSING:
-        return this.applyProcessing(payment.id, verification, source);
+        result = await this.applyProcessing(payment.id, verification, source);
+        break;
       default:
         this.logger.log(
           `Provider message not actionable source=${source} paymentId=${payment.id} ` +
@@ -845,6 +856,19 @@ export class PaymentsService {
           creditRequestStatus: null,
         };
     }
+
+    try {
+      if (result.outcome === 'APPLIED') {
+        if (payment.purpose === PaymentPurpose.WALLET_TOPUP) {
+          this.realtimeService?.publishToCustomer(payment.userId, ['wallet.updated']);
+        } else if (payment.purpose === PaymentPurpose.ORDER) {
+          this.realtimeService?.publishToCustomer(payment.userId, ['wallet.updated', 'orders.updated']);
+        }
+        this.realtimeService?.publishToAdmins(['admin.payments.updated', 'admin.wallets.updated', 'admin.orders.updated', 'admin.dashboard.updated']);
+      }
+    } catch {}
+
+    return result;
   }
 
   /**
@@ -1331,7 +1355,7 @@ export class PaymentsService {
   // ══════════════════════════════════════════════════════════════════
 
   async payOrderFromWallet(userId: string, orderId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // Load order under the same tx. Owner-scoped 404 — same shape as
       // 'order not found' so a probe cannot distinguish the two.
       const order = await tx.order.findUnique({
@@ -1419,6 +1443,11 @@ export class PaymentsService {
         orderStatus: order.status,
       };
     });
+    try {
+      this.realtimeService?.publishToCustomer(userId, ['wallet.updated', 'orders.updated']);
+      this.realtimeService?.publishToAdmins(['admin.wallets.updated', 'admin.orders.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   async createOrderPayment(
@@ -2116,7 +2145,7 @@ export class PaymentsService {
     dto: ConfirmCashCollectionDto,
   ) {
     try {
-      return await this.prisma.$transaction(
+      const result = await this.prisma.$transaction(
         async (tx) => {
           const now = new Date();
 
@@ -2230,6 +2259,22 @@ export class PaymentsService {
           timeout: CASH_CONFIRM_TX_TIMEOUT_MS,
         },
       );
+      try {
+        const coll = await this.prisma.cashCollection.findUnique({
+          where: { id },
+          select: { userId: true, walletCreditRequestId: true, planSelectionId: true },
+        });
+        if (coll?.userId) {
+          if (coll.walletCreditRequestId) {
+            this.realtimeService?.publishToCustomer(coll.userId, ['wallet.updated']);
+          }
+          if (coll.planSelectionId) {
+            this.realtimeService?.publishToCustomer(coll.userId, ['wallet.updated', 'plan.updated', 'orders.updated']);
+          }
+        }
+        this.realtimeService?.publishToAdmins(['admin.payments.updated', 'admin.wallets.updated', 'admin.plans.updated', 'admin.orders.updated', 'admin.dashboard.updated']);
+      } catch {}
+      return result;
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
@@ -2301,7 +2346,7 @@ export class PaymentsService {
     adminId: string,
     dto: RejectCashCollectionDto,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const cancelled = await tx.cashCollection.updateMany({
         where: {
           id,
@@ -2373,6 +2418,22 @@ export class PaymentsService {
         },
       };
     });
+    try {
+      const coll = await this.prisma.cashCollection.findUnique({
+        where: { id },
+        select: { userId: true, walletCreditRequestId: true, planSelectionId: true },
+      });
+      if (coll?.userId) {
+        if (coll.walletCreditRequestId) {
+          this.realtimeService?.publishToCustomer(coll.userId, ['wallet.updated']);
+        }
+        if (coll.planSelectionId) {
+          this.realtimeService?.publishToCustomer(coll.userId, ['plan.updated']);
+        }
+      }
+      this.realtimeService?.publishToAdmins(['admin.payments.updated', 'admin.wallets.updated', 'admin.dashboard.updated']);
+    } catch {}
+    return result;
   }
 
   // ══════════════════════════════════════════════════════════════════
