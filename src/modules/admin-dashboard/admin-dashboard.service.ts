@@ -68,6 +68,9 @@ export class AdminDashboardService {
         profit.grossProfitPaise,
         prevGrossProfit,
       ),
+      prevOrdersTotal,
+      prevCustomersNew,
+      prevRevenueCollectedPaise: prevRevenueCollected,
     };
 
     return {
@@ -90,24 +93,26 @@ export class AdminDashboardService {
   }
 
   private resolvePeriod(query: AdminDashboardOverviewQueryDto): DateRange {
-    const today = new Date();
-    const todayStr = this.formatDate(today);
+    // Puretyfarm Raipur operates in Asia/Kolkata (IST = UTC+05:30).
+    // Using UTC midnight causes records created in the first 5.5 hours of each IST day
+    // (00:00 - 05:30 AM IST) to fall into the previous UTC date.
+    // Parsing with +05:30 ensures the boundaries align with Indian Standard Time calendar days.
+    const todayStr = this.formatDate(new Date());
 
-    const fromStr = query.from || todayStr;
+    // When query.from is not specified, default to all-time (from beginning of operations)
+    const fromStr = query.from || "2020-01-01";
     const toStr = query.to || todayStr;
 
     return {
-      from: new Date(fromStr + 'T00:00:00.000Z'),
-      to: new Date(toStr + 'T23:59:59.999Z'),
+      from: new Date(`${fromStr}T00:00:00.000+05:30`),
+      to: new Date(`${toStr}T23:59:59.999+05:30`),
     };
   }
 
   private calculatePreviousPeriod(period: DateRange): DateRange {
     const durationMs = period.to.getTime() - period.from.getTime();
     const prevTo = new Date(period.from.getTime() - 1);
-    const prevFrom = new Date(prevTo.getTime() - durationMs);
-    prevFrom.setUTCHours(0, 0, 0, 0);
-    prevTo.setUTCHours(23, 59, 59, 999);
+    const prevFrom = new Date(period.from.getTime() - durationMs - 1);
     return { from: prevFrom, to: prevTo };
   }
 
@@ -119,7 +124,7 @@ export class AdminDashboardService {
   }
 
   private formatDate(date: Date): string {
-    return date.toISOString().slice(0, 10);
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
   }
 
   // ── Customer Metrics ──
@@ -639,13 +644,20 @@ export class AdminDashboardService {
 
   private async getDailyTrend(period: DateRange) {
     const days: string[] = [];
-    const cursor = new Date(period.from);
+    const maxTrendDays = 30;
+    const diffDays = Math.ceil((period.to.getTime() - period.from.getTime()) / (1000 * 60 * 60 * 24));
+    let cursor = new Date(period.from);
+    if (diffDays > maxTrendDays) {
+      cursor = new Date(period.to.getTime() - (maxTrendDays - 1) * 24 * 60 * 60 * 1000);
+      cursor.setUTCHours(0, 0, 0, 0);
+    }
     const end = new Date(period.to);
     end.setUTCHours(0, 0, 0, 0);
     while (cursor <= end) {
       days.push(this.formatDate(cursor));
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
+    const trendFrom = days.length > 0 ? new Date(`${days[0]}T00:00:00.000+05:30`) : period.from;
 
     // Fetch daily aggregates in parallel.
     // Revenue per day shares getRevenueMetrics' source of truth: paid plan
@@ -664,7 +676,7 @@ export class AdminDashboardService {
       this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
           SELECT DATE("paidAt") AS day, SUM("paidAmountPaise")::bigint AS total
           FROM plan_selections
-          WHERE "paidAt" >= ${period.from} AND "paidAt" <= ${period.to}
+          WHERE "paidAt" >= ${trendFrom} AND "paidAt" <= ${period.to}
             AND status NOT IN ('CANCELLED', 'PENDING_PAYMENT')
             AND "paidAmountPaise" IS NOT NULL
           GROUP BY DATE("paidAt")
@@ -674,26 +686,26 @@ export class AdminDashboardService {
           FROM wallet_transactions
           WHERE type = 'DEBIT'
             AND "referenceType" = 'ORDER'
-            AND "createdAt" >= ${period.from} AND "createdAt" <= ${period.to}
+            AND "createdAt" >= ${trendFrom} AND "createdAt" <= ${period.to}
           GROUP BY DATE("createdAt")
         `,
       this.prisma.$queryRaw<{ day: Date; total: bigint }[]>`
           SELECT DATE("createdAt") AS day, SUM("deliveryFeePaise")::bigint AS total
           FROM orders
-          WHERE "createdAt" >= ${period.from} AND "createdAt" <= ${period.to}
+          WHERE "createdAt" >= ${trendFrom} AND "createdAt" <= ${period.to}
             AND status NOT IN ('CANCELLED', 'FAILED')
           GROUP BY DATE("createdAt")
         `,
       this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
           SELECT DATE("createdAt") AS day, COUNT(*)::bigint AS count
           FROM orders
-          WHERE "createdAt" >= ${period.from} AND "createdAt" <= ${period.to}
+          WHERE "createdAt" >= ${trendFrom} AND "createdAt" <= ${period.to}
           GROUP BY DATE("createdAt")
         `,
       this.prisma.$queryRaw<{ day: Date; count: bigint }[]>`
           SELECT "deliveryDate" AS day, COUNT(*)::bigint AS count
           FROM plan_deliveries
-          WHERE "deliveryDate" >= ${period.from} AND "deliveryDate" <= ${period.to}
+          WHERE "deliveryDate" >= ${trendFrom} AND "deliveryDate" <= ${period.to}
             AND status = 'DELIVERED'
           GROUP BY "deliveryDate"
         `,
@@ -702,7 +714,7 @@ export class AdminDashboardService {
           SELECT DATE("settledAt") AS day, SUM("totalPaise")::bigint AS total
           FROM orders
           WHERE "settlementStatus" = 'SETTLED'
-            AND "settledAt" >= ${period.from} AND "settledAt" <= ${period.to}
+            AND "settledAt" >= ${trendFrom} AND "settledAt" <= ${period.to}
           GROUP BY DATE("settledAt")
         `,
     ]);
