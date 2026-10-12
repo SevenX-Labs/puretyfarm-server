@@ -9,7 +9,7 @@ import {
   ConflictException,
   Logger,
 } from '@nestjs/common';
-import type { PlanConfig } from '@prisma/client';
+import { CashCollectionStatus, type PlanConfig } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
 import { WalletTransactionReferenceType } from '../wallet/wallet.constants';
@@ -1062,6 +1062,19 @@ export class PlansService {
         },
       });
 
+      let cashCollectionId: string | undefined;
+      if (dto.paymentMethod === PlanPaymentMethod.CASH) {
+        const cashCollection = await tx.cashCollection.create({
+          data: {
+            userId,
+            planSelectionId: selection.id,
+            amountPaise: quote.totalSellingAmount,
+            status: CashCollectionStatus.PENDING,
+          },
+        });
+        cashCollectionId = cashCollection.id;
+      }
+
       // Conditional update: a concurrent confirmation of the same quote loses
       // here and the whole transaction rolls back.
       const claimedQuote = await tx.planQuote.updateMany({
@@ -1086,6 +1099,7 @@ export class PlansService {
         status: PlanSelectionStatus.PENDING_APPROVAL,
         paymentMethod: dto.paymentMethod,
         paidAmountPaise: 0,
+        cashCollectionId,
         billingModel: PlanBillingModel.PER_DELIVERY,
         expectedTotalPaise: quote.totalSellingAmount,
         durationDays:
@@ -1805,19 +1819,13 @@ export class PlansService {
       throw new NotFoundException('Plan selection not found');
     }
 
-    // This path completes a PREPAID plan bought with cash before per-delivery
-    // billing existed. A per-delivery plan is never paid for as a whole, so it
-    // can never arrive here; refusing it guarantees the cash credit + full-plan
-    // debit below cannot run for a new purchase.
-    if (selection.billingModel === PlanBillingModel.PER_DELIVERY) {
-      throw new BadRequestException({
-        error: 'PLAN_NOT_PREPAID',
-        message:
-          'This plan is billed per delivery and has no plan-level cash payment to confirm.',
-      });
-    }
+    const isPerDelivery =
+      selection.billingModel === PlanBillingModel.PER_DELIVERY;
 
-    if (selection.status !== PlanSelectionStatus.PENDING_PAYMENT) {
+    if (
+      !isPerDelivery &&
+      selection.status !== PlanSelectionStatus.PENDING_PAYMENT
+    ) {
       throw new BadRequestException(
         `Plan selection is not pending payment (status: ${selection.status})`,
       );
@@ -1830,19 +1838,6 @@ export class PlansService {
       }));
 
     if (collection) {
-      if (collection.amountPaise < selection.quote.totalSellingAmount) {
-        throw new BadRequestException({
-          error: 'CASH_SHORT_FOR_PLAN',
-          message:
-            `Collected cash (${collection.amountPaise} paise) is less than ` +
-            `plan total (${selection.quote.totalSellingAmount} paise)`,
-          collectedPaise: collection.amountPaise,
-          requiredPaise: selection.quote.totalSellingAmount,
-          shortfallPaise:
-            selection.quote.totalSellingAmount - collection.amountPaise,
-        });
-      }
-
       // 1. CREDIT the wallet by the collected cash amount
       await this.walletService.creditWalletWithin(
         tx,
@@ -1853,15 +1848,29 @@ export class PlansService {
         'Cash collection confirmed (plan payment)',
       );
 
-      // 2. DEBIT the wallet for the plan total (reusing exact scheme as wallet-paid plan)
-      await this.walletService.debitWalletWithin(
-        tx,
-        selection.userId,
-        selection.quote.totalSellingAmount,
-        WalletTransactionReferenceType.PLAN_SELECTION,
-        planSelectionId,
-        `Plan payment (${selection.quote.planType})`,
-      );
+      // 2. For legacy prepaid plans (not per-delivery), DEBIT the wallet for the plan total
+      if (!isPerDelivery) {
+        if (collection.amountPaise < selection.quote.totalSellingAmount) {
+          throw new BadRequestException({
+            error: 'CASH_SHORT_FOR_PLAN',
+            message:
+              `Collected cash (${collection.amountPaise} paise) is less than ` +
+              `plan total (${selection.quote.totalSellingAmount} paise)`,
+            collectedPaise: collection.amountPaise,
+            requiredPaise: selection.quote.totalSellingAmount,
+            shortfallPaise:
+              selection.quote.totalSellingAmount - collection.amountPaise,
+          });
+        }
+        await this.walletService.debitWalletWithin(
+          tx,
+          selection.userId,
+          selection.quote.totalSellingAmount,
+          WalletTransactionReferenceType.PLAN_SELECTION,
+          planSelectionId,
+          `Plan payment (${selection.quote.planType})`,
+        );
+      }
     }
 
     const now = new Date();

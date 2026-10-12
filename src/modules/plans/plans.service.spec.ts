@@ -1403,36 +1403,65 @@ describe('PlansService', () => {
 
     // ── Per-delivery billing: a purchase is an enrolment, not a payment ──
 
-    it.each([PlanPaymentMethod.WALLET, PlanPaymentMethod.CASH])(
-      'enrols via %s without debiting, scheduling or creating a cash collection',
-      async (paymentMethod) => {
-        const result = await service.confirmPlan(USER, {
-          quoteId: 'quote-1',
-          paymentMethod,
-        });
+    it('enrols via WALLET without debiting, scheduling or creating a cash collection', async () => {
+      const result = await service.confirmPlan(USER, {
+        quoteId: 'quote-1',
+        paymentMethod: PlanPaymentMethod.WALLET,
+      });
 
-        expect(result.selectionId).toBe('sel-1');
-        expect(result.status).toBe(PlanSelectionStatus.PENDING_APPROVAL);
-        expect(result.billingModel).toBe('PER_DELIVERY');
-        expect(result.paymentMethod).toBe(paymentMethod);
-        // Nothing is charged at purchase; the quoted total is informational.
-        expect(result.paidAmountPaise).toBe(0);
-        expect(result.expectedTotalPaise).toBe(300);
-        expect(result.cashCollectionId).toBeUndefined();
+      expect(result.selectionId).toBe('sel-1');
+      expect(result.status).toBe(PlanSelectionStatus.PENDING_APPROVAL);
+      expect(result.billingModel).toBe('PER_DELIVERY');
+      expect(result.paymentMethod).toBe(PlanPaymentMethod.WALLET);
+      expect(result.paidAmountPaise).toBe(0);
+      expect(result.expectedTotalPaise).toBe(300);
+      expect(result.cashCollectionId).toBeUndefined();
 
-        expect(mockPrisma.planSelection.create).toHaveBeenCalledWith({
-          data: expect.objectContaining({
-            status: PlanSelectionStatus.PENDING_APPROVAL,
-            billingModel: 'PER_DELIVERY',
-          }),
-        });
-        expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
-        expect(mockPrisma.cashCollection.create).not.toHaveBeenCalled();
-        // No schedule and no orders until an admin approves.
-        expect(mockPrisma.planDelivery.createMany).not.toHaveBeenCalled();
-        expect(mockPrisma.order.create).not.toHaveBeenCalled();
-      },
-    );
+      expect(mockPrisma.planSelection.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          status: PlanSelectionStatus.PENDING_APPROVAL,
+          billingModel: 'PER_DELIVERY',
+        }),
+      });
+      expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
+      expect(mockPrisma.cashCollection.create).not.toHaveBeenCalled();
+      expect(mockPrisma.planDelivery.createMany).not.toHaveBeenCalled();
+      expect(mockPrisma.order.create).not.toHaveBeenCalled();
+    });
+
+    it('enrols via CASH creating a pending cash collection request for admin wallet', async () => {
+      mockPrisma.cashCollection.create.mockResolvedValueOnce({
+        id: 'cash-col-1',
+        userId: USER,
+        planSelectionId: 'sel-1',
+        amountPaise: 300,
+        status: 'PENDING',
+      });
+
+      const result = await service.confirmPlan(USER, {
+        quoteId: 'quote-1',
+        paymentMethod: PlanPaymentMethod.CASH,
+      });
+
+      expect(result.selectionId).toBe('sel-1');
+      expect(result.status).toBe(PlanSelectionStatus.PENDING_APPROVAL);
+      expect(result.billingModel).toBe('PER_DELIVERY');
+      expect(result.paymentMethod).toBe(PlanPaymentMethod.CASH);
+      expect(result.paidAmountPaise).toBe(0);
+      expect(result.cashCollectionId).toBe('cash-col-1');
+
+      expect(mockPrisma.cashCollection.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: USER,
+          planSelectionId: 'sel-1',
+          amountPaise: 300,
+          status: 'PENDING',
+        }),
+      });
+      expect(mockWalletService.debitWalletWithin).not.toHaveBeenCalled();
+      expect(mockPrisma.planDelivery.createMany).not.toHaveBeenCalled();
+      expect(mockPrisma.order.create).not.toHaveBeenCalled();
+    });
 
     it('enrols even when the wallet is empty, and reports funding as not confirmed', async () => {
       mockPrisma.wallet.findMany.mockResolvedValue([
