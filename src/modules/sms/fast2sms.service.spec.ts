@@ -1,6 +1,6 @@
 jest.mock('@nestjs/config', () => ({
   ConfigService: jest.fn().mockImplementation(() => ({
-    get: jest.fn().mockReturnValue('test-api-key'),
+    get: jest.fn().mockReturnValue('sk_live_test_key'),
   })),
 }));
 
@@ -18,7 +18,7 @@ describe('Fast2SmsService', () => {
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn().mockReturnValue('test-api-key'),
+            get: jest.fn().mockReturnValue('sk_live_test_key'),
           },
         },
       ],
@@ -35,11 +35,11 @@ describe('Fast2SmsService', () => {
     expect(service).toBeDefined();
   });
 
-  it('should send OTP successfully via Fast2SMS OTP route', async () => {
+  it('should send OTP successfully via Nexus OTP endpoint', async () => {
     const mockResponse = {
-      return: true,
+      success: true,
+      message: 'OTP sent successfully.',
       request_id: 'req_123456',
-      message: ['SMS sent successfully.'],
     };
 
     const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
@@ -50,17 +50,16 @@ describe('Fast2SmsService', () => {
     const result = await service.sendOtp('+919876543210', '123456');
 
     expect(fetchSpy).toHaveBeenCalledWith(
-      'https://www.fast2sms.com/dev/bulkV2',
+      'https://apinexusotp.vercel.app/api/v1/otp/send',
       expect.objectContaining({
         method: 'POST',
         headers: {
-          authorization: 'test-api-key',
+          Authorization: 'Bearer sk_live_test_key',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          route: 'otp',
-          variables_values: '123456',
-          numbers: '9876543210',
+          phone: '9876543210',
+          otp: '123456',
         }),
       }),
     );
@@ -69,18 +68,18 @@ describe('Fast2SmsService', () => {
     expect(result.messageId).toBe('req_123456');
   });
 
-  it('should handle error response from Fast2SMS', async () => {
+  it('should handle error response from Nexus OTP', async () => {
     jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: false,
-      status: 400,
+      status: 401,
       json: jest
         .fn()
-        .mockResolvedValue({ return: false, message: 'Invalid key' }),
+        .mockResolvedValue({ success: false, message: 'Invalid API key' }),
     } as any);
 
     const result = await service.sendOtp('+919876543210', '123456');
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('Invalid key');
+    expect(result.error).toBe('Invalid API key');
   });
 });

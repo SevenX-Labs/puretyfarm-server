@@ -17,8 +17,10 @@ export class Fast2SmsService {
   }
 
   /**
-   * Sends an OTP via Fast2SMS Bulk V2 API exclusively using the "otp" route.
-   * Endpoint: POST https://www.fast2sms.com/dev/bulkV2
+   * Sends an OTP via Nexus OTP API:
+   * Endpoint: POST https://apinexusotp.vercel.app/api/v1/otp/send
+   * Header: Authorization: Bearer <FAST2SMS_OTP_API_KEY>
+   * Body: { "phone": cleanPhone, "otp": otp }
    */
   async sendOtp(phone: string, otp: string): Promise<SendOtpSmsResult> {
     const apiKey = this.apiKey || process.env.FAST2SMS_OTP_API_KEY;
@@ -30,8 +32,7 @@ export class Fast2SmsService {
         `[PuretyFarm Auth] 🥛 OTP DISPATCH\n` +
         `Recipient : ${cleanPhone} (${phone})\n` +
         `Code      : ${otp}\n` +
-        `Provider  : Fast2SMS (POST https://www.fast2sms.com/dev/bulkV2)\n` +
-        `Route     : OTP ("otp")\n` +
+        `Provider  : Nexus OTP (POST https://apinexusotp.vercel.app/api/v1/otp/send)\n` +
         `Expires   : 5 Minutes\n` +
         `========================================\n`,
     );
@@ -46,40 +47,41 @@ export class Fast2SmsService {
       };
     }
 
+    const authHeader = apiKey.startsWith("Bearer ") ? apiKey : `Bearer ${apiKey}`;
+
     try {
-      const response = await fetch("https://www.fast2sms.com/dev/bulkV2", {
+      const response = await fetch("https://apinexusotp.vercel.app/api/v1/otp/send", {
         method: "POST",
         headers: {
-          authorization: apiKey,
+          Authorization: authHeader,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          route: "otp",
-          variables_values: otp,
-          numbers: cleanPhone,
+          phone: cleanPhone,
+          otp,
         }),
         signal: AbortSignal.timeout(5000),
       });
 
       const data = await response.json().catch(() => null);
 
-      if (response.ok && data && data.return === true) {
+      if (response.ok && data && (data.success === true || data.return === true)) {
         this.logger.log(
-          `[Fast2SMS OTP Route] Dispatched OTP to ${cleanPhone}. RequestId=${data.request_id || "sent"}`,
+          `[Nexus OTP] Dispatched OTP to ${cleanPhone}. RequestId=${data.request_id || data.messageId || "sent"}`,
         );
         return {
           success: true,
-          messageId: data.request_id || "fast2sms_sent",
+          messageId: data.request_id || data.messageId || "nexus_otp_sent",
         };
       }
 
       const errorMessage =
-        data && Array.isArray(data.message)
-          ? data.message.join(", ")
-          : (data && data.message) || `Fast2SMS error HTTP ${response.status}`;
+        (data && data.message) ||
+        (data && Array.isArray(data.error) ? data.error.join(", ") : data?.error) ||
+        `Nexus OTP error HTTP ${response.status}`;
 
       this.logger.warn(
-        `Fast2SMS OTP delivery failure for ${cleanPhone}: ${errorMessage}`,
+        `Nexus OTP delivery failure for ${cleanPhone}: ${errorMessage}`,
       );
       return {
         success: false,
@@ -87,12 +89,12 @@ export class Fast2SmsService {
       };
     } catch (error: any) {
       this.logger.error(
-        `Network error dispatching OTP to ${phone} via Fast2SMS`,
+        `Network error dispatching OTP to ${phone} via Nexus OTP`,
         error?.stack || error,
       );
       return {
         success: false,
-        error: error?.message || "Network error contacting Fast2SMS",
+        error: error?.message || "Network error contacting Nexus OTP service",
       };
     }
   }
