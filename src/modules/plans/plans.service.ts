@@ -2684,6 +2684,8 @@ export class PlansService {
         frequency: s.frequency,
         quantityMode: s.quantityMode,
         quantity: s.quantity,
+        quantityA: s.quantityA,
+        quantityB: s.quantityB,
         startDate: s.startDate,
         endDate: s.endDate,
         durationDays:
