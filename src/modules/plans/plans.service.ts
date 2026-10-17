@@ -2049,6 +2049,80 @@ export class PlansService {
         };
       }
 
+      // Supersede & stand down any existing confirmed/active subscriptions for this user.
+      // A customer must only have ONE active delivery plan. Any future orders (from schedule.start onwards)
+      // of previous subscriptions that have not yet left the warehouse are cancelled to prevent duplicate orders.
+      const previousSubscriptions = await (tx as any).planSelection.findMany({
+        where: {
+          userId: selection.userId,
+          id: { not: subscriptionId },
+          status: {
+            in: [
+              PlanSelectionStatus.CONFIRMED,
+              PlanSelectionStatus.ACTIVE,
+              PlanSelectionStatus.PAUSED,
+              PlanSelectionStatus.PENDING_APPROVAL,
+              PlanSelectionStatus.PENDING_PAYMENT,
+            ],
+          },
+        },
+        select: { id: true },
+      });
+
+      if (previousSubscriptions.length > 0) {
+        const prevIds = previousSubscriptions.map((p: any) => p.id);
+
+        const futureDeliveries = await (tx as any).planDelivery.findMany({
+          where: {
+            selectionId: { in: prevIds },
+            deliveryDate: { gte: schedule.start },
+          },
+          include: {
+            order: { select: { id: true, status: true } },
+          },
+        });
+
+        const cancelOrderIds = futureDeliveries
+          .filter(
+            (d: any) =>
+              d.order &&
+              (d.order.status === 'PENDING' || d.order.status === 'CONFIRMED'),
+          )
+          .map((d: any) => d.order.id);
+
+        if (cancelOrderIds.length > 0) {
+          await (tx as any).order.updateMany({
+            where: { id: { in: cancelOrderIds } },
+            data: { status: 'CANCELLED' },
+          });
+        }
+
+        await (tx as any).order.updateMany({
+          where: {
+            planSelectionId: { in: prevIds },
+            deliveryDate: { gte: schedule.start },
+            status: { in: ['PENDING', 'CONFIRMED'] },
+          },
+          data: { status: 'CANCELLED' },
+        });
+
+        const standDownDeliveryIds = futureDeliveries
+          .filter((d: any) => d.status === DeliveryStatus.SCHEDULED)
+          .map((d: any) => d.id);
+
+        if (standDownDeliveryIds.length > 0) {
+          await (tx as any).planDelivery.updateMany({
+            where: { id: { in: standDownDeliveryIds } },
+            data: { status: DeliveryStatus.SKIPPED },
+          });
+        }
+
+        await (tx as any).planSelection.updateMany({
+          where: { id: { in: prevIds } },
+          data: { status: PlanSelectionStatus.CANCELLED },
+        });
+      }
+
       await this.materializeDeliveries(
         tx,
         subscriptionId,
