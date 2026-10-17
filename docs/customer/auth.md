@@ -13,7 +13,7 @@ This document provides complete documentation for the Customer Authentication sy
   - **PostgreSQL (Supabase)**: Permanent user profiles (`User`) and authentication sessions (`Session`).
   - **Valkey (Layerbase)**: Ephemeral OTP hashes, cooldown locks, attempt counters, and distributed rate limiting counters.
 - **Security Standards**:
-  - **Argon2id**: All OTPs and refresh tokens are hashed using Argon2 before persistence. Plaintext credentials are never saved.
+  - **Peppered HMAC-SHA256 & Argon2**: All OTPs, email verification secrets, and refresh tokens are hashed using a cryptographically peppered HMAC-SHA256 (`hashSecret` / `verifySecret`) bound strictly to contextual subject strings (`customer-otp:{mobile}`, `customer-email-otp:{userId}`, `refresh-token:{sessionId}`) before persistence, preventing cross-subject hash replay attacks. Legacy Argon2 hashes are transparently verified and rotated upon use. Plaintext credentials are never saved.
   - **Crypto-Secure OTP**: Generated using Node.js built-in `crypto.randomInt()`.
   - **Token Segregation**: Access and refresh tokens use distinct secrets (`JWT_ACCESS_SECRET` vs `JWT_REFRESH_SECRET`).
   - **Single-Use Enforced**: Used OTPs and rotated refresh tokens are immediately invalidated.
@@ -83,11 +83,32 @@ Initiates customer login or registration by sending a 6-digit OTP to the provide
       "statusCode": 400
     }
     ```
-  - `429 Too Many Requests`: Cooldown active or limit reached.
+  - `429 Too Many Requests` (Cooldown Active):
     ```json
     {
       "statusCode": 429,
       "message": "Please wait before requesting another OTP"
+    }
+    ```
+  - `429 Too Many Requests` (5-Minute Window Limit):
+    ```json
+    {
+      "statusCode": 429,
+      "message": "Too many OTP requests. Please try again after 5 minutes."
+    }
+    ```
+  - `429 Too Many Requests` (Daily Send Limit Exceeded):
+    ```json
+    {
+      "statusCode": 429,
+      "message": "Daily OTP limit exceeded. Please try again tomorrow."
+    }
+    ```
+  - `502 Bad Gateway` (SMS Gateway Failure):
+    ```json
+    {
+      "statusCode": 502,
+      "message": "Failed to dispatch OTP SMS. Please try again."
     }
     ```
 
@@ -274,11 +295,18 @@ Initiates email verification for the authenticated customer. Checks if email is 
       "statusCode": 409
     }
     ```
-  - `429 Too Many Requests`: 60-second resend cooldown active.
+  - `429 Too Many Requests` (60s Resend Cooldown Active):
     ```json
     {
       "statusCode": 429,
       "message": "Please wait before requesting another email verification OTP"
+    }
+    ```
+  - `429 Too Many Requests` (Daily Email Send Limit Exceeded):
+    ```json
+    {
+      "statusCode": 429,
+      "message": "Daily email verification limit exceeded. Please try again tomorrow."
     }
     ```
 

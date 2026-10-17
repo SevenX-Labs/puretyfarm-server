@@ -502,6 +502,41 @@ One payment, enriched with its wallet-credit state.
 
 ---
 
+### 6.7 `POST /api/v1/customer/orders/:orderId/pay`
+
+Pays for an unpaid legacy order directly using the customer's wallet balance.
+
+Mounted on `OrderPaymentsController` (`/api/v1/customer/orders/:orderId/pay`).
+
+**Request body:**
+```json
+{
+  "paymentMethod": "WALLET"
+}
+```
+
+**Response `200 OK`:**
+```json
+{
+  "success": true,
+  "orderId": "ord-uuid",
+  "paymentMethod": "WALLET",
+  "paymentStatus": "PAID",
+  "orderStatus": "CONFIRMED"
+}
+```
+
+**Errors:**
+| HTTP | Code | Cause |
+|---|---|---|
+| 400 | `DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED` | `paymentMethod: "CASH"` is not supported directly for orders |
+| 400 | `INSUFFICIENT_WALLET_BALANCE` | Customer wallet lacks sufficient balance for order total |
+| 404 | `ORDER_NOT_FOUND` | Order does not exist or belongs to another customer |
+| 409 | `ORDER_CHARGED_ON_DELIVERY` | Order belongs to a Per-Delivery plan and will be settled automatically upon delivery |
+| 409 | `ORDER_ALREADY_PROCESSED` | Order is already paid |
+
+---
+
 ## 7. Public PhonePe routes (not called by your app)
 
 These are called by PhonePe directly — the frontend must not call them.

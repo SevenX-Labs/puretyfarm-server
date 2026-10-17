@@ -91,23 +91,82 @@ Fetches all three plans with customer-specific availability flags, remaining use
 - **Success Response (200 OK) — New Customer**:
   ```json
   {
+    "subscription": null,
     "plans": [
       {
         "type": "BUY_ONCE",
         "available": true,
         "usageCount": 0,
-        "remainingUses": 7
+        "remainingUses": 7,
+        "deliveryStartTime": "06:00",
+        "deliveryEndTime": "09:00"
       },
       {
         "type": "SEVEN_DAY_TRIAL",
         "available": true,
-        "used": false
+        "used": false,
+        "deliveryStartTime": "06:00",
+        "deliveryEndTime": "09:00"
       },
       {
         "type": "MONTHLY",
-        "available": true
+        "available": true,
+        "deliveryStartTime": "06:00",
+        "deliveryEndTime": "09:00"
       }
-    ]
+    ],
+    "orderCutoff": {
+      "time": "23:00",
+      "timeLabel": "11:00 PM",
+      "timezone": "Asia/Kolkata",
+      "leadDaysBeforeCutoff": 1,
+      "leadDaysAfterCutoff": 2
+    }
+  }
+  ```
+- **Success Response (200 OK) — With Active or Pending Plan Subscription**:
+  ```json
+  {
+    "subscription": {
+      "selectionId": "sel-uuid",
+      "planType": "MONTHLY",
+      "status": "PENDING_APPROVAL",
+      "billingModel": "PER_DELIVERY",
+      "frequency": "DAILY",
+      "quantityMode": "FIXED",
+      "quantity": 2,
+      "quantityA": null,
+      "quantityB": null,
+      "durationDays": 30,
+      "startDate": "2026-10-18",
+      "endDate": "2026-11-16",
+      "provisionalStartDate": "2026-10-18",
+      "provisionalEndDate": "2026-11-16",
+      "purchasedAt": "2026-10-17T10:00:00.000Z",
+      "funding": {
+        "status": "CONFIRMED",
+        "walletBalancePaise": 500000,
+        "hasCompletedCredit": true,
+        "pendingCreditCount": 0,
+        "pendingCreditPaise": 0
+      },
+      "approvalStatus": "PENDING",
+      "approvedAt": null,
+      "schedulingStatus": "NOT_SCHEDULED",
+      "expectedTotalPaise": 480000,
+      "sellingPricePerLitrePaise": 8000,
+      "deliveries": {
+        "total": 0,
+        "delivered": 0,
+        "upcoming": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "chargedPaise": 0,
+      "outstandingPaise": 0
+    },
+    "plans": [ ... ],
+    "orderCutoff": { ... }
   }
   ```
 - **Success Response (200 OK) — After Customer Used Buy Once**:
@@ -481,11 +540,14 @@ Delivers every alternate day with alternating quantities: $Q_A$ on delivery 1, $
 ---
 
 ### ────────────────────────────────────────────────────────
-### 2.8 Confirm Plan Quote (with Payment)
+### 2.8 Confirm Plan Quote (Per-Delivery Billing Enrollment)
 ### ────────────────────────────────────────────────────────
-Confirms a valid server-generated quote and initiates payment. All plans are **prepaid** — the quoted total covers all scheduled deliveries. The customer chooses `WALLET` or `CASH` as the payment method.
+Confirms a valid server-generated quote and enrolls the customer into the plan schedule. Under the **Per-Delivery Billing** model, plan confirmation is an **enrollment**, not an upfront charge:
 
-There is **no direct gateway checkout for plan purchases**. PhonePe is used only for wallet top-ups (Add Money). To pay a plan with wallet, the customer must first have sufficient balance.
+- **No upfront debit**: The wallet is NOT debited the full plan amount at confirmation (`paidAmountPaise: 0`).
+- **Pay as you receive**: The customer's wallet is charged one delivery at a time, only when each delivery order is fulfilled and settled.
+- **Admin approval**: The plan enters `status: "PENDING_APPROVAL"`. The admin reviews the plan, confirms first delivery date, and schedules deliveries.
+- **Payment Method**: Indicates how the customer intends to fund their wallet (`"WALLET"` balance / online top-ups, or `"CASH"` top-up). When `CASH` is selected, a pending `CashCollection` record is created.
 
 - **Method**: `POST`
 - **Path**: `/api/v1/customer/plans/confirm`
@@ -503,54 +565,69 @@ There is **no direct gateway checkout for plan purchases**. PhonePe is used only
   - `quoteId` (UUID v4, Required): The exact `quoteId` returned by any of the quote endpoints.
   - `paymentMethod` (String, Required): `"WALLET"` or `"CASH"`.
 
-#### WALLET Payment — Success (200 OK)
-
-Wallet is atomically debited by the quoted total. Plan is confirmed and deliveries are materialised immediately.
+#### Success Response (200 OK) — WALLET Confirmation
 
 ```json
 {
   "selectionId": "f6c5d824-5e67-8a90-d12c-4d5e6f7a8b9c",
   "quoteId": "b2e1f480-1a23-4c56-9d8e-0f1a2b3c4d5e",
-  "plan": "BUY_ONCE",
-  "status": "CONFIRMED",
+  "plan": "MONTHLY",
+  "status": "PENDING_APPROVAL",
   "paymentMethod": "WALLET",
-  "paidAmountPaise": 17000
+  "paidAmountPaise": 0,
+  "billingModel": "PER_DELIVERY",
+  "expectedTotalPaise": 480000,
+  "durationDays": 30,
+  "startDate": "2026-10-18",
+  "endDate": "2026-11-16",
+  "totalDeliveries": 30,
+  "deliveriesPerWeek": 7,
+  "funding": {
+    "status": "CONFIRMED",
+    "walletBalancePaise": 500000,
+    "hasCompletedCredit": true,
+    "pendingCreditCount": 0,
+    "pendingCreditPaise": 0
+  },
+  "message": "Your plan is awaiting admin approval. Your wallet is charged per delivery, only when each order is delivered."
 }
 ```
 
-#### WALLET Payment — Insufficient Balance (400)
+#### Success Response (200 OK) — CASH Confirmation
 
-```json
-{
-  "error": "INSUFFICIENT_WALLET_BALANCE",
-  "message": "Insufficient wallet balance",
-  "currentBalancePaise": 5000,
-  "requiredPaise": 17000,
-  "shortfallPaise": 12000
-}
-```
-
-When this happens, the customer must first top up their wallet using `POST /api/v1/customer/payments/create` with `paymentMethod: "ONLINE"` (PhonePe). After the wallet is credited, the customer returns and confirms the plan with `paymentMethod: "WALLET"`.
-
-**First wallet top-up** always requires admin approval before the wallet is credited. Subsequent verified online top-ups auto-credit based on the customer's `Wallet.autoCreditEnabled` flag (see `docs/customer/wallet.md` §3).
-
-#### CASH Payment — Success (200 OK)
-
-A `CashCollection` is created. The plan stays in `PENDING_PAYMENT` until the admin confirms physical cash receipt. Deliveries are **not** created until the admin confirms.
+When `paymentMethod: "CASH"` is submitted, a `CashCollection` record is created for cash collection:
 
 ```json
 {
   "selectionId": "f6c5d824-5e67-8a90-d12c-4d5e6f7a8b9c",
   "quoteId": "b2e1f480-1a23-4c56-9d8e-0f1a2b3c4d5e",
   "plan": "BUY_ONCE",
-  "status": "PENDING_PAYMENT",
+  "status": "PENDING_APPROVAL",
   "paymentMethod": "CASH",
-  "paidAmountPaise": 17000,
-  "cashCollectionId": "csh-a1b2c3d4-..."
+  "paidAmountPaise": 0,
+  "cashCollectionId": "csh-a1b2c3d4-...",
+  "billingModel": "PER_DELIVERY",
+  "expectedTotalPaise": 16000,
+  "durationDays": 1,
+  "startDate": "2026-10-18",
+  "endDate": "2026-10-18",
+  "totalDeliveries": 1,
+  "deliveriesPerWeek": 1,
+  "funding": {
+    "status": "NOT_FUNDED",
+    "walletBalancePaise": 0,
+    "hasCompletedCredit": false,
+    "pendingCreditCount": 0,
+    "pendingCreditPaise": 0
+  },
+  "message": "Your plan is awaiting wallet funding confirmation and admin approval. Your wallet is charged per delivery, only when each order is delivered."
 }
 ```
 
-The admin confirms via `POST /api/v1/admin/payments/cash-collections/:id/confirm`, which activates the plan and creates deliveries.
+#### Funding Status Reference:
+- `CONFIRMED`: Customer has completed credit history or current balance available.
+- `PENDING_APPROVAL`: Customer submitted an online or cash credit request that is awaiting admin review.
+- `NOT_FUNDED`: Customer has no completed or pending credit in their wallet. Customers can top up via `POST /api/v1/customer/payments/create`.
 
 - **Error Responses**:
   - `400 Bad Request` — Quote expired:

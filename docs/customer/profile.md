@@ -44,14 +44,16 @@ Creates the customer's initial profile.
     "firstName": "Sahil",
     "lastName": "Hode",
     "gender": "MALE",
-    "dateOfBirth": "2000-01-15"
+    "dateOfBirth": "2000-01-15",
+    "whatsappNumber": "+919876543210"
   }
   ```
 - **Validation Rules**:
-  - `firstName`: Non-empty string, max 50 chars, auto-trimmed.
-  - `lastName`: Non-empty string, max 50 chars, auto-trimmed.
-  - `gender`: Enum (`MALE`, `FEMALE`, `OTHER`).
-  - `dateOfBirth`: Valid ISO 8601 date string (e.g. `YYYY-MM-DD`), must be in the past.
+  - `firstName`: Non-empty string, max 50 chars, auto-trimmed. Required.
+  - `lastName`: Non-empty string, max 50 chars, auto-trimmed. Required.
+  - `gender`: Enum (`MALE`, `FEMALE`, `OTHER`). Required.
+  - `dateOfBirth`: Valid ISO 8601 date string (e.g. `YYYY-MM-DD`), must be in the past. Required.
+  - `whatsappNumber`: Non-empty string, max 20 chars, auto-trimmed. Required.
 - **Success Response (201 Created)**:
   ```json
   {
@@ -62,6 +64,7 @@ Creates the customer's initial profile.
     "gender": "MALE",
     "dateOfBirth": "2000-01-15",
     "profileImageUrl": null,
+    "whatsappNumber": "+919876543210",
     "mobile": "+919876543210",
     "email": null,
     "emailVerified": false,
@@ -93,6 +96,7 @@ Fetches the combined profile for the authenticated customer.
     "gender": "MALE",
     "dateOfBirth": "2000-01-15",
     "profileImageUrl": "https://<project-id>.supabase.co/storage/v1/object/sign/uploads/avatars/customers/...jpg?token=...",
+    "whatsappNumber": "+919876543210",
     "mobile": "+919876543210",
     "email": "customer@example.com",
     "emailVerified": true,
@@ -120,9 +124,16 @@ Performs partial updates on allowed customer profile fields.
     "firstName": "Sahil",
     "lastName": "Patil",
     "gender": "MALE",
-    "dateOfBirth": "1999-05-20"
+    "dateOfBirth": "1999-05-20",
+    "whatsappNumber": "+919876543210"
   }
   ```
+- **Validation Rules (on supplied fields)**:
+  - `firstName`: Optional non-empty string, max 50 chars, auto-trimmed.
+  - `lastName`: Optional non-empty string, max 50 chars, auto-trimmed.
+  - `gender`: Optional enum (`MALE`, `FEMALE`, `OTHER`).
+  - `dateOfBirth`: Optional valid ISO 8601 date string, must be in past.
+  - `whatsappNumber`: Optional non-empty string, max 20 chars, auto-trimmed.
 - **Protected Fields**:
   - `id`, `userId`, `mobile`, `email`, `emailVerified`, `role` are ignored/stripped by NestJS ValidationPipe and cannot be modified here.
 - **Success Response (200 OK)**: Returns updated combined profile object.
@@ -284,7 +295,8 @@ curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/profile/crea
     "firstName": "Sahil",
     "lastName": "Hode",
     "gender": "MALE",
-    "dateOfBirth": "2000-01-15"
+    "dateOfBirth": "2000-01-15",
+    "whatsappNumber": "+919876543210"
   }'
 ```
 **Expected Response**: `HTTP 201 Created`
@@ -450,6 +462,7 @@ curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/profile/me \
   "gender": "MALE",
   "dateOfBirth": "1999-05-20",
   "profileImageUrl": null,
+  "whatsappNumber": "+919876543210",
   "mobile": "+919876543210",
   "email": "customer@example.com",
   "emailVerified": true,

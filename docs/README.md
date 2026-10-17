@@ -13,6 +13,8 @@ https://api-puretyfarm.onrender.com
 5. **[Orders Documentation](./customer/orders.md)**: Order creation, tracking, and delivery history.
 6. **[Customer Wallet Documentation](./customer/wallet.md)**: Balance query, transaction ledger history, and direct credit requests.
 7. **[Customer Payments Documentation](./customer/payments.md)**: PhonePe Standard Checkout (v2) integration, online/cash wallet top-ups, transaction verification, and retry.
+8. **[Customer Manage Delivery Documentation](./customer/manage-delivery.md)**: Delivery calendar, immediate skips, vacation pause/resume, single-delivery and plan-level quantity modifications, frequency/plan changes, and change requests.
+9. **[Customer Real-Time Events Documentation](./customer/events.md)**: Server-Sent Events (SSE) stream (`/customer/events/stream`) for real-time wallet, order, and plan updates.
 
 ## Admin Modules
 1. **[Admin Auth Documentation](./admin/auth.md)**: Dedicated admin login, session management, and password change.

@@ -93,14 +93,16 @@ The customer's delivery address is snapshotted as JSON at order creation. If the
 
 - Only **DELIVERED** and **COMPLETED** orders are eligible for reorder
 - Uses **current** Admin pricing, delivery fee, and delivery time (not historical)
+- Delivery date is resolved automatically based on the 23:00 IST order cut-off (`resolveFirstDeliveryDate()`)
 - Creates a completely new Order; the original remains unchanged
 - Stores `reorderedFromOrderId` referencing the original
 
 ## Invoice Rules
 
-- Each Order has one Invoice created at the same time
-- Invoice stores an immutable `financialSnapshot` and `addressSnapshot`
-- Invoice numbers are unique (format: `INV-10001`)
+- **Prepaid Plans**: An Invoice is created immediately when the Order is generated.
+- **Per-Delivery Plans**: The Order starts without an invoice (`invoice: null`). An Invoice is generated when the delivery is settled upon fulfillment by the admin (`settlementStatus: SETTLED`).
+- Invoice stores an immutable `financialSnapshot` and `addressSnapshot`.
+- Invoice numbers are unique (format: `INV-10001`).
 
 ---
 
@@ -132,12 +134,23 @@ GET /api/v1/customer/orders
 {
   "data": [
     {
-      "id": "uuid",
+      "id": "b1c2d3e4-f5a6-7b8c-9d0e-1f2a3b4c5d6e",
       "orderNumber": "PF10001",
       "planType": "MONTHLY",
       "status": "DELIVERED",
       "paymentStatus": "PAID",
-      "items": [...],
+      "items": [
+        {
+          "id": "c2d3e4f5-a6b7-8c9d-0e1f-2a3b4c5d6e7f",
+          "productId": null,
+          "productNameSnapshot": "Milk",
+          "quantity": 2,
+          "unitPricePaise": 8000,
+          "discountPaise": 2000,
+          "taxPaise": 0,
+          "totalPaise": 16000
+        }
+      ],
       "subtotalPaise": 16000,
       "discountPaise": 2000,
       "taxPaise": 0,
@@ -146,15 +159,80 @@ GET /api/v1/customer/orders
       "deliveryDate": "2026-10-06",
       "deliveryStartTime": "08:00",
       "deliveryEndTime": "10:00",
-      "addressSnapshot": {...},
-      "invoice": { "invoiceNumber": "INV-10001", "issuedAt": "..." },
-      "createdAt": "...",
-      "updatedAt": "..."
+      "addressSnapshot": {
+        "fullName": "Sahil Hode",
+        "mobile": "+919876543210",
+        "houseNumber": "Flat 301",
+        "buildingName": "Sunrise Heights",
+        "streetName": "Linking Road",
+        "landmark": "Near KFC",
+        "state": "Maharashtra",
+        "city": "Mumbai",
+        "area": "Bandra West",
+        "pincode": "400050",
+        "latitude": 19.0600,
+        "longitude": 72.8300
+      },
+      "actualPricePerLitrePaise": 9000,
+      "sellingPricePerLitrePaise": 8000,
+      "reorderedFromOrderId": null,
+      "planDelivery": {
+        "id": "d3e4f5a6-b7c8-9d0e-1f2a-3b4c5d6e7f8a",
+        "status": "DELIVERED",
+        "quantityLitres": 2
+      },
+      "completedAt": "2026-10-06T11:00:00.000Z",
+      "billingModel": "PER_DELIVERY",
+      "deliveredAt": "2026-10-06T09:30:00.000Z",
+      "settlementStatus": "SETTLED",
+      "settledAt": "2026-10-06T09:30:00.000Z",
+      "walletTransactionId": "txn-5512b9a0",
+      "expectedAmountPaise": 18000,
+      "chargedAmountPaise": 18000,
+      "invoice": {
+        "invoiceNumber": "INV-10001",
+        "issuedAt": "2026-10-06T09:30:00.000Z"
+      },
+      "createdAt": "2026-10-05T08:00:00.000Z",
+      "updatedAt": "2026-10-06T09:30:00.000Z"
+    }
+  ],
+  "pendingPlanPurchases": [
+    {
+      "id": "sel-uuid",
+      "selectionId": "sel-uuid",
+      "planType": "MONTHLY",
+      "status": "PENDING_APPROVAL",
+      "purchaseStatus": "PENDING_APPROVAL",
+      "approvalStatus": "PENDING",
+      "schedulingStatus": "NOT_SCHEDULED",
+      "billingModel": "PER_DELIVERY",
+      "paymentMethod": "WALLET",
+      "frequency": "DAILY",
+      "quantityMode": "FIXED",
+      "quantity": 2,
+      "quantityA": null,
+      "quantityB": null,
+      "expectedAmountPaise": 480000,
+      "unitPricePaise": 8000,
+      "funding": {
+        "status": "CONFIRMED",
+        "walletBalancePaise": 500000,
+        "pendingCreditPaise": 0,
+        "hasCompletedCredit": true
+      },
+      "createdAt": "2026-10-06T12:00:00.000Z"
     }
   ],
   "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
 }
 ```
+
+**Pending Plan Purchases Note:**
+When a customer purchases a plan with per-delivery billing, the plan remains in `pendingPlanPurchases` until an admin approves the plan and schedules deliveries. `funding.status` indicates whether the customer\'s wallet is ready:
+- `CONFIRMED`: Customer has completed credit history or sufficient funds.
+- `PENDING_APPROVAL`: Customer submitted a credit top-up that is pending admin approval.
+- `NOT_FUNDED`: Customer has not yet funded the wallet.
 
 **Errors:**
 - `401` — Missing or invalid token
@@ -338,6 +416,7 @@ CASH is **not supported** as a direct payment method for orders through this end
 - `400 DIRECT_CASH_ORDER_PAYMENT_NOT_SUPPORTED` — CASH is not a supported order payment method
 - `400 INSUFFICIENT_WALLET_BALANCE` — Customer wallet does not have enough balance for order total
 - `404 ORDER_NOT_FOUND` — Order does not exist or belongs to another customer
+- `409 ORDER_CHARGED_ON_DELIVERY` — Order belongs to a Per-Delivery plan and is debited automatically upon delivery settlement (cannot be manually prepaid)
 - `409 ORDER_ALREADY_PROCESSED` — Order is already `PAID` (including all prepaid plan orders)
 
 ## Security / IDOR Rules
@@ -347,3 +426,11 @@ CASH is **not supported** as a direct payment method for orders through this end
 - Customer cannot manipulate price, delivery fee, delivery time, or total
 - Customer cannot change order status
 - Customer cannot access Admin endpoints (403)
+
+
+---
+
+## Real-Time Updates & Delivery Management
+
+- **Real-Time Stream**: Customers can listen to order updates via Server-Sent Events at `GET /api/v1/customer/events/stream`. When an order is confirmed, delivered, or settled, an `orders.updated` event is pushed to active streams.
+- **Delivery Management**: To view delivery calendars, skip upcoming deliveries, or request schedule/quantity changes for an active plan, see the [Customer Manage Delivery API](file:///docs/customer/manage-delivery.md) (`/api/v1/customer/manage-delivery`).

@@ -222,7 +222,6 @@ Fetch the authenticated customer's wallet.
 {
   "balancePaise": 150000,
   "currency": "INR",
-  "autoCreditEnabled": true,
   "createdAt": "2026-10-01T08:00:00.000Z",
   "updatedAt": "2026-10-06T11:30:00.000Z"
 }
@@ -232,10 +231,11 @@ Field notes:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `balancePaise` | integer | Current spendable balance in paise |
-| `currency` | string | Always `"INR"` today |
-| `autoCreditEnabled` | boolean | Whether subsequent verified ONLINE credits auto-credit without admin approval |
-| `createdAt` / `updatedAt` | ISO 8601 | Timestamps |
+| `balancePaise` | integer | Current spendable balance in paise (₹1 = 100 paise; divide by 100 for display) |
+| `currency` | string | Always `"INR"` |
+| `createdAt` / `updatedAt` | ISO 8601 | Timestamps (if wallet does not exist yet, returns balance `0` with current timestamp) |
+
+> ℹ️ **Note on `autoCreditEnabled`**: While `autoCreditEnabled` is maintained server-side on the `wallets` table to govern whether verified online top-ups require admin approval, it is an internal business rule and is not returned in the customer response payload.
 
 ---
 
@@ -444,3 +444,13 @@ Standard infrastructure errors:
 5. For the "payment success + wallet pending" case (first credit), the UI must
    show two distinct messages: "Payment Successful" (the money reached PhonePe)
    and "Wallet Credit Awaiting Approval" (the admin has not approved yet).
+
+
+---
+
+## 11. Real-Time Events
+
+Customers with an active Server-Sent Events stream (`GET /api/v1/customer/events/stream`) automatically receive `wallet.updated` whenever:
+- An online payment or cash collection is confirmed and credited to the wallet
+- An admin manually credits or debits the customer's wallet
+- A delivery order or plan purchase is settled against the customer's wallet balance

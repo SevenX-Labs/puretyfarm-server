@@ -37,7 +37,7 @@ All endpoints support both versions seamlessly:
 ### ────────────────────────────────────────────────────────
 
 ### 2.1 Detect Location from GPS Coordinates
-Reverse-geocodes device GPS coordinates using Geoapify. Does not persist to the database.
+Reverse-geocodes device GPS coordinates using Geoapify and cross-references them against PuretyFarm's active database catalog. Does not persist anything to the database.
 
 - **Method**: `POST`
 - **Path**: `/api/v1/customer/locations/detect`
@@ -54,17 +54,44 @@ Reverse-geocodes device GPS coordinates using Geoapify. Does not persist to the 
 - **Body Attributes**:
   - `latitude` (Number, Required): Value between `-90` and `90`.
   - `longitude` (Number, Required): Value between `-180` and `180`.
-- **Success Response (200 OK)**:
+- **Rate Limiting & Result Caching**:
+  - **Rate Limit**: Max 5 detect calls per rolling 60-second window per customer (`locations:detect:rate:{userId}`). Excess calls return `429 Too Many Requests`.
+  - **Result Cache**: Raw provider reverse-geocode results are cached in Valkey for 24 hours (`locations:detect:cache:{lat}:{lng}`, coordinates rounded to 4 decimal places / ~11 meters).
+- **Success Response (200 OK) — Serviceable Location**:
+  When coordinates match an active State, City, and Area in PuretyFarm's delivery catalog:
   ```json
   {
+    "serviceable": true,
+    "state": {
+      "id": "e4f5a6b7-c8d9-0e1f-2a3b-4c5d6e7f8a9b",
+      "name": "Maharashtra"
+    },
+    "city": {
+      "id": "f5a6b7c8-d90e-1f2a-3b4c-5d6e7f8a9b0c",
+      "name": "Mumbai"
+    },
+    "area": {
+      "id": "a6b7c8d9-0e1f-2a3b-4c5d-6e7f8a9b0c1d",
+      "name": "Bandra West"
+    },
+    "pincode": "400050",
     "latitude": 19.0760,
     "longitude": 72.8777,
-    "state": "Maharashtra",
-    "city": "Mumbai",
-    "area": "Bandra West",
-    "pincode": "400050",
-    "country": "India",
     "formattedAddress": "Bandra West, Mumbai, Maharashtra, 400050, India"
+  }
+  ```
+- **Success Response (200 OK) — Unserviceable Location**:
+  When coordinates fall outside PuretyFarm's active catalog zones:
+  ```json
+  {
+    "serviceable": false,
+    "state": "Goa",
+    "city": "Panaji",
+    "area": "Miramar",
+    "pincode": "403001",
+    "latitude": 15.4800,
+    "longitude": 73.8100,
+    "formattedAddress": "Miramar, Panaji, Goa, 403001, India"
   }
   ```
 - **Error Responses**:
@@ -74,6 +101,13 @@ Reverse-geocodes device GPS coordinates using Geoapify. Does not persist to the 
       "statusCode": 400,
       "message": ["latitude must be between -90 and 90"],
       "error": "Bad Request"
+    }
+    ```
+  - `429 Too Many Requests`: Customer rate limit exceeded (max 5 requests per 60 seconds).
+    ```json
+    {
+      "statusCode": 429,
+      "message": "Too many location detection requests. Please try again shortly."
     }
     ```
   - `503 Service Unavailable`: Upstream Geoapify failure, timeout, or missing API key.
@@ -425,7 +459,7 @@ curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/locations/de
     "longitude": 72.8777
   }'
 ```
-**Expected Response**: `200 OK` with normalized city (`Mumbai`), state (`Maharashtra`), country, and formatted address.
+**Expected Response**: `200 OK` with `serviceable: true`, server-resolved IDs for `state`, `city`, `area`, and formatted address.
 
 ---
 
@@ -561,6 +595,7 @@ curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$AD
 | `201 Created` | Created | Successful address creation. |
 | `204 No Content` | Deleted | Successful address deletion. |
 | `400 Bad Request` | Validation Error | Broken State/City/Area hierarchy, out-of-range coordinates, invalid UUID syntax, missing required fields. |
+| `429 Too Many Requests` | Rate Limit Exceeded | Exceeded 5 location detection requests in a 60-second window. |
 | `401 Unauthorized` | Auth Failure | Missing, expired, or malformed Bearer JWT token. |
 | `403 Forbidden` | RBAC Denied | Token role is not `CUSTOMER`. |
 | `404 Not Found` | Resource Missing | Non-existent address ID, address owned by another user (IDOR protection), inactive State/City. |
