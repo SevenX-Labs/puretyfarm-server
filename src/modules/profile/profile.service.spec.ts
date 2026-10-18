@@ -272,7 +272,37 @@ describe('ProfileService', () => {
     });
   });
 
-  describe('4. updateCustomerAvatar', () => {
+  describe("3b. updateCustomerLocation", () => {
+    it("updates latitude and longitude in customer_profiles", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue({
+        ...mockProfile,
+      });
+      mockPrismaService.customerProfile.update.mockResolvedValue({
+        ...mockProfile,
+        latitude: 19.076,
+        longitude: 72.8777,
+      });
+
+      const result = await service.updateCustomerLocation("user-123", 19.076, 72.8777);
+
+      expect(mockPrismaService.customerProfile.update).toHaveBeenCalledWith({
+        where: { userId: "user-123" },
+        data: { latitude: 19.076, longitude: 72.8777 },
+      });
+      expect(result.latitude).toBe(19.076);
+      expect(result.longitude).toBe(72.8777);
+    });
+
+    it("throws NotFoundException if profile does not exist", async () => {
+      mockPrismaService.customerProfile.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.updateCustomerLocation("user-unknown", 19.076, 72.8777),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe("4. updateCustomerAvatar", () => {
     it('O. replacement: upload -> DB stores PATH -> old object deleted (safe order), returns signed URL', async () => {
       mockPrismaService.customerProfile.findUnique.mockResolvedValue({
         ...mockProfile,

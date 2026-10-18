@@ -73,6 +73,12 @@ describe('ProfileController', () => {
       email: 'test@example.com',
       emailVerified: true,
     }),
+    updateCustomerLocation: jest.fn().mockResolvedValue({
+      id: "profile-1",
+      userId: "user-1",
+      latitude: 19.076,
+      longitude: 72.8777,
+    }),
     updateCustomerAvatar: jest.fn().mockResolvedValue({
       id: 'profile-1',
       userId: 'user-1',
@@ -160,7 +166,19 @@ describe('ProfileController', () => {
       );
     });
 
-    it('should call updateCustomerAvatar using authenticated user.sub and file', async () => {
+    it("should call updateCustomerLocation using authenticated user.sub", async () => {
+      const dto = { latitude: 19.076, longitude: 72.8777 };
+      const res = await controller.updateLocation(mockJwtPayload, dto);
+
+      expect(res.latitude).toBe(19.076);
+      expect(mockProfileService.updateCustomerLocation).toHaveBeenCalledWith(
+        "user-1",
+        19.076,
+        72.8777,
+      );
+    });
+
+    it("should call updateCustomerAvatar using authenticated user.sub and file", async () => {
       const file = {
         fieldname: 'avatar',
         originalname: 'photo.png',

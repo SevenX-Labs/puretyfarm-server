@@ -140,7 +140,30 @@ Performs partial updates on allowed customer profile fields.
 
 ---
 
-### 2.4 Upload / Replace Avatar
+
+---
+
+### 2.4 Update Profile Location (GPS Coordinates)
+Updates the customer's current GPS coordinates (latitude, longitude) obtained from Expo Location.
+
+- **Method**: `PATCH`
+- **Path**: `/api/v1/customer/profile/location`
+- **Headers**:
+  - `Authorization: Bearer <CUSTOMER_ACCESS_TOKEN>`
+  - `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "latitude": 19.0760,
+    "longitude": 72.8777
+  }
+  ```
+- **Validation Rules**:
+  - `latitude`: Required number between -90 and 90.
+  - `longitude`: Required number between -180 and 180.
+- **Success Response (200 OK)**: Returns updated combined profile object including `latitude` and `longitude`.
+
+### 2.5 Upload / Replace Avatar
 Uploads or updates the customer's profile avatar image.
 
 - **Method**: `POST`
@@ -181,7 +204,7 @@ Uploads or updates the customer's profile avatar image.
 
 ---
 
-### 2.5 Remove Avatar
+### 2.6 Remove Avatar
 Removes the customer's avatar and deletes the stored object.
 
 - **Method**: `DELETE`

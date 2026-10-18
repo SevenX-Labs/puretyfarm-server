@@ -27,6 +27,8 @@ export interface CombinedCustomerProfileResponse {
   // at read time — NEVER persisted.
   profileImageUrl: string | null;
   whatsappNumber: string | null;
+  latitude: number | null;
+  longitude: number | null;
   mobile: string;
   email: string | null;
   emailVerified: boolean;
@@ -72,6 +74,8 @@ export class ProfileService {
             gender: dto.gender,
             dateOfBirth: dob,
             whatsappNumber: dto.whatsappNumber,
+            latitude: dto.latitude ?? null,
+            longitude: dto.longitude ?? null,
           },
         })
         .catch((error: unknown) => {
@@ -146,6 +150,12 @@ export class ProfileService {
     if (dto.whatsappNumber !== undefined) {
       updateData.whatsappNumber = dto.whatsappNumber;
     }
+    if (dto.latitude !== undefined) {
+      updateData.latitude = dto.latitude;
+    }
+    if (dto.longitude !== undefined) {
+      updateData.longitude = dto.longitude;
+    }
 
     // The user row is not modified here, so reuse the one loaded above rather
     // than re-including it: with `include` Prisma wraps the UPDATE in a
@@ -153,6 +163,31 @@ export class ProfileService {
     const updated = await this.prisma.customerProfile.update({
       where: { userId },
       data: updateData,
+    });
+
+    return this.buildProfileResponse(updated, profile.user);
+  }
+
+  /**
+   * Updates customer GPS coordinates directly.
+   */
+  async updateCustomerLocation(
+    userId: string,
+    latitude: number,
+    longitude: number,
+  ): Promise<CombinedCustomerProfileResponse> {
+    const profile = await this.prisma.customerProfile.findUnique({
+      where: { userId },
+      include: { user: true },
+    });
+
+    if (!profile) {
+      throw new NotFoundException("Customer profile not found");
+    }
+
+    const updated = await this.prisma.customerProfile.update({
+      where: { userId },
+      data: { latitude, longitude },
     });
 
     return this.buildProfileResponse(updated, profile.user);
@@ -304,6 +339,8 @@ export class ProfileService {
       dateOfBirth: profile.dateOfBirth.toISOString().split('T')[0],
       profileImageUrl,
       whatsappNumber: profile.whatsappNumber ?? null,
+      latitude: profile.latitude ?? null,
+      longitude: profile.longitude ?? null,
       mobile: user.mobile,
       email: user.email,
       emailVerified: user.emailVerified,

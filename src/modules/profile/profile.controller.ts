@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ProfileService } from './profile.service';
 import { CustomerCreateProfileDto } from './dto/customer/customer-create-profile.dto';
 import { CustomerUpdateProfileDto } from './dto/customer/customer-update-profile.dto';
+import { CustomerUpdateLocationDto } from './dto/customer/customer-update-location.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
@@ -49,6 +50,20 @@ export class ProfileController {
     @Body() dto: CustomerUpdateProfileDto,
   ) {
     return this.profileService.updateCustomerProfile(user.sub, dto);
+  }
+
+  @Patch('location')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async updateLocation(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CustomerUpdateLocationDto,
+  ) {
+    return this.profileService.updateCustomerLocation(
+      user.sub,
+      dto.latitude,
+      dto.longitude,
+    );
   }
 
   @Post('update-avatar')

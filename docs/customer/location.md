@@ -1,42 +1,131 @@
-# Customer Location & Address API Specification & Postman Testing Guide
+# Customer Location & Address API Specification & Integration Guide
 
-This document provides complete, all-in-one documentation for both the **Location System** (GPS reverse-geocoding & active catalog hierarchy) and the **Customer Address Management System** in the PuretyFarm backend.
+This document provides complete, all-in-one documentation for:
+1. **Device GPS Location Detection & Reverse-Geocoding** (Geoapify + Valkey caching + active catalog hierarchy).
+2. **User Profile Live GPS Location Persistence** (`customer_profiles` latitude and longitude storage).
+3. **Customer Delivery Address Management** (`customer_addresses` hierarchy validation & snapshots).
+4. **Expo Mobile App Integration Architecture** (`expo-location` flow).
 
 ---
 
 ## 1. Overview & Architecture
 
-### Core Modules
+### Core Modules & Responsibilities
 - **Location Module** (`LocationsModule`):
   - **Reverse Geocoding**: Converts device GPS coordinates (`latitude`, `longitude`) into human-readable locations via Geoapify without persisting anything to the database.
   - **Active Catalog**: Exposes read-only active `State -> City -> Area` hierarchies for manual location selection.
+  - **Serviceability Check**: Cross-references detected locations with PuretyFarm's active database catalog.
+- **Profile Module — User GPS Location** (`ProfileModule`):
+  - **Live GPS Storage**: Persists the authenticated customer's current `latitude` and `longitude` coordinates directly in their `customer_profiles` record.
+  - **Dedicated Endpoint**: `PATCH /api/v1/customer/profile/location` updates coordinates whenever fetched by the mobile app.
 - **Address Module** (`AddressModule`):
-  - **Saved Addresses**: Manages saved delivery addresses for authenticated customers.
+  - **Saved Delivery Addresses**: Manages saved delivery addresses for authenticated customers.
   - **Authoritative Hierarchy Validation**: Validates that an area belongs to the specified city, the city belongs to the state, and all levels are active.
   - **Snapshot Preservation**: Denormalizes state, city, and area names at write time so future catalog renames do not corrupt historical customer addresses.
 
 ### Base URLs & Dual Routing
-All endpoints support both versions seamlessly:
-- Prefix A: `https://api-puretyfarm.onrender.com/api/v1/customer/...`
-- Prefix B: `https://api-puretyfarm.onrender.com/customer/...`
+All customer endpoints support dual prefix routing:
+- **Prefix A**: `https://api-puretyfarm.onrender.com/api/v1/customer/...`
+- **Prefix B**: `https://api-puretyfarm.onrender.com/customer/...`
 
-### Security Standards
+### Security & IDOR Standards
 - **Authentication**: All endpoints require a valid customer JWT in the header:
   ```text
   Authorization: Bearer <CUSTOMER_ACCESS_TOKEN>
   ```
 - **Role Guard**: Enforced by `JwtAuthGuard`; only `CUSTOMER` tokens are permitted.
-- **IDOR Protection**: The customer's identity is derived strictly from `JWT.sub`. Clients can never supply a `userId` to read, update, or delete another user's address.
+- **IDOR Protection**: The customer's identity is derived strictly from `JWT.sub`. Clients can never supply a `userId` to read, update, or delete another user's profile or address.
 
 ---
 
-## 2. API Endpoints Specification
+## 2. Mobile App (Expo) Location Architecture
+
+When the user clicks **"Use current location"** in the Expo React Native app:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Customer (Expo App)
+    participant ExpoLoc as expo-location
+    participant ProfileAPI as Profile API (User Section)
+    participant LocationAPI as Location API (Detect)
+    participant Geoapify as Geoapify Service
+    participant DB as PostgreSQL
+
+    User->>ExpoLoc: Taps "Use current location"
+    ExpoLoc->>ExpoLoc: getCurrentPositionAsync({ accuracy: Highest })
+    ExpoLoc-->>User: Coordinates (latitude, longitude)
+
+    par Background User Profile Sync
+        User->>ProfileAPI: PATCH /customer/profile/location { latitude, longitude }
+        ProfileAPI->>DB: UPDATE customer_profiles SET latitude, longitude
+        ProfileAPI-->>User: 200 OK (Updated Profile)
+    and Serviceability Check
+        User->>LocationAPI: POST /customer/locations/detect { latitude, longitude }
+        LocationAPI->>Geoapify: Reverse-geocode coordinates
+        LocationAPI->>DB: Match against active State -> City -> Area
+        LocationAPI-->>User: 200 OK (serviceable: true/false, catalog IDs)
+    end
+```
+
+---
+
+## 3. API Endpoints Specification
 
 ### ────────────────────────────────────────────────────────
-### PART 1: LOCATION APIS
+### PART 1: USER SECTION — PROFILE GPS LOCATION
 ### ────────────────────────────────────────────────────────
 
-### 2.1 Detect Location from GPS Coordinates
+### 3.1 Update User Profile GPS Location
+Stores or updates the customer's current live GPS coordinates (`latitude` and `longitude`) directly in the `customer_profiles` table.
+
+- **Method**: `PATCH`
+- **Path**: `/api/v1/customer/profile/location`
+- **Headers**:
+  - `Authorization: Bearer <ACCESS_TOKEN>`
+  - `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "latitude": 19.0760,
+    "longitude": 72.8777
+  }
+  ```
+- **Body Attributes**:
+  - `latitude` (Number, Required): Float between `-90` and `90`.
+  - `longitude` (Number, Required): Float between `-180` and `180`.
+- **Success Response (200 OK)**:
+  ```json
+  {
+    "id": "c1f7b049-55be-4416-9285-d6ca8e1dfc2e",
+    "userId": "81fce727-4a0b-4171-be1e-d4c398335be9",
+    "firstName": "Sahil",
+    "lastName": "Hode",
+    "gender": "MALE",
+    "dateOfBirth": "2000-01-15",
+    "profileImageUrl": null,
+    "whatsappNumber": "+919876543210",
+    "latitude": 19.076,
+    "longitude": 72.8777,
+    "mobile": "+919876543210",
+    "email": "customer@example.com",
+    "emailVerified": true,
+    "createdAt": "2026-10-03T14:15:00.000Z",
+    "updatedAt": "2026-10-18T19:25:00.000Z"
+  }
+  ```
+- **Error Responses**:
+  - `400 Bad Request`: Coordinates out of range or not numbers.
+  - `401 Unauthorized`: Missing, expired, or invalid token.
+  - `404 Not Found`: Customer profile does not exist (user must complete onboarding first).
+
+---
+
+### ────────────────────────────────────────────────────────
+### PART 2: LOCATION DETECTION & CATALOG APIS
+### ────────────────────────────────────────────────────────
+
+### 3.2 Detect Location from GPS Coordinates
 Reverse-geocodes device GPS coordinates using Geoapify and cross-references them against PuretyFarm's active database catalog. Does not persist anything to the database.
 
 - **Method**: `POST`
@@ -55,8 +144,8 @@ Reverse-geocodes device GPS coordinates using Geoapify and cross-references them
   - `latitude` (Number, Required): Value between `-90` and `90`.
   - `longitude` (Number, Required): Value between `-180` and `180`.
 - **Rate Limiting & Result Caching**:
-  - **Rate Limit**: Max 5 detect calls per rolling 60-second window per customer (`locations:detect:rate:{userId}`). Excess calls return `429 Too Many Requests`.
-  - **Result Cache**: Raw provider reverse-geocode results are cached in Valkey for 24 hours (`locations:detect:cache:{lat}:{lng}`, coordinates rounded to 4 decimal places / ~11 meters).
+  - **Rate Limit**: Max 5 detect calls per rolling 60-second window per customer (`locations:detect:ratelimit:{userId}`). Excess calls return `429 Too Many Requests`.
+  - **Result Cache**: Raw provider reverse-geocode results are cached in Valkey for 24 hours (`locations:reverse-geocode:{lat}:{lon}`, coordinates rounded to 3 decimal places / ~110 meters).
 - **Success Response (200 OK) — Serviceable Location**:
   When coordinates match an active State, City, and Area in PuretyFarm's delivery catalog:
   ```json
@@ -95,33 +184,13 @@ Reverse-geocodes device GPS coordinates using Geoapify and cross-references them
   }
   ```
 - **Error Responses**:
-  - `400 Bad Request`: Invalid coordinates (out of range or not numbers).
-    ```json
-    {
-      "statusCode": 400,
-      "message": ["latitude must be between -90 and 90"],
-      "error": "Bad Request"
-    }
-    ```
+  - `400 Bad Request`: Invalid coordinates.
   - `429 Too Many Requests`: Customer rate limit exceeded (max 5 requests per 60 seconds).
-    ```json
-    {
-      "statusCode": 429,
-      "message": "Too many location detection requests. Please try again shortly."
-    }
-    ```
-  - `503 Service Unavailable`: Upstream Geoapify failure, timeout, or missing API key.
-    ```json
-    {
-      "statusCode": 503,
-      "message": "Location service is unavailable",
-      "error": "Service Unavailable"
-    }
-    ```
+  - `503 Service Unavailable`: Upstream Geoapify failure, timeout, or missing configuration.
 
 ---
 
-### 2.2 Get Active States
+### 3.3 Get Active States
 Lists all active states alphabetically.
 
 - **Method**: `GET`
@@ -144,7 +213,7 @@ Lists all active states alphabetically.
 
 ---
 
-### 2.3 Get Active Cities in a State
+### 3.4 Get Active Cities in a State
 Lists all active cities belonging to a specified active state.
 
 - **Method**: `GET`
@@ -170,11 +239,11 @@ Lists all active cities belonging to a specified active state.
   ```
 - **Error Responses**:
   - `400 Bad Request`: `stateId` is not a valid UUID.
-  - `404 Not Found`: State does not exist or is inactive (`{"statusCode": 404, "message": "State not found"}`).
+  - `404 Not Found`: State does not exist or is inactive.
 
 ---
 
-### 2.4 Get Active Areas in a City
+### 3.5 Get Active Areas in a City
 Lists all active areas and delivery zones belonging to a specified active city.
 
 - **Method**: `GET`
@@ -202,15 +271,15 @@ Lists all active areas and delivery zones belonging to a specified active city.
   ```
 - **Error Responses**:
   - `400 Bad Request`: `cityId` is not a valid UUID.
-  - `404 Not Found`: City does not exist or is inactive (`{"statusCode": 404, "message": "City not found"}`).
+  - `404 Not Found`: City does not exist or is inactive.
 
 ---
 
 ### ────────────────────────────────────────────────────────
-### PART 2: SAVED ADDRESS APIS
+### PART 3: SAVED DELIVERY ADDRESS APIS
 ### ────────────────────────────────────────────────────────
 
-### 2.5 Create Customer Address
+### 3.6 Create Customer Address
 Creates and saves a new delivery address for the authenticated customer.
 
 - **Method**: `POST`
@@ -245,9 +314,9 @@ Creates and saves a new delivery address for the authenticated customer.
   - `stateId` (UUID, Required): ID of the state.
   - `cityId` (UUID, Required): ID of the city.
   - `areaId` (UUID, Required): ID of the area.
-  - `pincode` (String, Optional): 4 to 10 digit postal code. If omitted, automatically defaults to the selected area's catalog pincode.
-  - `latitude` (Number, Optional): Float between `-90` and `90` (present when GPS detected).
-  - `longitude` (Number, Optional): Float between `-180` and `180` (present when GPS detected).
+  - `pincode` (String, Optional): 4 to 10 digit postal code. Defaults to area's catalog pincode if omitted.
+  - `latitude` (Number, Optional): Float between `-90` and `90` (captured from GPS).
+  - `longitude` (Number, Optional): Float between `-180` and `180` (captured from GPS).
 - **Success Response (201 Created)**:
   ```json
   {
@@ -274,76 +343,34 @@ Creates and saves a new delivery address for the authenticated customer.
   ```
 - **Error Responses**:
   - `400 Bad Request`: Invalid hierarchy selection.
-    ```json
-    {
-      "statusCode": 400,
-      "message": "Invalid or inactive State -> City -> Area selection",
-      "error": "Bad Request"
-    }
-    ```
 
 ---
 
-### 2.6 Get All Customer Addresses
-Retrieves all delivery addresses saved by the authenticated customer, sorted by newest first (`createdAt desc`).
+### 3.7 Get All Customer Addresses
+Retrieves all delivery addresses saved by the authenticated customer, sorted newest first (`createdAt desc`).
 
 - **Method**: `GET`
 - **Path**: `/api/v1/customer/addresses`
 - **Headers**:
   - `Authorization: Bearer <ACCESS_TOKEN>`
-- **Success Response (200 OK)**:
-  ```json
-  [
-    {
-      "id": "7b8c9d0e-1f2a-3b4c-5d6e-7f8a9b0c1d2e",
-      "userId": "81fce727-4a0b-4171-be1e-d4c398335be9",
-      "fullName": "Sahil Hode",
-      "mobile": "+919876543210",
-      "houseNumber": "Flat 402, Building A",
-      "buildingName": "Green Acres Residency",
-      "streetName": "Hill Road",
-      "landmark": "Near Mehboob Studio",
-      "stateId": "e4f5a6b7-c8d9-0e1f-2a3b-4c5d6e7f8a9b",
-      "cityId": "f1e2d3c4-b5a6-7890-1234-56789abcdef0",
-      "areaId": "9a8b7c6d-5e4f-3a2b-1c0d-e1f2a3b4c5d6",
-      "state": "Maharashtra",
-      "city": "Mumbai",
-      "area": "Bandra West",
-      "pincode": "400050",
-      "latitude": 19.0544,
-      "longitude": 72.8277,
-      "createdAt": "2026-10-03T18:00:00.000Z",
-      "updatedAt": "2026-10-03T18:00:00.000Z"
-    }
-  ]
-  ```
+- **Success Response (200 OK)**: Array of saved address objects.
 
 ---
 
-### 2.7 Get Address by ID
-Retrieves a single address. Only the owner can access it.
+### 3.8 Get Address by ID
+Retrieves a single address. Protected by IDOR — customers can only view their own addresses.
 
 - **Method**: `GET`
 - **Path**: `/api/v1/customer/addresses/:id`
 - **Headers**:
   - `Authorization: Bearer <ACCESS_TOKEN>`
-- **Path Parameters**:
-  - `id` (UUID, Required): Address ID.
 - **Success Response (200 OK)**: Returns the single address object.
 - **Error Responses**:
-  - `400 Bad Request`: `id` is not a valid UUID.
-  - `404 Not Found`: Address does not exist or belongs to another user (IDOR prevention).
-    ```json
-    {
-      "statusCode": 404,
-      "message": "Address not found",
-      "error": "Not Found"
-    }
-    ```
+  - `404 Not Found`: Address does not exist or belongs to another user.
 
 ---
 
-### 2.8 Update Address (Partial Update)
+### 3.9 Update Address (Partial Update)
 Updates one or more fields on an owned address. If any location foreign key (`stateId`, `cityId`, `areaId`) is passed, the complete merged triple is re-validated against the catalog and name snapshots are updated.
 
 - **Method**: `PATCH`
@@ -356,47 +383,37 @@ Updates one or more fields on an owned address. If any location foreign key (`st
   {
     "houseNumber": "Flat 501, 5th Floor",
     "landmark": "Opposite Lilavati Hospital",
-    "areaId": "c1d2e3f4-a5b6-7c8d-9e0f-1a2b3c4d5e6f"
+    "latitude": 19.0550,
+    "longitude": 72.8280
   }
   ```
-- **Success Response (200 OK)**: Returns the updated address object.
-- **Error Responses**:
-  - `400 Bad Request`: Invalid partial hierarchy combination or invalid data format.
-  - `404 Not Found`: Address not found or not owned by caller.
+- **Success Response (200 OK)**: Returns updated address object.
 
 ---
 
-### 2.9 Delete Address
+### 3.10 Delete Address
 Permanently removes a saved address owned by the authenticated customer.
 
 - **Method**: `DELETE`
 - **Path**: `/api/v1/customer/addresses/:id`
 - **Headers**:
   - `Authorization: Bearer <ACCESS_TOKEN>`
-- **Path Parameters**:
-  - `id` (UUID, Required): Address ID to delete.
 - **Success Response (204 No Content)**: Empty body.
-- **Error Responses**:
-  - `404 Not Found`: Address does not exist or not owned by caller.
 
 ---
 
-## 3. Step-by-Step Postman & cURL Testing Guide
+## 4. Step-by-Step Postman & cURL Testing Guide
 
 ### Prerequisites
 1. **Server Running**: `npm run start:dev`
 2. **Postman Environment Setup**:
    - `baseUrl`: `https://api-puretyfarm.onrender.com`
    - `accessToken`: *(Populated after OTP login)*
-   - `stateId`: *(Captured from Step 3)*
-   - `cityId`: *(Captured from Step 4)*
-   - `areaId`: *(Captured from Step 5)*
-   - `addressId`: *(Captured from Step 6)*
+   - `stateId`, `cityId`, `areaId`, `addressId`
 
 ---
 
 ### STEP 1: Quick Database Seeding (If Location Catalog is Empty)
-If your `states`, `cities`, and `areas` tables are currently empty, run this one-line Node script in your terminal to insert sample active locations:
 
 ```bash
 node -e '
@@ -430,16 +447,12 @@ seed().finally(() => p.$disconnect());
 
 ```bash
 # 1. Send Login OTP
-curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/login \
-  -H "Content-Type: application/json" \
-  -d '{"mobile": "+919876543210"}'
+curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/login   -H "Content-Type: application/json"   -d '{"mobile": "+919876543210"}'
 
 # (Inspect server logs to read the 6-digit dev OTP, e.g. 123456)
 
 # 2. Verify OTP
-curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/verify-otp \
-  -H "Content-Type: application/json" \
-  -d '{"mobile": "+919876543210", "otp": "123456"}'
+curl -X POST https://api-puretyfarm.onrender.com/api/v1/auth/customer/verify-otp   -H "Content-Type: application/json"   -d '{"mobile": "+919876543210", "otp": "123456"}'
 ```
 Save the returned `accessToken`:
 ```bash
@@ -448,13 +461,23 @@ export TOKEN="<YOUR_ACCESS_TOKEN>"
 
 ---
 
-### STEP 3: Test GPS Location Detection
+### STEP 3: Test User Profile Live GPS Location Update (User Section)
+
+Update the user's live coordinates in `customer_profiles`:
+```bash
+curl -i -X PATCH https://api-puretyfarm.onrender.com/api/v1/customer/profile/location   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{
+    "latitude": 19.0760,
+    "longitude": 72.8777
+  }'
+```
+**Expected Response**: `200 OK` showing updated customer profile with `latitude: 19.076` and `longitude: 72.8777`.
+
+---
+
+### STEP 4: Test GPS Location Detection & Serviceability Check
 
 ```bash
-curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/locations/detect \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/locations/detect   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{
     "latitude": 19.0760,
     "longitude": 72.8777
   }'
@@ -463,37 +486,31 @@ curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/locations/de
 
 ---
 
-### STEP 4: Browse Location Hierarchy (State -> City -> Area)
+### STEP 5: Browse Location Hierarchy (State -> City -> Area)
 
 ```bash
 # A. Get States
-curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/states \
-  -H "Authorization: Bearer $TOKEN"
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/states   -H "Authorization: Bearer $TOKEN"
 
 # (Copy a stateId from response, e.g. export STATE_ID="...")
 
 # B. Get Cities for State
-curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/states/$STATE_ID/cities \
-  -H "Authorization: Bearer $TOKEN"
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/states/$STATE_ID/cities   -H "Authorization: Bearer $TOKEN"
 
 # (Copy a cityId from response, e.g. export CITY_ID="...")
 
 # C. Get Areas for City
-curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/cities/$CITY_ID/areas \
-  -H "Authorization: Bearer $TOKEN"
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/locations/cities/$CITY_ID/areas   -H "Authorization: Bearer $TOKEN"
 
 # (Copy an areaId from response, e.g. export AREA_ID="...")
 ```
 
 ---
 
-### STEP 5: Create Saved Address
+### STEP 6: Create Saved Delivery Address
 
 ```bash
-curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{
     "fullName": "Sahil Hode",
     "mobile": "+919876543210",
     "houseNumber": "Flat 301",
@@ -511,14 +528,11 @@ curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
 
 ---
 
-### STEP 6: Hierarchy Validation Rejection Test
+### STEP 7: Hierarchy Validation Rejection Test
 
 Try creating an address with an invalid/mismatched State and City:
 ```bash
-curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
+curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{
     "fullName": "Test User",
     "mobile": "+919876543210",
     "houseNumber": "12",
@@ -531,33 +545,28 @@ curl -i -X POST https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
 
 ---
 
-### STEP 7: List Customer Saved Addresses
+### STEP 8: List Customer Saved Addresses
 
 ```bash
-curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses \
-  -H "Authorization: Bearer $TOKEN"
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `200 OK` array containing your created address.
 
 ---
 
-### STEP 8: Fetch Single Address by ID
+### STEP 9: Fetch Single Address by ID
 
 ```bash
-curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
-  -H "Authorization: Bearer $TOKEN"
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `200 OK` with the address entity.
 
 ---
 
-### STEP 9: Update Address (PATCH)
+### STEP 10: Update Address (PATCH)
 
 ```bash
-curl -i -X PATCH https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
+curl -i -X PATCH https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -d '{
     "houseNumber": "Penthouse 901",
     "landmark": "Near Starbucks"
   }'
@@ -566,32 +575,30 @@ curl -i -X PATCH https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$
 
 ---
 
-### STEP 10: Delete Address
+### STEP 11: Delete Address
 
 ```bash
-curl -i -X DELETE https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
-  -H "Authorization: Bearer $TOKEN"
+curl -i -X DELETE https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `204 No Content` (Empty body).
 
 ---
 
-### STEP 11: Verify Deletion & IDOR Protection
+### STEP 12: Verify Deletion & IDOR Protection
 
 Try fetching the deleted address:
 ```bash
-curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID \
-  -H "Authorization: Bearer $TOKEN"
+curl -i -X GET https://api-puretyfarm.onrender.com/api/v1/customer/addresses/$ADDRESS_ID   -H "Authorization: Bearer $TOKEN"
 ```
 **Expected Response**: `404 Not Found` (`Address not found`).
 
 ---
 
-## 4. Summary of Status Codes & Error Formats
+## 5. Summary of Status Codes & Error Formats
 
 | Status Code | Meaning | Typical Trigger |
 |---|---|---|
-| `200 OK` | Success | Successful read or update. |
+| `200 OK` | Success | Successful read or update (Profile Location, Detect, Catalog, Address). |
 | `201 Created` | Created | Successful address creation. |
 | `204 No Content` | Deleted | Successful address deletion. |
 | `400 Bad Request` | Validation Error | Broken State/City/Area hierarchy, out-of-range coordinates, invalid UUID syntax, missing required fields. |
