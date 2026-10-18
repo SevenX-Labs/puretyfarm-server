@@ -22,6 +22,10 @@ import { CustomerVerifyOtpDto } from './dto/customer/customer-verify-otp.dto';
 import { CustomerRefreshTokenDto } from './dto/customer/customer-refresh-token.dto';
 import { CustomerEmailSendOtpDto } from './dto/customer/customer-email-send-otp.dto';
 import { CustomerEmailVerifyOtpDto } from './dto/customer/customer-email-verify-otp.dto';
+import { CreateMpinDto } from './dto/customer/create-mpin.dto';
+import { VerifyMpinDto } from './dto/customer/verify-mpin.dto';
+import { ChangeMpinDto } from './dto/customer/change-mpin.dto';
+import { ResetMpinDto } from './dto/customer/reset-mpin.dto';
 import { AdminLoginDto } from './dto/admin/login.dto';
 import { AdminChangePasswordDto } from './dto/admin/change-password.dto';
 import { normalizeMobile } from '../../common/utils/phone.util';
@@ -41,6 +45,9 @@ import { Prisma } from '@prisma/client';
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+
+  private static readonly MPIN_MAX_ATTEMPTS = 5;
+  private static readonly MPIN_LOCKOUT_MINUTES = 15;
 
   // Contexts that bind each hashed secret to its subject, so a hash lifted
   // from one mobile/user/session cannot be replayed against another.
@@ -96,7 +103,6 @@ export class AuthService {
   private get accessSecret(): string {
     const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
     if (!secret) {
-      // Startup validation enforces this; never fall back to a hardcoded secret.
       throw new InternalServerErrorException(
         'Authentication is not configured',
       );
@@ -137,10 +143,6 @@ export class AuthService {
     const dailyKey = `auth:customer:otp:send:${normalizedMobile}:daily:${todayIst}`;
     const secondsUntilMidnight = getSecondsUntilIstMidnight();
 
-    // 1. Atomically check cooldown + both send counters and reserve a slot.
-    //    Checking and incrementing in one script prevents concurrent requests
-    //    from bypassing the 60s cooldown / 5-per-5min / 20-per-day limits.
-    //    The daily key is scoped to the IST calendar day and expires at 12:00 AM IST midnight.
     const reservation = await this.valkeyService.reserveSendSlot(
       cooldownKey,
       this.otpResendCooldownSeconds,
@@ -177,14 +179,10 @@ export class AuthService {
       );
     }
 
-    // 2. Generate a cryptographically secure OTP and store only its keyed
-    //    hash (peppered HMAC; see secret-hash.util.ts for why not Argon2).
     const otp = generateSecureOtp();
     const hashedOtp = hashSecret(otp, AuthService.otpContext(normalizedMobile));
     const otpKey = `auth:customer:otp:${normalizedMobile}`;
 
-    // 3. Store the OTP and reset the previous OTP's verification attempts.
-    //    Independent keys, so one round-trip instead of two.
     await Promise.all([
       this.valkeyService.set(otpKey, hashedOtp, this.otpExpirySeconds),
       this.valkeyService.delete(
@@ -192,7 +190,6 @@ export class AuthService {
       ),
     ]);
 
-    // 4. Send SMS via Fast2SMS (dedicated OTP route)
     const smsResult = await this.fast2SmsService.sendOtp(normalizedMobile, otp);
     if (!smsResult.success) {
       this.logger.error(
@@ -204,14 +201,12 @@ export class AuthService {
       );
     }
 
-    // Development log only
     if (process.env.NODE_ENV !== 'production') {
       this.logger.log(
         `[AUTH][DEV] Customer OTP Mobile: ${normalizedMobile} OTP: ${otp} Expires: 5 minutes`,
       );
     }
 
-    // 12. Generic success response
     return {
       success: true,
       message: 'OTP sent successfully',
@@ -223,10 +218,6 @@ export class AuthService {
     const otpKey = `auth:customer:otp:${normalizedMobile}`;
     const attemptsKey = `auth:customer:otp:attempts:${normalizedMobile}`;
 
-    // 1. Retrieve the OTP hash and the attempt counter. Both reads are
-    //    independent, so they are issued together: the Glide client
-    //    multiplexes them over one connection, costing a single round-trip to
-    //    Valkey instead of two sequential ones.
     const [storedHash, attemptsStr] = await Promise.all([
       this.valkeyService.get(otpKey),
       this.valkeyService.get(attemptsKey),
@@ -235,7 +226,6 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
-    // 2. Check maximum verification attempts
     const currentAttempts = attemptsStr ? Number(attemptsStr) : 0;
     if (currentAttempts >= this.otpMaxVerifyAttempts) {
       await this.valkeyService.delete(otpKey);
@@ -244,7 +234,6 @@ export class AuthService {
       );
     }
 
-    // 3. Verify OTP against the stored keyed hash
     const isValid = await verifySecret(
       storedHash,
       dto.otp,
@@ -267,11 +256,6 @@ export class AuthService {
       );
     }
 
-    // 4. Single-use: atomically delete the OTP only if it still matches the
-    //    hash we just verified. If a concurrent request already consumed it,
-    //    this returns false and we reject — preventing OTP reuse / double login.
-    //    The attempt counter is cleared in the same round-trip; it is a
-    //    different key, so it cannot affect the compare-and-delete.
     const [consumed] = await Promise.all([
       this.valkeyService.compareAndDelete(otpKey, storedHash),
       this.valkeyService.delete(attemptsKey),
@@ -280,16 +264,15 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired OTP');
     }
 
-    // 5. Find or create customer (concurrency-safe against the unique mobile
-    //    constraint).
     const user = await this.usersService.findOrCreateByMobile(normalizedMobile);
 
-    // 6. Build the session and its tokens with a pre-generated session id so
-    //    the refresh token can embed it and the session row is created exactly
-    //    once with its real hash — no 'PENDING' placeholder, no mid-flow update.
-    //    Both tokens are signed up front: signing is pure CPU on a few hundred
-    //    bytes, so there is nothing to gain by deferring the access token past
-    //    the session insert, and issuing them together keeps the insert last.
+    // Authorize MPIN reset for 15 minutes after successful OTP verification.
+    await this.valkeyService.set(
+      `mpin_reset_authorized:${user.id}`,
+      'true',
+      900,
+    );
+
     const sessionId = randomUUID();
     const sessionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
 
@@ -345,6 +328,7 @@ export class AuthService {
         email: user.email,
         emailVerified: user.emailVerified,
         role: user.role,
+        isMpinSet: !!user.mpinHash,
       },
     };
   }
@@ -391,8 +375,6 @@ export class AuthService {
     const subject = session.userId ?? session.adminId!;
     const role = session.user?.role ?? 'ADMIN';
 
-    // Rotate the refresh token and issue the new access token together; both
-    // are pure CPU and neither depends on the other.
     const [newRefreshToken, accessToken] = await Promise.all([
       this.jwtService.signAsync(
         {
@@ -420,13 +402,6 @@ export class AuthService {
       ),
     ]);
 
-    // Store new hash via a conditional (compare-and-swap) update: the row is
-    // only updated while it still holds the exact old hash and is not revoked.
-    // If two requests present the same old refresh token concurrently, only the
-    // first update matches a row (count === 1); the second matches none
-    // (count === 0) and is rejected — so an old token can be rotated only once.
-    // Rotation also upgrades the stored hash: a session created under the old
-    // Argon2 scheme ends up with the new keyed hash the first time it is used.
     const newHash = hashSecret(
       newRefreshToken,
       AuthService.refreshTokenContext(session.id),
@@ -458,10 +433,6 @@ export class AuthService {
     userId: string,
     sessionId: string,
   ): Promise<{ success: boolean; message: string }> {
-    // Scope the revocation to the authenticated user's own session. Using
-    // updateMany with both id and userId means a customer can never revoke
-    // another user's session, and a missing/already-revoked session is a no-op
-    // rather than a thrown Prisma error.
     await this.prisma.session.updateMany({
       where: { id: sessionId, userId, revokedAt: null },
       data: { revokedAt: new Date() },
@@ -481,9 +452,223 @@ export class AuthService {
       email: user.email,
       emailVerified: user.emailVerified,
       role: user.role,
+      isMpinSet: !!user.mpinHash,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+  }
+
+  // ==========================================
+  // MPIN METHODS
+  // ==========================================
+
+  async createMpin(
+    userId: string,
+    dto: CreateMpinDto,
+  ): Promise<{ success: boolean; message: string }> {
+    if (dto.mpin !== dto.confirmMpin) {
+      throw new BadRequestException('MPIN and confirmation do not match');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (user.mpinHash) {
+      throw new ConflictException(
+        'MPIN is already set. Use change-mpin to update it.',
+      );
+    }
+
+    const mpinHash = await hashValue(dto.mpin);
+    const now = new Date();
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { mpinHash, mpinCreatedAt: now, mpinUpdatedAt: now },
+    });
+
+    return { success: true, message: 'MPIN created successfully' };
+  }
+
+  async verifyMpin(
+    userId: string,
+    dto: VerifyMpinDto,
+  ): Promise<{ success: boolean; message: string }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!user.mpinHash) {
+      throw new BadRequestException('MPIN is not set. Please create one first.');
+    }
+
+    if (user.mpinLockedUntil && user.mpinLockedUntil > new Date()) {
+      const remainingMs = user.mpinLockedUntil.getTime() - Date.now();
+      const remainingMinutes = Math.ceil(remainingMs / 60000);
+      throw new BadRequestException(
+        `MPIN verification locked. Try again in ${remainingMinutes} minute(s).`,
+      );
+    }
+
+    const isValid = await verifyHash(user.mpinHash, dto.mpin);
+    if (!isValid) {
+      const newAttempts = user.failedMpinAttempts + 1;
+      const updateData: Record<string, unknown> = {
+        failedMpinAttempts: newAttempts,
+      };
+
+      if (newAttempts >= AuthService.MPIN_MAX_ATTEMPTS) {
+        updateData.mpinLockedUntil = new Date(
+          Date.now() + AuthService.MPIN_LOCKOUT_MINUTES * 60 * 1000,
+        );
+      }
+
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: updateData,
+      });
+
+      if (newAttempts >= AuthService.MPIN_MAX_ATTEMPTS) {
+        throw new UnauthorizedException(
+          `MPIN locked for ${AuthService.MPIN_LOCKOUT_MINUTES} minutes due to too many failed attempts.`,
+        );
+      }
+
+      const remaining = AuthService.MPIN_MAX_ATTEMPTS - newAttempts;
+      throw new UnauthorizedException(
+        `Invalid MPIN. Attempts remaining: ${remaining}`,
+      );
+    }
+
+    if (user.failedMpinAttempts > 0 || user.mpinLockedUntil) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { failedMpinAttempts: 0, mpinLockedUntil: null },
+      });
+    }
+
+    return { success: true, message: 'MPIN verified successfully' };
+  }
+
+  async changeMpin(
+    userId: string,
+    dto: ChangeMpinDto,
+  ): Promise<{ success: boolean; message: string }> {
+    if (dto.newMpin !== dto.confirmMpin) {
+      throw new BadRequestException(
+        'New MPIN and confirmation do not match',
+      );
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!user.mpinHash) {
+      throw new BadRequestException('MPIN is not set. Please create one first.');
+    }
+
+    if (user.mpinLockedUntil && user.mpinLockedUntil > new Date()) {
+      const remainingMs = user.mpinLockedUntil.getTime() - Date.now();
+      const remainingMinutes = Math.ceil(remainingMs / 60000);
+      throw new BadRequestException(
+        `MPIN verification locked. Try again in ${remainingMinutes} minute(s).`,
+      );
+    }
+
+    const isValid = await verifyHash(user.mpinHash, dto.currentMpin);
+    if (!isValid) {
+      const newAttempts = user.failedMpinAttempts + 1;
+      const updateData: Record<string, unknown> = {
+        failedMpinAttempts: newAttempts,
+      };
+
+      if (newAttempts >= AuthService.MPIN_MAX_ATTEMPTS) {
+        updateData.mpinLockedUntil = new Date(
+          Date.now() + AuthService.MPIN_LOCKOUT_MINUTES * 60 * 1000,
+        );
+      }
+
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: updateData,
+      });
+
+      if (newAttempts >= AuthService.MPIN_MAX_ATTEMPTS) {
+        throw new UnauthorizedException(
+          `MPIN locked for ${AuthService.MPIN_LOCKOUT_MINUTES} minutes due to too many failed attempts.`,
+        );
+      }
+
+      const remaining = AuthService.MPIN_MAX_ATTEMPTS - newAttempts;
+      throw new UnauthorizedException(
+        `Invalid current MPIN. Attempts remaining: ${remaining}`,
+      );
+    }
+
+    const mpinHash = await hashValue(dto.newMpin);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        mpinHash,
+        mpinUpdatedAt: new Date(),
+        failedMpinAttempts: 0,
+        mpinLockedUntil: null,
+      },
+    });
+
+    return { success: true, message: 'MPIN changed successfully' };
+  }
+
+  async resetMpin(
+    userId: string,
+    dto: ResetMpinDto,
+  ): Promise<{ success: boolean; message: string }> {
+    if (dto.newMpin !== dto.confirmMpin) {
+      throw new BadRequestException(
+        'New MPIN and confirmation do not match',
+      );
+    }
+
+    const resetKey = `mpin_reset_authorized:${userId}`;
+    const authorized = await this.valkeyService.get(resetKey);
+    if (!authorized) {
+      throw new ForbiddenException(
+        'OTP verification required before resetting MPIN',
+      );
+    }
+
+    const mpinHash = await hashValue(dto.newMpin);
+    const now = new Date();
+
+    await Promise.all([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          mpinHash,
+          mpinUpdatedAt: now,
+          mpinCreatedAt: now,
+          failedMpinAttempts: 0,
+          mpinLockedUntil: null,
+        },
+      }),
+      this.valkeyService.delete(resetKey),
+    ]);
+
+    return { success: true, message: 'MPIN reset successfully' };
+  }
+
+  async getMpinStatus(
+    userId: string,
+  ): Promise<{ isMpinSet: boolean }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return { isMpinSet: !!user.mpinHash };
   }
 
   // ==========================================
@@ -496,7 +681,6 @@ export class AuthService {
   ): Promise<{ success: boolean; message: string }> {
     const normalizedEmail = dto.email.toLowerCase().trim();
 
-    // Check if email is already taken by another account
     const existing = await this.usersService.findByEmail(normalizedEmail);
     if (existing && existing.id !== userId) {
       throw new ConflictException(
@@ -504,9 +688,6 @@ export class AuthService {
       );
     }
 
-    // Atomically enforce the 60s cooldown and a per-user daily send cap. The
-    // cooldown already throttles bursts; the daily cap bounds total volume to
-    // guard against email-bombing. Both are checked+armed in one atomic script.
     const cooldownKey = `auth:customer:email:cooldown:${userId}`;
     const dailyKey = `auth:customer:email:send:${userId}:daily`;
     const reservation = await this.valkeyService.reserveSendSlot(
@@ -527,13 +708,9 @@ export class AuthService {
       );
     }
 
-    // Generate secure OTP
     const otp = generateSecureOtp();
     const hashedOtp = hashSecret(otp, AuthService.emailOtpContext(userId));
 
-    // Store in Valkey bound to user and email, and reset the attempt counter
-    // for the fresh OTP. Independent keys, so one round-trip instead of two.
-    // The cooldown was already armed atomically by reserveSendSlot above.
     const emailOtpKey = `auth:customer:email:${userId}`;
     await Promise.all([
       this.valkeyService.set(
@@ -565,8 +742,6 @@ export class AuthService {
     const attemptsKey = `auth:customer:email:attempts:${userId}`;
     const cooldownKey = `auth:customer:email:cooldown:${userId}`;
 
-    // 1. Retrieve the stored state and the attempt counter in one round-trip
-    //    (independent keys, multiplexed over the single Valkey connection).
     const [storedData, attemptsStr] = await Promise.all([
       this.valkeyService.get(emailOtpKey),
       this.valkeyService.get(attemptsKey),
@@ -577,7 +752,6 @@ export class AuthService {
       );
     }
 
-    // 2. Check maximum verification attempts
     const currentAttempts = attemptsStr ? Number(attemptsStr) : 0;
     if (currentAttempts >= this.otpMaxVerifyAttempts) {
       await this.valkeyService.delete(emailOtpKey);
@@ -601,7 +775,6 @@ export class AuthService {
       );
     }
 
-    // 3. Verify submitted OTP against hash
     const isValid = await verifySecret(
       parsed.hash,
       dto.otp,
@@ -624,9 +797,6 @@ export class AuthService {
       );
     }
 
-    // 4. Single-use: atomically consume the stored state only if it still
-    //    matches what we verified. A concurrent verify that already consumed it
-    //    loses this race and is rejected.
     const consumed = await this.valkeyService.compareAndDelete(
       emailOtpKey,
       storedData,
@@ -637,11 +807,6 @@ export class AuthService {
       );
     }
 
-    // 5. Update user email and set emailVerified = true. The unique index on
-    //    users.email is the authority on whether the address was claimed by
-    //    another account in the interim: it rejects the write with P2002,
-    //    which maps to the same ConflictException a pre-read would have
-    //    produced. Relying on it drops a round-trip from every verification.
     try {
       await this.usersService.updateEmail(userId, normalizedEmail, true);
     } catch (error) {
@@ -656,7 +821,6 @@ export class AuthService {
       throw error;
     }
 
-    // 6. Clear remaining state (one round-trip for both keys).
     await Promise.all([
       this.valkeyService.delete(attemptsKey),
       this.valkeyService.delete(cooldownKey),
@@ -691,7 +855,6 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    // Build the admin session and real JWT tokens
     const sessionId = randomUUID();
     const sessionExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
 

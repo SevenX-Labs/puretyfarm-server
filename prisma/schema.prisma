@@ -43,6 +43,12 @@ model User {
   payments        Payment[]
   cashCollections CashCollection[]
 
+  mpinHash           String?
+  mpinCreatedAt      DateTime?
+  mpinUpdatedAt      DateTime?
+  failedMpinAttempts Int       @default(0)
+  mpinLockedUntil    DateTime?
+
   @@map("users")
 }
 

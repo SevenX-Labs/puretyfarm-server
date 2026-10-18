@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
   UseGuards,
   HttpCode,
@@ -13,6 +14,10 @@ import { CustomerVerifyOtpDto } from './dto/customer/customer-verify-otp.dto';
 import { CustomerRefreshTokenDto } from './dto/customer/customer-refresh-token.dto';
 import { CustomerEmailSendOtpDto } from './dto/customer/customer-email-send-otp.dto';
 import { CustomerEmailVerifyOtpDto } from './dto/customer/customer-email-verify-otp.dto';
+import { CreateMpinDto } from './dto/customer/create-mpin.dto';
+import { VerifyMpinDto } from './dto/customer/verify-mpin.dto';
+import { ChangeMpinDto } from './dto/customer/change-mpin.dto';
+import { ResetMpinDto } from './dto/customer/reset-mpin.dto';
 import { AdminLoginDto } from './dto/admin/login.dto';
 import { AdminChangePasswordDto } from './dto/admin/change-password.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -77,6 +82,56 @@ export class AuthController {
     @Body() dto: CustomerEmailVerifyOtpDto,
   ) {
     return this.authService.customerVerifyEmailOtp(user.sub, dto);
+  }
+
+  // ==========================================
+  // MPIN ENDPOINTS
+  // ==========================================
+
+  @Post('customer/create-mpin')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createMpin(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateMpinDto,
+  ) {
+    return this.authService.createMpin(user.sub, dto);
+  }
+
+  @Post('customer/verify-mpin')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async verifyMpin(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: VerifyMpinDto,
+  ) {
+    return this.authService.verifyMpin(user.sub, dto);
+  }
+
+  @Patch('customer/change-mpin')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async changeMpin(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ChangeMpinDto,
+  ) {
+    return this.authService.changeMpin(user.sub, dto);
+  }
+
+  @Post('customer/reset-mpin')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async resetMpin(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ResetMpinDto,
+  ) {
+    return this.authService.resetMpin(user.sub, dto);
+  }
+
+  @Get('customer/mpin-status')
+  @UseGuards(JwtAuthGuard)
+  async getMpinStatus(@CurrentUser() user: JwtPayload) {
+    return this.authService.getMpinStatus(user.sub);
   }
 
   // ==========================================
