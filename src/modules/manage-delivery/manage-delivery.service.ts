@@ -1737,6 +1737,14 @@ export class ManageDeliveryService {
   }
 
   private validateScheduleDto(dto: ChangeScheduleDto): void {
+    if (
+      dto.frequency === DeliveryFrequency.ALTERNATE_DAYS &&
+      dto.quantityMode === QuantityMode.ALTERNATING
+    ) {
+      throw new BadRequestException(
+        'ALTERNATING quantity mode is not supported for ALTERNATE_DAYS frequency; alternate days only supports FIXED quantity mode',
+      );
+    }
     if (dto.quantityMode === QuantityMode.FIXED) {
       if (dto.quantity === undefined || dto.quantity === null) {
         throw new BadRequestException('quantity is required for FIXED mode');

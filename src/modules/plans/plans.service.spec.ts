@@ -490,16 +490,15 @@ describe('PlansService', () => {
       expect(result.totalLitres).toBe(result.deliveryOccurrences * 3);
     });
 
-    it('ALTERNATE_DAYS + ALTERNATING works', async () => {
-      const result = await service.createMonthlyQuote(USER, {
-        frequency: DeliveryFrequency.ALTERNATE_DAYS,
-        quantityMode: QuantityMode.ALTERNATING,
-        quantityA: 1,
-        quantityB: 2,
-      });
-      const occ = result.deliveryOccurrences;
-      const expectedLitres = Math.ceil(occ / 2) * 1 + Math.floor(occ / 2) * 2;
-      expect(result.totalLitres).toBe(expectedLitres);
+    it('rejects ALTERNATE_DAYS + ALTERNATING', async () => {
+      await expect(
+        service.createMonthlyQuote(USER, {
+          frequency: DeliveryFrequency.ALTERNATE_DAYS,
+          quantityMode: QuantityMode.ALTERNATING,
+          quantityA: 1,
+          quantityB: 2,
+        }),
+      ).rejects.toThrow(/ALTERNATING quantity mode is not supported for ALTERNATE_DAYS frequency/);
     });
 
     it('quantity range 1-5 for fixed', async () => {

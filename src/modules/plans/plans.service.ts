@@ -2579,6 +2579,14 @@ export class PlansService {
         `Quantity mode ${quantityMode} is not currently available`,
       );
     }
+    if (
+      frequency === DeliveryFrequency.ALTERNATE_DAYS &&
+      quantityMode === QuantityMode.ALTERNATING
+    ) {
+      throw new Exception(
+        'ALTERNATING quantity mode is not supported for ALTERNATE_DAYS frequency; alternate days only supports FIXED quantity mode',
+      );
+    }
   }
 
   private async hasUsedPlan(
