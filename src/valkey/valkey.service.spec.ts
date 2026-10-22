@@ -160,4 +160,69 @@ describe('ValkeyService', () => {
     expect(parse('rediss://host:6379')).toBe(true);
     expect(parse('redis://host:6379')).toBe(false);
   });
+
+  describe("in-memory fallback mode", () => {
+    beforeEach(() => {
+      (service as any).isInitialized = true;
+      (service as any).client = null;
+    });
+
+    it("should set and get values with and without ttl", async () => {
+      expect(await service.set("test_key", "test_value")).toBe("OK");
+      expect(await service.get("test_key")).toBe("test_value");
+
+      expect(await service.set("test_key_ttl", "ttl_value", 60)).toBe("OK");
+      expect(await service.get("test_key_ttl")).toBe("ttl_value");
+      expect(await service.ttl("test_key_ttl")).toBeGreaterThan(0);
+    });
+
+    it("should handle expiration properly", async () => {
+      await service.set("expire_key", "exp_val", 1);
+      // artificially advance expiration
+      const entry = (service as any).memoryStore.get("expire_key");
+      entry.expiresAt = Date.now() - 1000;
+
+      expect(await service.get("expire_key")).toBeNull();
+      expect(await service.ttl("expire_key")).toBe(-2);
+    });
+
+    it("should increment counters and expire them", async () => {
+      expect(await service.incr("cnt")).toBe(1);
+      expect(await service.incr("cnt")).toBe(2);
+      expect(await service.expire("cnt", 100)).toBe(true);
+      expect(await service.ttl("cnt")).toBeGreaterThan(0);
+    });
+
+    it("should compareAndDelete correctly", async () => {
+      await service.set("secret", "val123");
+      expect(await service.compareAndDelete("secret", "wrong")).toBe(false);
+      expect(await service.get("secret")).toBe("val123");
+      expect(await service.compareAndDelete("secret", "val123")).toBe(true);
+      expect(await service.get("secret")).toBeNull();
+    });
+
+    it("should reserveSendSlot correctly", async () => {
+      const counters = [
+        { key: "5m_limit", limit: 2, ttlSeconds: 300 },
+        { key: "daily_limit", limit: 5, ttlSeconds: 86400 },
+      ];
+
+      // First attempt succeeds
+      expect(await service.reserveSendSlot("cd_key", 60, counters)).toBe(0);
+
+      // In cooldown -> returns -1
+      expect(await service.reserveSendSlot("cd_key", 60, counters)).toBe(-1);
+
+      // Simulate cooldown expiry
+      (service as any).memoryStore.delete("cd_key");
+
+      // Second attempt succeeds
+      expect(await service.reserveSendSlot("cd_key", 60, counters)).toBe(0);
+
+      (service as any).memoryStore.delete("cd_key");
+
+      // Third attempt exhausts 5m limit (limit: 2) -> returns -2
+      expect(await service.reserveSendSlot("cd_key", 60, counters)).toBe(-2);
+    });
+  });
 });
