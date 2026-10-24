@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 import { PaymentsService } from './payments.service';
 import {
   CashCollectionStatus,
+  PaymentChannel,
   PaymentMethod,
   PaymentTransactionStatus,
 } from './payments.constants';
@@ -553,6 +554,47 @@ describe('PaymentsService', () => {
       expect(db.payments).toHaveLength(1);
     });
 
+    it('passes channel to provider and returns tailored message for SDK channel', async () => {
+      provider.createPayment.mockResolvedValueOnce({
+        endpoint: '',
+        method: 'SDK',
+        fields: {},
+        token: 'mock-sdk-token',
+        orderToken: 'mock-sdk-token',
+        providerOrderId: 'OMO123',
+      });
+
+      const result: any = await service.createWalletTopUp(
+        USER_ID,
+        { ...dto, channel: PaymentChannel.SDK },
+        'idem-sdk-1',
+      );
+
+      expect(provider.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: PaymentChannel.SDK,
+        }),
+      );
+      expect(result.checkout.method).toBe('SDK');
+      expect(result.checkout.token).toBe('mock-sdk-token');
+      expect(result.message).toContain('PhonePe SDK');
+    });
+
+    it('409s when reusing an idempotency key with a different channel', async () => {
+      await service.createWalletTopUp(
+        USER_ID,
+        { ...dto, channel: PaymentChannel.WEB },
+        'idem-channel-conflict',
+      );
+      await expect(
+        service.createWalletTopUp(
+          USER_ID,
+          { ...dto, channel: PaymentChannel.SDK },
+          'idem-channel-conflict',
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
     it('409s for the same key with a different payment method', async () => {
       await service.createWalletTopUp(USER_ID, dto, 'idem-1');
       await expect(
@@ -567,7 +609,7 @@ describe('PaymentsService', () => {
     it('allows customer to proceed to checkout when email is not present', async () => {
       db.users[0].email = null;
 
-      const result = await service.createWalletTopUp(
+      const result: any = await service.createWalletTopUp(
         USER_ID,
         { amount: 100_000, paymentMethod: PaymentMethod.ONLINE },
         'idem-no-email',
@@ -1482,6 +1524,143 @@ describe('PaymentsService', () => {
         'retry-1',
       );
       expect(second.payment.id).toBe(first.payment.id);
+      expect(db.payments).toHaveLength(2);
+    });
+
+    it('WEB retry is backward-compatible with omitted channel', async () => {
+      const cr = seedCreditRequest();
+      const old = seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.FAILED,
+      });
+
+      const withoutChannel = await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId },
+        'retry-web-compat',
+      );
+      expect(withoutChannel.payment.status).toBe(
+        PaymentTransactionStatus.PENDING,
+      );
+      // The hash should match the original payment's hash (backward compatible)
+      const retryRow = db.payments.find(
+        (p) => p.id === withoutChannel.payment.id,
+      );
+      expect(retryRow?.requestHash).toBe(old.requestHash);
+    });
+
+    it('SDK retry stores an SDK-specific hash', async () => {
+      const cr = seedCreditRequest();
+      const old = seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.FAILED,
+      });
+
+      provider.createPayment.mockResolvedValueOnce({
+        endpoint: '',
+        method: 'SDK',
+        fields: {},
+        token: 'sdk-token',
+        orderToken: 'sdk-token',
+        providerOrderId: 'OMO1',
+      });
+
+      const result = await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId, channel: PaymentChannel.SDK },
+        'retry-sdk-hash',
+      );
+
+      const retryRow = db.payments.find((p) => p.id === result.payment.id);
+      expect(retryRow?.requestHash).toBe(`${old.requestHash}:SDK`);
+      expect(provider.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ channel: PaymentChannel.SDK }),
+      );
+    });
+
+    it('replays the same retry idempotency key with matching channel', async () => {
+      const cr = seedCreditRequest();
+      const old = seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.FAILED,
+      });
+
+      provider.createPayment.mockResolvedValue({
+        endpoint: '',
+        method: 'SDK',
+        fields: {},
+        token: 'sdk-token',
+        orderToken: 'sdk-token',
+        providerOrderId: 'OMO1',
+      });
+
+      const first = await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId, channel: PaymentChannel.SDK },
+        'retry-replay',
+      );
+      const second = await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId, channel: PaymentChannel.SDK },
+        'retry-replay',
+      );
+
+      expect(second.payment.id).toBe(first.payment.id);
+      expect(second.replayed).toBe(true);
+      expect(db.payments).toHaveLength(2);
+    });
+
+    it('409s when reusing a retry idempotency key with a different channel', async () => {
+      const cr = seedCreditRequest();
+      const old = seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.FAILED,
+      });
+
+      await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId },
+        'retry-channel-conflict',
+      );
+
+      await expect(
+        service.retryPayment(
+          USER_ID,
+          {
+            transactionId: old.transactionId,
+            channel: PaymentChannel.SDK,
+          },
+          'retry-channel-conflict',
+        ),
+      ).rejects.toThrow(ConflictException);
+
+      expect(db.payments).toHaveLength(2);
+    });
+
+    it('duplicate retry with same key does not create a second payment row', async () => {
+      const cr = seedCreditRequest();
+      const old = seedPayment({
+        walletCreditRequestId: cr.id,
+        status: PaymentTransactionStatus.FAILED,
+      });
+
+      await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId },
+        'retry-dup',
+      );
+      await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId },
+        'retry-dup',
+      );
+      await service.retryPayment(
+        USER_ID,
+        { transactionId: old.transactionId },
+        'retry-dup',
+      );
+
+      // original + one retry = 2, not 4
       expect(db.payments).toHaveLength(2);
     });
   });

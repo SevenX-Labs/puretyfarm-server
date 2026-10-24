@@ -97,7 +97,7 @@ export class PhonePeService implements IPaymentProvider {
       throw new InternalServerErrorException('Invalid payment amount');
     }
 
-    const response = await this.client.createOrder({
+    const orderRequest = {
       merchantOrderId: input.transactionId,
       amount: input.amountPaise,
       expireAfter: this.resolveExpireAfterSeconds(),
@@ -111,7 +111,29 @@ export class PhonePeService implements IPaymentProvider {
           redirectUrl: this.buildReturnUrl(input.transactionId),
         },
       },
-    });
+    };
+
+    if (input.channel === 'SDK') {
+      const response = await this.client.createSdkOrder(orderRequest);
+      const token = response.token!;
+
+      return {
+        endpoint: '',
+        method: 'SDK',
+        fields: {},
+        token,
+        orderToken: token,
+        providerOrderId: response.orderId ?? undefined,
+        expiresAt:
+          typeof response.expireAt === 'number'
+            ? response.expireAt > 1e11
+              ? response.expireAt
+              : response.expireAt * 1000
+            : undefined,
+      };
+    }
+
+    const response = await this.client.createOrder(orderRequest);
 
     // The client guarantees redirectUrl is present on a success path.
     const redirectUrl = response.redirectUrl!;

@@ -32,7 +32,7 @@ describe('PhonePeService', () => {
   let client: jest.Mocked<
     Pick<
       PhonePeClient,
-      'createOrder' | 'getOrderStatus' | 'refund' | 'getRefundStatus'
+      'createOrder' | 'createSdkOrder' | 'getOrderStatus' | 'refund' | 'getRefundStatus'
     >
   >;
   let config: { get: jest.Mock };
@@ -41,6 +41,7 @@ describe('PhonePeService', () => {
   beforeEach(() => {
     client = {
       createOrder: jest.fn(),
+      createSdkOrder: jest.fn(),
       getOrderStatus: jest.fn(),
       refund: jest.fn(),
       getRefundStatus: jest.fn(),
@@ -81,6 +82,33 @@ describe('PhonePeService', () => {
           amount: 50_000,
         }),
       );
+    });
+
+    it('returns an SDK instruction with token when channel is SDK', async () => {
+      client.createSdkOrder.mockResolvedValue({
+        orderId: 'OMO2501011234567890',
+        state: 'PENDING',
+        expireAt: 1767000000000,
+        token: 'test-sdk-token-jwt',
+      });
+
+      const checkout = await service.createPayment({
+        ...input,
+        channel: 'SDK',
+      });
+
+      expect(client.createSdkOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          merchantOrderId: TXNID,
+          amount: 50_000,
+        }),
+      );
+      expect(checkout.method).toBe('SDK');
+      expect(checkout.token).toBe('test-sdk-token-jwt');
+      expect(checkout.orderToken).toBe('test-sdk-token-jwt');
+      expect(checkout.providerOrderId).toBe('OMO2501011234567890');
+      expect(checkout.fields).toEqual({});
+      expect(client.createOrder).not.toHaveBeenCalled();
     });
 
     it('returns a REDIRECT instruction carrying PhonePe’s checkout URL', async () => {

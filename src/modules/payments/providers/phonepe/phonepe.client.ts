@@ -8,6 +8,7 @@ import { PhonePeAuthService } from './phonepe.auth.service';
 import {
   PHONEPE_ORDER_STATUS_PATH,
   PHONEPE_PAY_PATH,
+  PHONEPE_SDK_ORDER_PATH,
   PHONEPE_REFUND_PATH,
   PHONEPE_REFUND_STATUS_PATH,
   PHONEPE_REQUEST_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import {
 import {
   PhonePeCreateOrderRequest,
   PhonePeCreateOrderResponse,
+  PhonePeCreateSdkOrderResponse,
   PhonePeOrderStatusResponse,
   PhonePeRefundResponse,
   PhonePeRefundStatusResponse,
@@ -78,6 +80,48 @@ export class PhonePeClient {
 
       this.logger.error(
         `PhonePe order creation failed merchantOrderId=${request.merchantOrderId} ` +
+          `httpStatus=${result.httpStatus} code=${code}`,
+      );
+      throw new ServiceUnavailableException(
+        'Payment provider is currently unavailable',
+      );
+    }
+
+    return result.body;
+  }
+
+  /**
+   * Creates a Standard Checkout order for the mobile SDK.
+   *
+   * Targets `/checkout/v2/sdk/order` to mint a payment token for consumption
+   * by the PhonePe React Native / Android / iOS SDK.
+   */
+  async createSdkOrder(
+    request: PhonePeCreateOrderRequest,
+  ): Promise<PhonePeCreateSdkOrderResponse> {
+    const result = await this.request<PhonePeCreateSdkOrderResponse>(
+      'POST',
+      PHONEPE_SDK_ORDER_PATH,
+      request,
+    );
+
+    if (result.httpStatus >= 400 || !result.body?.token) {
+      const code = result.body?.code ?? 'UNKNOWN';
+
+      if (result.httpStatus === 400) {
+        this.logger.error(
+          `PhonePe rejected SDK order creation merchantOrderId=${request.merchantOrderId} ` +
+            `httpStatus=${result.httpStatus} code=${code}`,
+        );
+        throw new ConflictException({
+          error: 'PAYMENT_ALREADY_IN_PROGRESS',
+          message:
+            'A payment attempt for this transaction is already in progress. Check its status before starting a new one.',
+        });
+      }
+
+      this.logger.error(
+        `PhonePe SDK order creation failed merchantOrderId=${request.merchantOrderId} ` +
           `httpStatus=${result.httpStatus} code=${code}`,
       );
       throw new ServiceUnavailableException(

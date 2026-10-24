@@ -1,4 +1,7 @@
-import { PaymentTransactionStatus } from '../payments.constants';
+import {
+  PaymentChannel,
+  PaymentTransactionStatus,
+} from '../payments.constants';
 
 /**
  * Provider-agnostic payment gateway abstraction.
@@ -20,6 +23,8 @@ export interface CreateProviderPaymentInput {
   customerFirstName: string;
   customerEmail?: string;
   customerPhone: string;
+  /** Payment checkout channel. Defaults to 'WEB' if omitted. */
+  channel?: PaymentChannel | 'WEB' | 'SDK';
 }
 
 /**
@@ -40,18 +45,22 @@ export interface CreateProviderPaymentInput {
 export interface ProviderCheckoutInstruction {
   /**
    * Where to send the customer: the form action for `POST`, or the checkout
-   * URL for `REDIRECT`. Always populated, for both shapes.
+   * URL for `REDIRECT`. Empty string for `SDK`. Always populated.
    */
   endpoint: string;
   /** How the frontend must hand the customer over. */
-  method: 'POST' | 'REDIRECT';
-  /** Exact form fields for a `POST` checkout. Empty for `REDIRECT`. */
+  method: 'POST' | 'REDIRECT' | 'SDK';
+  /** Exact form fields for a `POST` checkout. Empty for `REDIRECT` and `SDK`. */
   fields: Record<string, string>;
   /**
    * The checkout URL to navigate to, present only for `REDIRECT`. Duplicated
    * from `endpoint` so a client can branch on the field it recognises.
    */
   redirectUrl?: string;
+  /** Cryptographic token to pass to the mobile SDK, present only for `SDK`. */
+  token?: string;
+  /** Alias for `token` for convenience across SDK integrations. */
+  orderToken?: string;
   /** Provider-side order/transaction reference, when known at creation time. */
   providerOrderId?: string;
   /** Epoch milliseconds after which the provider will reject this checkout. */

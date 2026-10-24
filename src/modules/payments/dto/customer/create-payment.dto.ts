@@ -1,13 +1,13 @@
-import { IsEnum, IsInt, Max, Min } from 'class-validator';
-import { PaymentMethod } from '../../payments.constants';
+import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { PaymentChannel, PaymentMethod } from '../../payments.constants';
 
 /**
  * Starts a wallet top-up.
  *
  * Deliberately minimal. The customer supplies ONLY how much and how they wish
- * to pay. Everything financially meaningful — the payable amount sent to PayU,
- * the transaction id, the payment status, the wallet balance and whether the
- * credit is approved — is derived server-side.
+ * to pay. Everything financially meaningful — the payable amount sent to the
+ * gateway, the transaction id, the payment status, the wallet balance and whether
+ * the credit is approved — is derived server-side.
  *
  * `userId`, `status`, `adminId`, `walletBalance` and `refundStatus` are absent
  * on purpose: the global ValidationPipe runs with `whitelist: true`, so any
@@ -20,9 +20,16 @@ export class CreatePaymentDto {
   @Max(2_147_483_647, { message: 'amount exceeds maximum allowed' })
   amount: number;
 
-  /** ONLINE routes through PayU Hosted Checkout; CASH creates a cash collection. */
+  /** ONLINE routes through PhonePe; CASH creates a cash collection. */
   @IsEnum(PaymentMethod, {
     message: `paymentMethod must be one of: ${Object.values(PaymentMethod).join(', ')}`,
   })
   paymentMethod: PaymentMethod;
+
+  /** Optional checkout channel: WEB (hosted redirect, default) or SDK (native mobile order token). */
+  @IsOptional()
+  @IsEnum(PaymentChannel, {
+    message: `channel must be one of: ${Object.values(PaymentChannel).join(', ')}`,
+  })
+  channel?: PaymentChannel;
 }

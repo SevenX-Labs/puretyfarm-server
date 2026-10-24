@@ -47,6 +47,20 @@ export interface PhonePeCreateOrderResponse {
   message?: string;
 }
 
+/** Create-order success response for SDK integration. */
+export interface PhonePeCreateSdkOrderResponse {
+  /** PhonePe-side order id. Stored as our `providerPaymentId`. */
+  orderId?: string;
+  state?: string;
+  /** Epoch milliseconds at which the order token expires. */
+  expireAt?: number;
+  /** The cryptographic token passed into the mobile SDK. */
+  token?: string;
+  /** Present on the error shapes instead of the above. */
+  code?: string;
+  message?: string;
+}
+
 /** One payment attempt inside an order-status or webhook payload. */
 export interface PhonePePaymentAttempt {
   paymentMode?: string;

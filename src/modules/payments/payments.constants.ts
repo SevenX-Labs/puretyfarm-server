@@ -46,6 +46,16 @@ export enum PaymentMethod {
   CASH = 'CASH',
 }
 
+/**
+ * Checkout channel for online payments:
+ * - WEB: Browser hosted redirect checkout
+ * - SDK: Native mobile app Standard Checkout SDK (token based)
+ */
+export enum PaymentChannel {
+  WEB = 'WEB',
+  SDK = 'SDK',
+}
+
 export enum CashCollectionStatus {
   PENDING = 'PENDING',
   COLLECTED = 'COLLECTED',

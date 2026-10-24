@@ -1,6 +1,15 @@
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsEnum,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
-import { PAYMENT_TXNID_MAX_LENGTH } from '../../payments.constants';
+import {
+  PAYMENT_TXNID_MAX_LENGTH,
+  PaymentChannel,
+} from '../../payments.constants';
 
 /**
  * Retries a wallet top-up whose previous online payment failed, was cancelled
@@ -18,4 +27,11 @@ export class RetryPaymentDto {
     message: 'transactionId is not valid',
   })
   transactionId: string;
+
+  /** Optional checkout channel: WEB (hosted redirect, default) or SDK (native mobile order token). */
+  @IsOptional()
+  @IsEnum(PaymentChannel, {
+    message: `channel must be one of: ${Object.values(PaymentChannel).join(', ')}`,
+  })
+  channel?: PaymentChannel;
 }

@@ -21,6 +21,9 @@ export const PHONEPE_SANDBOX_PG_BASE_URL =
 /** Standard Checkout order creation. POST, JSON. */
 export const PHONEPE_PAY_PATH = '/checkout/v2/pay';
 
+/** Standard Checkout order creation for Native SDK. POST, JSON. Returns order token. */
+export const PHONEPE_SDK_ORDER_PATH = '/checkout/v2/sdk/order';
+
 /** Order status by OUR merchant order id. `{merchantOrderId}` is substituted. */
 export const PHONEPE_ORDER_STATUS_PATH =
   '/checkout/v2/order/{merchantOrderId}/status';

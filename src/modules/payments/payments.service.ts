@@ -42,6 +42,7 @@ import {
   PAYMENT_TERMINAL_STATUSES,
   PAYMENT_TXNID_PREFIX,
   PAYMENT_WALLET_TOPUP_PRODUCT_INFO,
+  PaymentChannel,
   PaymentMethod,
   PaymentPurpose,
   PaymentTransactionStatus,
@@ -132,7 +133,10 @@ export class PaymentsService {
 
   /** Fingerprint of the creation parameters, for idempotency-key reuse detection. */
   private computeRequestHash(dto: CreatePaymentDto): string {
-    return `topup:${dto.amount}:${dto.paymentMethod}`;
+    const channel = dto.channel ?? PaymentChannel.WEB;
+    return channel === PaymentChannel.WEB
+      ? `topup:${dto.amount}:${dto.paymentMethod}`
+      : `topup:${dto.amount}:${dto.paymentMethod}:${channel}`;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -245,12 +249,13 @@ export class PaymentsService {
       customerFirstName: customer.firstName,
       customerEmail: customer.email,
       customerPhone: customer.mobile,
+      channel: dto.channel ?? PaymentChannel.WEB,
     });
 
     this.logger.log(
       `Online wallet top-up created paymentId=${created.payment.id} ` +
         `transactionId=${created.payment.transactionId} userId=${userId} ` +
-        `amountPaise=${created.payment.amountPaise} replayed=${created.replayed}`,
+        `amountPaise=${created.payment.amountPaise} channel=${dto.channel ?? PaymentChannel.WEB} replayed=${created.replayed}`,
     );
 
     return {
@@ -259,7 +264,9 @@ export class PaymentsService {
       replayed: created.replayed || undefined,
       checkout,
       message:
-        'Payment created. Submit the checkout fields to the payment gateway to complete it.',
+        dto.channel === PaymentChannel.SDK
+          ? 'Payment created. Pass the token to the PhonePe SDK to complete it.'
+          : 'Payment created. Submit the checkout fields to the payment gateway to complete it.',
     };
   }
 
@@ -477,14 +484,9 @@ export class PaymentsService {
   ) {
     const customer = await this.getCustomerForCheckout(userId);
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      const existing = await tx.payment.findUnique({
-        where: { userId_idempotencyKey: { userId, idempotencyKey } },
-      });
-      if (existing) {
-        return { payment: existing, replayed: true };
-      }
+    const retryChannel = dto.channel ?? PaymentChannel.WEB;
 
+    const created = await this.prisma.$transaction(async (tx) => {
       const previous = await tx.payment.findUnique({
         where: { transactionId: dto.transactionId },
         include: { walletCreditRequest: true },
@@ -495,6 +497,25 @@ export class PaymentsService {
           error: 'PAYMENT_NOT_FOUND',
           message: 'Payment not found',
         });
+      }
+
+      const retryHash =
+        retryChannel === PaymentChannel.WEB
+          ? previous.requestHash
+          : `${previous.requestHash}:${retryChannel}`;
+
+      const existing = await tx.payment.findUnique({
+        where: { userId_idempotencyKey: { userId, idempotencyKey } },
+      });
+      if (existing) {
+        if (existing.requestHash !== retryHash) {
+          throw new ConflictException({
+            error: 'IDEMPOTENCY_KEY_REUSED',
+            message:
+              'Idempotency key has already been used with different parameters',
+          });
+        }
+        return { payment: existing, replayed: true };
       }
 
       if (
@@ -529,12 +550,11 @@ export class PaymentsService {
           purpose: PaymentPurpose.WALLET_TOPUP,
           paymentMethod: PaymentMethod.ONLINE,
           transactionId: this.generateTransactionId(),
-          // Authoritative amount: the open credit request, not the client.
           amountPaise: previous.walletCreditRequest.amountPaise,
           currency: PAYMENT_CURRENCY,
           status: PaymentTransactionStatus.PENDING,
           idempotencyKey,
-          requestHash: previous.requestHash,
+          requestHash: retryHash,
           expiresAt: new Date(Date.now() + this.expiryMinutes * 60_000),
         },
       });
@@ -549,12 +569,13 @@ export class PaymentsService {
       customerFirstName: customer.firstName,
       customerEmail: customer.email,
       customerPhone: customer.mobile,
+      channel: retryChannel,
     });
 
     this.logger.log(
       `Payment retried newPaymentId=${created.payment.id} ` +
         `newTransactionId=${created.payment.transactionId} ` +
-        `previousTransactionId=${dto.transactionId} userId=${userId}`,
+        `previousTransactionId=${dto.transactionId} userId=${userId} channel=${retryChannel}`,
     );
 
     return {
