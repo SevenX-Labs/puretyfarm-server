@@ -23,6 +23,11 @@ enum Gender {
   OTHER
 }
 
+enum MembershipType {
+  NORMAL
+  VIP
+}
+
 model User {
   id              String           @id @default(uuid())
   mobile          String           @unique
@@ -60,6 +65,7 @@ model CustomerProfile {
   gender          Gender
   dateOfBirth     DateTime
   profileImagePath String?
+  membershipType   MembershipType @default(NORMAL)
   whatsappNumber   String?
   latitude         Float?
   longitude        Float?

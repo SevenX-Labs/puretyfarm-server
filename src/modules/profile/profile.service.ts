@@ -23,6 +23,7 @@ export interface CombinedCustomerProfileResponse {
   lastName: string;
   gender: string;
   dateOfBirth: string;
+  membershipType: string;
   // Temporary signed URL (or null). Derived from the stored profileImagePath
   // at read time — NEVER persisted.
   profileImageUrl: string | null;
@@ -337,6 +338,7 @@ export class ProfileService {
       lastName: profile.lastName,
       gender: profile.gender,
       dateOfBirth: profile.dateOfBirth.toISOString().split('T')[0],
+      membershipType: profile.membershipType,
       profileImageUrl,
       whatsappNumber: profile.whatsappNumber ?? null,
       latitude: profile.latitude ?? null,

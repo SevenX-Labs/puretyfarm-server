@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { MembershipType } from '@prisma/client';
 
 export class QueryCustomersDto {
   @IsOptional()
@@ -18,4 +19,8 @@ export class QueryCustomersDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsEnum(MembershipType)
+  membershipType?: MembershipType;
 }

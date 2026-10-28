@@ -3,7 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ProfileStorageService } from '../profile/storage/profile-storage.service';
 import { SIGNED_URL_EXPIRY_SECONDS } from '../profile/profile.service';
 import { QueryCustomersDto } from './dto/query-customers.dto';
-import { Prisma, Role } from '@prisma/client';
+import { MembershipType, Prisma, Role } from '@prisma/client';
 
 export interface CustomerProfileSummary {
   id: string;
@@ -11,6 +11,7 @@ export interface CustomerProfileSummary {
   lastName: string;
   gender: string;
   dateOfBirth: string;
+  membershipType: MembershipType;
   profileImageUrl: string | null;
   whatsappNumber?: string | null;
 }
@@ -122,6 +123,12 @@ export class CustomersService {
       role: Role.CUSTOMER,
     };
 
+    if (query.membershipType) {
+      where.customerProfile = {
+        membershipType: query.membershipType,
+      };
+    }
+
     if (trimmedSearch) {
       const orConditions: Prisma.UserWhereInput[] = [
         { mobile: { contains: trimmedSearch, mode: 'insensitive' } },
@@ -193,6 +200,7 @@ export class CustomersService {
             lastName: user.customerProfile.lastName,
             gender: user.customerProfile.gender,
             dateOfBirth: this.formatDate(user.customerProfile.dateOfBirth),
+            membershipType: user.customerProfile.membershipType,
             profileImageUrl,
             whatsappNumber: user.customerProfile.whatsappNumber ?? null,
           };
@@ -264,6 +272,7 @@ export class CustomersService {
           lastName: user.customerProfile.lastName,
           gender: user.customerProfile.gender,
           dateOfBirth: this.formatDate(user.customerProfile.dateOfBirth),
+          membershipType: user.customerProfile.membershipType,
           profileImageUrl,
           whatsappNumber: user.customerProfile.whatsappNumber ?? null,
           createdAt: user.customerProfile.createdAt,
@@ -321,6 +330,59 @@ export class CustomersService {
    * Generates a temporary signed avatar URL if an image path is present.
    * Returns null if no image or if signing fails.
    */
+  async updateMembership(
+    userId: string,
+    membershipType: MembershipType,
+  ): Promise<{ id: string; membershipType: MembershipType }> {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, role: Role.CUSTOMER },
+      include: { customerProfile: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`Customer with ID ${userId} not found`);
+    }
+
+    if (!user.customerProfile) {
+      throw new NotFoundException(
+        `Customer profile for user ${userId} not found`,
+      );
+    }
+
+    const updated = await this.prisma.customerProfile.update({
+      where: { userId },
+      data: { membershipType },
+    });
+
+    return { id: userId, membershipType: updated.membershipType };
+  }
+
+  async bulkUpdateMembership(
+    customerIds: string[],
+    membershipType: MembershipType,
+  ): Promise<{ updatedCount: number; failedIds: string[] }> {
+    const users = await this.prisma.user.findMany({
+      where: {
+        id: { in: customerIds },
+        role: Role.CUSTOMER,
+        customerProfile: { isNot: null },
+      },
+      select: { id: true },
+    });
+
+    const validIds = users.map((u) => u.id);
+    const failedIds = customerIds.filter((id) => !validIds.includes(id));
+
+    if (validIds.length > 0) {
+      await this.prisma.customerProfile.updateMany({
+        where: { userId: { in: validIds } },
+        data: { membershipType },
+      });
+    }
+
+    return { updatedCount: validIds.length, failedIds };
+  }
+
   private async resolveProfileImageUrl(
     profileImagePath: string | null | undefined,
     userId: string,
