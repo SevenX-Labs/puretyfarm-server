@@ -1183,14 +1183,15 @@ export class PlansService {
       const hasCompletedCredit = (creditCount.get(w.id) ?? 0) > 0;
       const p = pendingByWallet.get(w.id);
       const pendingCreditCount = p?._count._all ?? 0;
+      const isFunded = hasCompletedCredit && w.balancePaise > 0;
       out.set(w.userId, {
-        status: hasCompletedCredit
+        status: isFunded
           ? 'CONFIRMED'
           : pendingCreditCount > 0
             ? 'PENDING_APPROVAL'
             : 'NOT_FUNDED',
         walletBalancePaise: w.balancePaise,
-        hasCompletedCredit,
+        hasCompletedCredit: isFunded,
         pendingCreditCount,
         pendingCreditPaise: p?._sum.amountPaise ?? 0,
       });
@@ -1939,7 +1940,7 @@ export class PlansService {
         const funding = (await this.loadFunding(tx, [selection.userId])).get(
           selection.userId,
         )!;
-        if (!funding.hasCompletedCredit) {
+        if (!funding.hasCompletedCredit || funding.walletBalancePaise <= 0) {
           throw new BadRequestException({
             error: 'WALLET_FUNDING_NOT_CONFIRMED',
             message:
@@ -1952,17 +1953,18 @@ export class PlansService {
         }
       }
 
+      if (
+        selection.paymentMethod === PlanPaymentMethod.CASH &&
+        selection.cashCollection?.status !== 'CONFIRMED'
+      ) {
+        throw new BadRequestException({
+          error: 'CASH_NOT_CONFIRMED',
+          message:
+            'Physical cash receipt has not been confirmed yet. Please confirm payment in Payments/Wallets first.',
+        });
+      }
+
       if (!isPerDelivery && !selection.paidAt) {
-        if (
-          selection.paymentMethod === PlanPaymentMethod.CASH &&
-          selection.cashCollection?.status !== 'CONFIRMED'
-        ) {
-          throw new BadRequestException({
-            error: 'CASH_NOT_CONFIRMED',
-            message:
-              'Physical cash receipt has not been confirmed yet. Please confirm payment in Payments/Wallets first.',
-          });
-        }
         throw new BadRequestException({
           error: 'SUBSCRIPTION_NOT_PAID',
           message:

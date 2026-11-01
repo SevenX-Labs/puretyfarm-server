@@ -358,8 +358,9 @@ export class OrdersService {
         const hasCompletedCredit = completedCredit > 0;
         const pendingCreditPaise = pendingCredit?.amountPaise ?? 0;
         const walletBalancePaise = wallet?.balancePaise ?? 0;
+        const isFunded = hasCompletedCredit && walletBalancePaise > 0;
 
-        const fundingStatus = hasCompletedCredit
+        const fundingStatus = isFunded
           ? 'CONFIRMED'
           : pendingCreditPaise > 0
             ? 'PENDING_APPROVAL'
