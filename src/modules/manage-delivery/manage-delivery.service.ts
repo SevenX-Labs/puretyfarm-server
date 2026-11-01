@@ -32,6 +32,8 @@ import { toIsoDateString } from '../../common/utils/ist-date.util';
 import { OrderStatus } from '../orders/orders.constants';
 import { PlansService } from '../plans/plans.service';
 import type { OrderPriceSnapshot } from '../plans/plans.service';
+import { AdminSkipDeliveryDto } from './dto/admin/admin-skip-delivery.dto';
+import { AdminRescheduleDeliveryDto } from './dto/admin/admin-reschedule-delivery.dto';
 import { SkipDeliveryDto } from './dto/customer/skip-delivery.dto';
 import { ChangeQuantityDto } from './dto/customer/change-quantity.dto';
 import { ChangeFrequencyDto } from './dto/customer/change-frequency.dto';
@@ -74,6 +76,12 @@ export interface UpcomingDeliveryView {
   expectedAmountPaise?: number | null;
   /** PENDING | SETTLED | OUTSTANDING, or null for a prepaid plan. */
   settlementStatus?: string | null;
+  /** Who performed the last skip/reschedule: "CUSTOMER" | "ADMIN" | null. */
+  actionBy?: string | null;
+  /** Admin's reason for skipping or rescheduling. Visible to the customer. */
+  adminNote?: string | null;
+  /** The original date before a reschedule, if this delivery was moved. */
+  rescheduledFrom?: string | null;
 }
 
 export interface ManageDeliveryResponse {
@@ -202,7 +210,7 @@ export class ManageDeliveryService {
       // rather than a second cancellation.
       const res = await tx.planDelivery.updateMany({
         where: { id: delivery.id, status: DeliveryStatus.SCHEDULED },
-        data: { status: DeliveryStatus.SKIPPED },
+        data: { status: DeliveryStatus.SKIPPED, actionBy: 'CUSTOMER' },
       });
       if (res.count === 0) {
         throw new BadRequestException(
@@ -248,6 +256,235 @@ export class ManageDeliveryService {
       success: true,
       message: 'Delivery skipped successfully.',
       delivery: view,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ADMIN — SKIP (immediate, on behalf of customer, with note)
+  // ══════════════════════════════════════════════════════════════════
+
+  async adminSkipDelivery(
+    adminId: string,
+    customerId: string,
+    dto: AdminSkipDeliveryDto,
+  ): Promise<{ success: true; message: string }> {
+    const today = toDateOnly(new Date());
+    const target = toDateOnly(new Date(dto.deliveryDate));
+
+    if (target.getTime() <= today.getTime()) {
+      throw new BadRequestException('Only future deliveries can be skipped');
+    }
+
+    const selection = await this.requireActiveSelectionForUser(customerId);
+    const delivery = await this.prisma.planDelivery.findFirst({
+      where: { selectionId: selection.id, userId: customerId, deliveryDate: target },
+    });
+
+    if (!delivery) {
+      throw new BadRequestException(
+        `${dto.deliveryDate} is not a scheduled delivery date`,
+      );
+    }
+    if (delivery.status === DeliveryStatus.SKIPPED) {
+      throw new BadRequestException('This delivery is already skipped');
+    }
+    if (delivery.status === DeliveryStatus.DELIVERED) {
+      throw new BadRequestException('A completed delivery cannot be skipped');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const res = await tx.planDelivery.updateMany({
+        where: { id: delivery.id, status: DeliveryStatus.SCHEDULED },
+        data: {
+          status: DeliveryStatus.SKIPPED,
+          actionBy: 'ADMIN',
+          adminNote: dto.note,
+        },
+      });
+      if (res.count === 0) {
+        throw new BadRequestException(
+          'This delivery could not be skipped (it was just modified)',
+        );
+      }
+
+      const order = await tx.order.findUnique({
+        where: { planDeliveryId: delivery.id },
+        select: { id: true, status: true, orderNumber: true },
+      });
+      if (!order) return;
+
+      if (!REPLACEABLE_ORDER_STATUSES.includes(order.status as any)) {
+        this.logger.warn(
+          `Admin-skipped delivery but order left untouched: ` +
+            `orderNumber=${order.orderNumber} orderStatus=${order.status} ` +
+            `deliveryId=${delivery.id} adminId=${adminId}`,
+        );
+        return;
+      }
+
+      await tx.order.updateMany({
+        where: {
+          id: order.id,
+          status: { in: REPLACEABLE_ORDER_STATUSES as any },
+        },
+        data: { status: 'CANCELLED' },
+      });
+
+      await tx.manageDeliveryChangeRequest.create({
+        data: {
+          userId: customerId,
+          planSelectionId: selection.id,
+          requestType: ChangeRequestType.SKIP,
+          status: ChangeRequestStatus.APPROVED,
+          adminId,
+          adminNote: dto.note,
+          reviewedAt: new Date(),
+          currentConfiguration: {
+            deliveryDate: dto.deliveryDate,
+            status: DeliveryStatus.SCHEDULED,
+          },
+          requestedConfiguration: {
+            deliveryDate: dto.deliveryDate,
+            status: DeliveryStatus.SKIPPED,
+            actionBy: 'ADMIN',
+            note: dto.note,
+          },
+        },
+      });
+    });
+
+    try {
+      this.realtimeService?.publishToCustomer(customerId, ['plan.updated', 'orders.updated']);
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+    } catch {}
+    return {
+      success: true,
+      message: `Delivery on ${dto.deliveryDate} has been skipped for the customer.`,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ADMIN — RESCHEDULE (immediate, on behalf of customer, with note)
+  // ══════════════════════════════════════════════════════════════════
+
+  async adminRescheduleDelivery(
+    adminId: string,
+    customerId: string,
+    dto: AdminRescheduleDeliveryDto,
+  ): Promise<{ success: true; message: string }> {
+    const today = toDateOnly(new Date());
+    const fromDate = toDateOnly(new Date(dto.fromDate));
+    const toDate = toDateOnly(new Date(dto.toDate));
+
+    if (fromDate.getTime() <= today.getTime()) {
+      throw new BadRequestException('Only future deliveries can be rescheduled');
+    }
+    if (toDate.getTime() <= today.getTime()) {
+      throw new BadRequestException('The new date must be in the future');
+    }
+    if (fromDate.getTime() === toDate.getTime()) {
+      throw new BadRequestException(
+        'The new date must be different from the current date',
+      );
+    }
+
+    const selection = await this.requireActiveSelectionForUser(customerId);
+
+    const delivery = await this.prisma.planDelivery.findFirst({
+      where: {
+        selectionId: selection.id,
+        userId: customerId,
+        deliveryDate: fromDate,
+      },
+    });
+    if (!delivery) {
+      throw new BadRequestException(
+        `${dto.fromDate} is not a scheduled delivery date`,
+      );
+    }
+    if (delivery.status !== DeliveryStatus.SCHEDULED) {
+      throw new BadRequestException(
+        `The ${dto.fromDate} delivery is ${delivery.status} and cannot be rescheduled`,
+      );
+    }
+
+    const conflicting = await this.prisma.planDelivery.findFirst({
+      where: {
+        selectionId: selection.id,
+        userId: customerId,
+        deliveryDate: toDate,
+      },
+    });
+    if (conflicting) {
+      throw new BadRequestException(
+        `A delivery already exists on ${dto.toDate}`,
+      );
+    }
+
+    if (selection.endDate) {
+      const end = toDateOnly(selection.endDate);
+      if (toDate.getTime() > end.getTime()) {
+        throw new BadRequestException(
+          `The new date cannot be after the plan end date (${this.fmt(selection.endDate)})`,
+        );
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.planDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          deliveryDate: toDate,
+          actionBy: 'ADMIN',
+          adminNote: dto.note,
+          rescheduledFrom: fromDate,
+        },
+      });
+
+      const order = await tx.order.findUnique({
+        where: { planDeliveryId: delivery.id },
+        select: { id: true, status: true },
+      });
+      if (
+        order &&
+        REPLACEABLE_ORDER_STATUSES.includes(order.status as any)
+      ) {
+        await tx.order.update({
+          where: { id: order.id },
+          data: { deliveryDate: toDate },
+        });
+      }
+
+      await tx.manageDeliveryChangeRequest.create({
+        data: {
+          userId: customerId,
+          planSelectionId: selection.id,
+          requestType: ChangeRequestType.RESCHEDULE,
+          status: ChangeRequestStatus.APPROVED,
+          adminId,
+          adminNote: dto.note,
+          reviewedAt: new Date(),
+          currentConfiguration: {
+            deliveryDate: dto.fromDate,
+            status: DeliveryStatus.SCHEDULED,
+          },
+          requestedConfiguration: {
+            fromDate: dto.fromDate,
+            toDate: dto.toDate,
+            actionBy: 'ADMIN',
+            note: dto.note,
+          },
+        },
+      });
+    });
+
+    try {
+      this.realtimeService?.publishToCustomer(customerId, ['plan.updated', 'orders.updated']);
+      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+    } catch {}
+    return {
+      success: true,
+      message: `Delivery rescheduled from ${dto.fromDate} to ${dto.toDate} for the customer.`,
     };
   }
 
@@ -1716,6 +1953,17 @@ export class ManageDeliveryService {
     return selection;
   }
 
+  private async requireActiveSelectionForUser(userId: string) {
+    const selection = await this.prisma.planSelection.findFirst({
+      where: { userId, status: { in: ACTIVE_STATUSES } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!selection) {
+      throw new NotFoundException('This customer has no active plan');
+    }
+    return selection;
+  }
+
   private async rejectDuplicatePending(
     userId: string,
     planSelectionId: string,
@@ -1807,7 +2055,15 @@ export class ManageDeliveryService {
       reviewedAt: r.reviewedAt,
     };
 
-    if (r.status === ChangeRequestStatus.PENDING) {
+    if (r.requestType === ChangeRequestType.SKIP) {
+      base.message = 'A delivery was skipped by admin.';
+      base.adminNote = r.adminNote;
+      base.reason = r.adminNote;
+    } else if (r.requestType === ChangeRequestType.RESCHEDULE) {
+      base.message = 'A delivery was rescheduled by admin.';
+      base.adminNote = r.adminNote;
+      base.reason = r.adminNote;
+    } else if (r.status === ChangeRequestStatus.PENDING) {
       base.message = 'Your change request is pending admin approval.';
     } else if (r.status === ChangeRequestStatus.APPROVED) {
       base.message =
@@ -1840,6 +2096,9 @@ export class ManageDeliveryService {
       occurrence: number;
       quantityLitres: number;
       status: string;
+      actionBy?: string | null;
+      adminNote?: string | null;
+      rescheduledFrom?: Date | null;
       order?: {
         id: string;
         orderNumber: string;
@@ -1892,6 +2151,9 @@ export class ManageDeliveryService {
           orderNumber: d.order?.orderNumber ?? null,
           expectedAmountPaise: d.order?.totalPaise ?? null,
           settlementStatus: d.order?.settlementStatus ?? null,
+          actionBy: d.actionBy ?? null,
+          adminNote: d.adminNote ?? null,
+          rescheduledFrom: d.rescheduledFrom ? this.fmt(d.rescheduledFrom) : null,
         };
       });
 

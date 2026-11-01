@@ -426,6 +426,14 @@ model PlanDelivery {
   occurrence     Int
   quantityLitres Int
   status         DeliveryStatus @default(SCHEDULED)
+  /// Who performed the last skip/reschedule: "CUSTOMER" or "ADMIN". Null for
+  /// deliveries that have never been modified.
+  actionBy       String?
+  /// Admin's reason for skipping or rescheduling this delivery. Visible to the
+  /// customer.
+  adminNote      String?
+  /// When a delivery is rescheduled, the original date before the move.
+  rescheduledFrom DateTime?     @db.Date
   /// When an admin confirmed this delivery. Never the scheduled date.
   deliveredAt    DateTime?
   createdAt      DateTime       @default(now())
@@ -455,6 +463,10 @@ enum ChangeRequestType {
   PAUSE
   /// Customer asks to resume a PAUSED plan. Also approval-gated.
   RESUME
+  /// Admin skips a delivery on behalf of a customer.
+  SKIP
+  /// Admin reschedules a delivery on behalf of a customer.
+  RESCHEDULE
 }
 
 enum ChangeRequestStatus {

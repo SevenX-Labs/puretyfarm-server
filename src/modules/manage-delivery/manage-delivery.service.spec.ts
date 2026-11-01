@@ -226,7 +226,7 @@ describe('ManageDeliveryService', () => {
       expect(res.message).toBe('Delivery skipped successfully.');
       expect(mockPrisma.planDelivery.updateMany).toHaveBeenCalledWith({
         where: { id: 'd1', status: DeliveryStatus.SCHEDULED },
-        data: { status: DeliveryStatus.SKIPPED },
+        data: { status: DeliveryStatus.SKIPPED, actionBy: 'CUSTOMER' },
       });
     });
 

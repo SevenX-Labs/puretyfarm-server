@@ -16,6 +16,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { RejectRequestDto } from './dto/admin/reject-request.dto';
 import { ListRequestsQueryDto } from './dto/admin/list-requests-query.dto';
+import { AdminSkipDeliveryDto } from './dto/admin/admin-skip-delivery.dto';
+import { AdminRescheduleDeliveryDto } from './dto/admin/admin-reschedule-delivery.dto';
 
 @Controller(['api/v1/admin/manage-delivery', 'admin/manage-delivery'])
 @UseGuards(JwtAuthGuard)
@@ -52,5 +54,25 @@ export class AdminManageDeliveryController {
     @Body() dto: RejectRequestDto,
   ) {
     return this.service.rejectRequest(admin.sub, requestId, dto);
+  }
+
+  @Post('customers/:customerId/skip')
+  @HttpCode(HttpStatus.OK)
+  async skipDelivery(
+    @CurrentUser() admin: JwtPayload,
+    @Param('customerId') customerId: string,
+    @Body() dto: AdminSkipDeliveryDto,
+  ) {
+    return this.service.adminSkipDelivery(admin.sub, customerId, dto);
+  }
+
+  @Post('customers/:customerId/reschedule')
+  @HttpCode(HttpStatus.OK)
+  async rescheduleDelivery(
+    @CurrentUser() admin: JwtPayload,
+    @Param('customerId') customerId: string,
+    @Body() dto: AdminRescheduleDeliveryDto,
+  ) {
+    return this.service.adminRescheduleDelivery(admin.sub, customerId, dto);
   }
 }

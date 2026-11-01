@@ -127,6 +127,8 @@ export enum ChangeRequestType {
   CHANGE_PLAN = 'CHANGE_PLAN',
   PAUSE = 'PAUSE',
   RESUME = 'RESUME',
+  SKIP = 'SKIP',
+  RESCHEDULE = 'RESCHEDULE',
 }
 
 /** Lifecycle of an admin-approval request. */
