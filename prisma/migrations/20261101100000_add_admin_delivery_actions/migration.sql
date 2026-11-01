@@ -3,9 +3,9 @@
 -- adminNote stores the reason visible to the customer.
 -- rescheduledFrom stores the original date when a delivery is rescheduled.
 
-ALTER TABLE "plan_deliveries" ADD COLUMN "action_by" TEXT;
-ALTER TABLE "plan_deliveries" ADD COLUMN "admin_note" TEXT;
-ALTER TABLE "plan_deliveries" ADD COLUMN "rescheduled_from" DATE;
+ALTER TABLE "plan_deliveries" ADD COLUMN "actionBy" TEXT;
+ALTER TABLE "plan_deliveries" ADD COLUMN "adminNote" TEXT;
+ALTER TABLE "plan_deliveries" ADD COLUMN "rescheduledFrom" DATE;
 
 -- Add SKIP and RESCHEDULE to ChangeRequestType enum for audit trail.
 ALTER TYPE "ChangeRequestType" ADD VALUE IF NOT EXISTS 'SKIP';
