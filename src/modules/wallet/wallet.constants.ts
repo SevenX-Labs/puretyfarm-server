@@ -33,5 +33,5 @@ export enum WalletTransactionReferenceType {
 }
 
 export const WALLET_CREDIT_MIN_PAISE_DEFAULT = 100;
-export const WALLET_CREDIT_MAX_PAISE_DEFAULT = 10_000_00;
-export const WALLET_MAX_BALANCE_PAISE = 2_000_000_00;
+export const WALLET_CREDIT_MAX_PAISE_DEFAULT = 100_000_000; // ₹10,00,000 (10 Lakh INR)
+export const WALLET_MAX_BALANCE_PAISE = 1_000_000_000; // ₹1,00,00,000 (1 Crore INR);
