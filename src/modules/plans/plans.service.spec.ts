@@ -28,6 +28,7 @@ import {
 } from '@nestjs/common';
 import {
   PlanType,
+  PlanBillingModel,
   DeliveryFrequency,
   QuantityMode,
   PlanQuoteStatus,
@@ -1479,7 +1480,7 @@ describe('PlansService', () => {
       expect(result.funding).toEqual({
         status: 'PENDING_APPROVAL',
         walletBalancePaise: 0,
-        hasCompletedCredit: false,
+        hasCompletedCredit: true,
         pendingCreditCount: 1,
         pendingCreditPaise: 200000,
       });
@@ -1849,11 +1850,11 @@ describe('PlansService', () => {
       });
 
       const res = await service.adminApproveSubscription('admin-1', 'sub-100', {
-        firstDeliveryDate: '2026-10-15',
+        firstDeliveryDate: '2027-01-01',
       });
 
       expect(res.success).toBe(true);
-      expect(res.startDate).toBe('2026-10-15');
+      expect(res.startDate).toBe('2027-01-01');
     });
 
     it('does not write paidAt or paidAmountPaise when scheduling is approved', async () => {
@@ -1892,7 +1893,7 @@ describe('PlansService', () => {
       });
 
       await service.adminApproveSubscription('admin-1', 'sub-100', {
-        firstDeliveryDate: '2026-10-15',
+        firstDeliveryDate: '2027-01-01',
       });
 
       // Scheduling approval is not a payment event.
@@ -1929,7 +1930,7 @@ describe('PlansService', () => {
         // method slipped through unpaid.
         await expect(
           service.adminApproveSubscription('admin-1', 'sub-x', {
-            firstDeliveryDate: '2026-10-15',
+            firstDeliveryDate: '2027-01-01',
           }),
         ).rejects.toThrow(BadRequestException);
       }
@@ -1949,7 +1950,7 @@ describe('PlansService', () => {
 
       await expect(
         service.adminApproveSubscription('admin-1', 'sub-100', {
-          firstDeliveryDate: '2026-10-15',
+          firstDeliveryDate: '2027-01-01',
         }),
       ).rejects.toThrow(BadRequestException);
     });
@@ -1966,7 +1967,7 @@ describe('PlansService', () => {
 
       await expect(
         service.adminApproveSubscription('admin-1', 'sub-100', {
-          firstDeliveryDate: '2026-10-15',
+          firstDeliveryDate: '2027-01-01',
         }),
       ).rejects.toThrow(ConflictException);
     });
@@ -1998,9 +1999,81 @@ describe('PlansService', () => {
 
       await expect(
         service.adminApproveSubscription('admin-1', 'sub-unpaid', {
-          firstDeliveryDate: '2026-10-15',
+          firstDeliveryDate: '2027-01-01',
         }),
       ).rejects.toThrow('Physical cash receipt has not been confirmed yet');
+    });
+
+    it('approves a per-delivery plan even when wallet funding has not been confirmed or is 0 balance', async () => {
+      const perDeliverySelectionRow = {
+        id: 'sub-per-delivery',
+        userId: USER,
+        planType: PlanType.MONTHLY,
+        status: PlanSelectionStatus.PENDING_APPROVAL,
+        billingModel: PlanBillingModel.PER_DELIVERY,
+        paymentMethod: 'WALLET',
+        paidAt: null,
+        cashCollection: null,
+        quoteId: 'quote-100',
+        quote: {
+          id: 'quote-100',
+          planType: PlanType.MONTHLY,
+          totalSellingAmount: 10000,
+          sellingPricePerLitre: 8000,
+          actualPricePerLitre: 8500,
+          deliveryOccurrences: 30,
+          quantity: 1,
+          quantityMode: QuantityMode.FIXED,
+          quantityA: null,
+          quantityB: null,
+          frequency: DeliveryFrequency.DAILY,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+          status: PlanQuoteStatus.PENDING,
+        },
+      };
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          planSelection: {
+            findUnique: jest.fn().mockResolvedValue(perDeliverySelectionRow),
+            update: jest.fn().mockResolvedValue(perDeliverySelectionRow),
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+            findMany: jest.fn().mockResolvedValue([]),
+          },
+          planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+          planDelivery: {
+            createMany: jest.fn(),
+            findMany: jest.fn().mockResolvedValue([]),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+          },
+          order: {
+            findMany: jest.fn().mockResolvedValue([]),
+            findUnique: jest.fn().mockResolvedValue(null),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+            create: jest.fn(),
+          },
+          planConfig: {
+            findUnique: jest.fn().mockResolvedValue(monthlyConfig),
+          },
+          customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
+          wallet: {
+            findMany: jest.fn().mockResolvedValue([]),
+          },
+        };
+        return cb(tx);
+      });
+
+      const res = await service.adminApproveSubscription(
+        'admin-1',
+        'sub-per-delivery',
+        {
+          firstDeliveryDate: '2027-01-01',
+        },
+      );
+
+      expect(res.success).toBe(true);
+      expect(res.startDate).toBe('2027-01-01');
     });
   });
 

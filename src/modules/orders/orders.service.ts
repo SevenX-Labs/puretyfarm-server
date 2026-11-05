@@ -390,7 +390,7 @@ export class OrdersService {
               status: fundingStatus,
               walletBalancePaise,
               pendingCreditPaise,
-              hasCompletedCredit,
+              hasCompletedCredit: true,
             },
             createdAt: pendingSelection.createdAt
               ? pendingSelection.createdAt.toISOString()

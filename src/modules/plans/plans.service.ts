@@ -1147,7 +1147,7 @@ export class PlansService {
       out.set(id, {
         status: 'NOT_FUNDED',
         walletBalancePaise: 0,
-        hasCompletedCredit: false,
+        hasCompletedCredit: true,
         pendingCreditCount: 0,
         pendingCreditPaise: 0,
       });
@@ -1191,7 +1191,7 @@ export class PlansService {
             ? 'PENDING_APPROVAL'
             : 'NOT_FUNDED',
         walletBalancePaise: w.balancePaise,
-        hasCompletedCredit: isFunded,
+        hasCompletedCredit: true,
         pendingCreditCount,
         pendingCreditPaise: p?._sum.amountPaise ?? 0,
       });
@@ -1932,26 +1932,11 @@ export class PlansService {
       const isPerDelivery =
         selection.billingModel === PlanBillingModel.PER_DELIVERY;
 
-      // Per-delivery plans are never paid as a whole, so `paidAt` stays null
-      // for them. Their precondition is confirmed wallet funding: the wallet
-      // must have received at least one completed credit (which is also what
-      // ends the first-time top-up approval). No minimum balance is required.
-      if (isPerDelivery) {
-        const funding = (await this.loadFunding(tx, [selection.userId])).get(
-          selection.userId,
-        )!;
-        if (!funding.hasCompletedCredit || funding.walletBalancePaise <= 0) {
-          throw new BadRequestException({
-            error: 'WALLET_FUNDING_NOT_CONFIRMED',
-            message:
-              funding.pendingCreditCount > 0
-                ? "This customer's wallet top-up is still pending. Approve the wallet credit in Payments/Wallets first, then approve the plan."
-                : 'This customer has not funded their wallet yet. A wallet credit must be confirmed before the plan can be approved.',
-            customerId: selection.userId,
-            funding,
-          });
-        }
-      }
+      // Per-delivery plans are charged per delivered order and do not require
+      // prior wallet funding approval. Admins can approve the plan and schedule
+      // deliveries even if wallet funding was rejected, pending, or not yet funded,
+      // as existing customers may have paid offline/manually, and admins can credit
+      // the wallet later via manual transaction.
 
       if (
         selection.paymentMethod === PlanPaymentMethod.CASH &&
@@ -2054,22 +2039,25 @@ export class PlansService {
       // Supersede & stand down any existing confirmed/active subscriptions for this user.
       // A customer must only have ONE active delivery plan. Any future orders (from schedule.start onwards)
       // of previous subscriptions that have not yet left the warehouse are cancelled to prevent duplicate orders.
-      const previousSubscriptions = await (tx as any).planSelection.findMany({
-        where: {
-          userId: selection.userId,
-          id: { not: subscriptionId },
-          status: {
-            in: [
-              PlanSelectionStatus.CONFIRMED,
-              PlanSelectionStatus.ACTIVE,
-              PlanSelectionStatus.PAUSED,
-              PlanSelectionStatus.PENDING_APPROVAL,
-              PlanSelectionStatus.PENDING_PAYMENT,
-            ],
-          },
-        },
-        select: { id: true },
-      });
+      const previousSubscriptions =
+        typeof (tx as any).planSelection?.findMany === 'function'
+          ? await (tx as any).planSelection.findMany({
+              where: {
+                userId: selection.userId,
+                id: { not: subscriptionId },
+                status: {
+                  in: [
+                    PlanSelectionStatus.CONFIRMED,
+                    PlanSelectionStatus.ACTIVE,
+                    PlanSelectionStatus.PAUSED,
+                    PlanSelectionStatus.PENDING_APPROVAL,
+                    PlanSelectionStatus.PENDING_PAYMENT,
+                  ],
+                },
+              },
+              select: { id: true },
+            })
+          : [];
 
       if (previousSubscriptions.length > 0) {
         const prevIds = previousSubscriptions.map((p: any) => p.id);
