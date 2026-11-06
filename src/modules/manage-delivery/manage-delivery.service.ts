@@ -28,7 +28,7 @@ import {
   generateDeliveryDates,
   quantityForOccurrence,
 } from '../plans/plans.service';
-import { toIsoDateString } from '../../common/utils/ist-date.util';
+import { toIsoDateString, addDays } from '../../common/utils/ist-date.util';
 import { OrderStatus } from '../orders/orders.constants';
 import { PlansService } from '../plans/plans.service';
 import type { OrderPriceSnapshot } from '../plans/plans.service';
@@ -380,7 +380,7 @@ export class ManageDeliveryService {
       throw new BadRequestException('Only future deliveries can be rescheduled');
     }
     if (toDate.getTime() <= today.getTime()) {
-      throw new BadRequestException('The new date must be in the future');
+      throw new BadRequestException('The new date must be in the future (tomorrow or later)');
     }
     if (fromDate.getTime() === toDate.getTime()) {
       throw new BadRequestException(
@@ -388,74 +388,119 @@ export class ManageDeliveryService {
       );
     }
 
+    const diffDays = Math.round(
+      (toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
     const selection = await this.requireActiveSelectionForUser(customerId);
 
-    const delivery = await this.prisma.planDelivery.findFirst({
+    const startDelivery = await this.prisma.planDelivery.findFirst({
       where: {
         selectionId: selection.id,
         userId: customerId,
         deliveryDate: fromDate,
       },
     });
-    if (!delivery) {
+    if (!startDelivery) {
       throw new BadRequestException(
         `${dto.fromDate} is not a scheduled delivery date`,
       );
     }
-    if (delivery.status !== DeliveryStatus.SCHEDULED) {
+    if (startDelivery.status !== DeliveryStatus.SCHEDULED) {
       throw new BadRequestException(
-        `The ${dto.fromDate} delivery is ${delivery.status} and cannot be rescheduled`,
+        `The ${dto.fromDate} delivery is ${startDelivery.status} and cannot be rescheduled`,
       );
     }
 
-    const conflicting = await this.prisma.planDelivery.findFirst({
+    // If moving backward, ensure the new starting date doesn't collide with or precede prior deliveries
+    if (diffDays < 0) {
+      const priorDelivery = await this.prisma.planDelivery.findFirst({
+        where: {
+          selectionId: selection.id,
+          userId: customerId,
+          deliveryDate: { lt: fromDate },
+        },
+        orderBy: { deliveryDate: 'desc' },
+      });
+      if (
+        priorDelivery &&
+        toDate.getTime() <= toDateOnly(priorDelivery.deliveryDate).getTime()
+      ) {
+        throw new BadRequestException(
+          `The new date cannot be on or before an existing prior delivery date (${this.fmt(priorDelivery.deliveryDate)})`,
+        );
+      }
+    }
+
+    // Fetch all deliveries for this plan selection from fromDate onward to shift the entire plan
+    const deliveriesToShift = await this.prisma.planDelivery.findMany({
       where: {
         selectionId: selection.id,
         userId: customerId,
-        deliveryDate: toDate,
+        deliveryDate: { gte: fromDate },
       },
+      orderBy: { deliveryDate: 'asc' },
     });
-    if (conflicting) {
-      throw new BadRequestException(
-        `A delivery already exists on ${dto.toDate}`,
-      );
-    }
 
     await this.prisma.$transaction(async (tx) => {
-      if (selection.endDate) {
-        const end = toDateOnly(selection.endDate);
-        if (toDate.getTime() > end.getTime()) {
-          await tx.planSelection.update({
-            where: { id: selection.id },
-            data: { endDate: toDate },
+      // Sort to prevent @@unique([selectionId, deliveryDate]) collisions during sequential updates:
+      // When shifting forward (diffDays > 0), update latest dates first (descending).
+      // When shifting backward (diffDays < 0), update earliest dates first (ascending).
+      const sorted = [...deliveriesToShift].sort((a, b) => {
+        const timeA = toDateOnly(a.deliveryDate).getTime();
+        const timeB = toDateOnly(b.deliveryDate).getTime();
+        return diffDays > 0 ? timeB - timeA : timeA - timeB;
+      });
+
+      for (const d of sorted) {
+        const curDate = toDateOnly(d.deliveryDate);
+        const newDate = addDays(curDate, diffDays);
+
+        await tx.planDelivery.update({
+          where: { id: d.id },
+          data: {
+            deliveryDate: newDate,
+            actionBy: 'ADMIN',
+            adminNote: dto.note,
+            rescheduledFrom: curDate,
+          },
+        });
+
+        // Update linked replaceable warehouse dispatch order date
+        const order = await tx.order.findUnique({
+          where: { planDeliveryId: d.id },
+          select: { id: true, status: true },
+        });
+        if (
+          order &&
+          REPLACEABLE_ORDER_STATUSES.includes(order.status as any)
+        ) {
+          await tx.order.update({
+            where: { id: order.id },
+            data: { deliveryDate: newDate },
           });
         }
       }
 
-      await tx.planDelivery.update({
-        where: { id: delivery.id },
-        data: {
-          deliveryDate: toDate,
-          actionBy: 'ADMIN',
-          adminNote: dto.note,
-          rescheduledFrom: fromDate,
-        },
-      });
-
-      const order = await tx.order.findUnique({
-        where: { planDeliveryId: delivery.id },
-        select: { id: true, status: true },
-      });
+      // Update PlanSelection start/end date so entire plan window stays consistent
+      const selectionUpdates: Record<string, any> = {};
+      if (selection.endDate) {
+        selectionUpdates.endDate = addDays(toDateOnly(selection.endDate), diffDays);
+      }
       if (
-        order &&
-        REPLACEABLE_ORDER_STATUSES.includes(order.status as any)
+        selection.startDate &&
+        toDateOnly(selection.startDate).getTime() >= fromDate.getTime()
       ) {
-        await tx.order.update({
-          where: { id: order.id },
-          data: { deliveryDate: toDate },
+        selectionUpdates.startDate = addDays(toDateOnly(selection.startDate), diffDays);
+      }
+      if (Object.keys(selectionUpdates).length > 0) {
+        await tx.planSelection.update({
+          where: { id: selection.id },
+          data: selectionUpdates,
         });
       }
 
+      // Record audit change request
       await tx.manageDeliveryChangeRequest.create({
         data: {
           userId: customerId,
@@ -472,6 +517,8 @@ export class ManageDeliveryService {
           requestedConfiguration: {
             fromDate: dto.fromDate,
             toDate: dto.toDate,
+            diffDays,
+            shiftedCount: deliveriesToShift.length,
             actionBy: 'ADMIN',
             note: dto.note,
           },
@@ -481,11 +528,18 @@ export class ManageDeliveryService {
 
     try {
       this.realtimeService?.publishToCustomer(customerId, ['plan.updated', 'orders.updated']);
-      this.realtimeService?.publishToAdmins(['admin.deliveries.updated', 'admin.plans.updated']);
+      this.realtimeService?.publishToAdmins([
+        'admin.deliveries.updated',
+        'admin.plans.updated',
+        'admin.orders.updated',
+      ]);
     } catch {}
+
+    const dayWord = Math.abs(diffDays) === 1 ? 'day' : 'days';
+    const directionWord = diffDays > 0 ? 'forward' : 'backward';
     return {
       success: true,
-      message: `Delivery rescheduled from ${dto.fromDate} to ${dto.toDate} for the customer.`,
+      message: `Plan schedule rescheduled: shifted ${deliveriesToShift.length} delivery dates and warehouse orders ${directionWord} by ${Math.abs(diffDays)} ${dayWord} (from ${dto.fromDate} to ${dto.toDate}).`,
     };
   }
 

@@ -50,11 +50,17 @@ describe('ManageDeliveryService', () => {
       findFirst: jest.fn(),
       findMany: jest.fn(),
       updateMany: jest.fn(),
+      update: jest.fn(),
       createMany: jest.fn(),
       deleteMany: jest.fn(),
     },
     planConfig: { findUnique: jest.fn() },
-    order: { findFirst: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn() },
+    order: {
+      findFirst: jest.fn(),
+      findUnique: jest.fn(),
+      updateMany: jest.fn(),
+      update: jest.fn(),
+    },
     manageDeliveryChangeRequest: {
       create: jest.fn(),
       findFirst: jest.fn(),
@@ -1127,6 +1133,65 @@ describe('ManageDeliveryService', () => {
           quantityA: 1,
         } as any),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  //  ADMIN RESCHEDULE DELIVERY (shifts entire plan schedule)
+  // ══════════════════════════════════════════════════════════════
+
+  describe('adminRescheduleDelivery', () => {
+    it('shifts all subsequent deliveries and linked orders forward and updates plan endDate', async () => {
+      const fromDateStr = '2026-11-20';
+      const toDateStr = '2026-11-22'; // +2 days shift
+
+      mockPrisma.planSelection.findFirst.mockResolvedValue({
+        ...monthlySelection,
+        id: 'sel-1',
+        startDate: new Date('2026-11-15T00:00:00.000Z'),
+        endDate: new Date('2026-11-30T00:00:00.000Z'),
+      });
+
+      const d1 = {
+        id: 'del-1',
+        selectionId: 'sel-1',
+        userId: USER,
+        deliveryDate: new Date('2026-11-20T00:00:00.000Z'),
+        status: DeliveryStatus.SCHEDULED,
+      };
+      const d2 = {
+        id: 'del-2',
+        selectionId: 'sel-1',
+        userId: USER,
+        deliveryDate: new Date('2026-11-21T00:00:00.000Z'),
+        status: DeliveryStatus.SCHEDULED,
+      };
+
+      mockPrisma.planDelivery.findFirst.mockResolvedValue(d1);
+      mockPrisma.planDelivery.findMany.mockResolvedValue([d1, d2]);
+      mockPrisma.planDelivery.update.mockResolvedValue({});
+      mockPrisma.order.findUnique.mockResolvedValue({ id: 'ord-1', status: 'CONFIRMED' });
+      mockPrisma.order.update.mockResolvedValue({});
+      mockPrisma.planSelection.update.mockResolvedValue({});
+      mockPrisma.manageDeliveryChangeRequest.create.mockResolvedValue({ id: 'cr-1' });
+
+      const res = await service.adminRescheduleDelivery(ADMIN, USER, {
+        fromDate: fromDateStr,
+        toDate: toDateStr,
+        note: 'Customer requested 2 day vacation shift',
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.message).toContain('shifted 2 delivery dates');
+      expect(mockPrisma.planDelivery.update).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.planSelection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'sel-1' },
+          data: expect.objectContaining({
+            endDate: new Date('2026-12-02T00:00:00.000Z'),
+          }),
+        }),
+      );
     });
   });
 });
