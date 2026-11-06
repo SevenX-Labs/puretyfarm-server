@@ -148,11 +148,16 @@ describe('Cash Plan Confirmation -> Wallet Routing Integration', () => {
         findUnique: async ({ where, include }: any) => {
           const row = db.planSelections.find((s) => s.id === where.id);
           if (!row) return null;
+          const result: any = { ...row };
           if (include?.quote) {
-            const quote = db.planQuotes.find((q) => q.id === row.quoteId);
-            return { ...row, quote };
+            result.quote = db.planQuotes.find((q) => q.id === row.quoteId);
           }
-          return { ...row };
+          if (include?.cashCollection) {
+            result.cashCollection = db.cashCollections.find(
+              (c) => c.planSelectionId === row.id,
+            );
+          }
+          return result;
         },
         update: async ({ where, data }: any) => {
           const row = db.planSelections.find((s) => s.id === where.id);
@@ -395,7 +400,7 @@ describe('Cash Plan Confirmation -> Wallet Routing Integration', () => {
     const approveRes = await plansService.adminApproveSubscription(
       ADMIN_ID,
       selectionId,
-      { firstDeliveryDate: '2026-10-15' },
+      { firstDeliveryDate: '2027-10-15' },
     );
     expect(approveRes.success).toBe(true);
     expect(sel?.status).toBe(PlanSelectionStatus.CONFIRMED);
@@ -557,6 +562,7 @@ describe('Cash Plan Confirmation -> Wallet Routing Integration', () => {
 
   it('Missing plan configuration during subscription approval: fails safely (PLAN_CONFIG_MISSING) and rolls back schedule generation', async () => {
     const { selectionId, collectionId } = seedCashPlan(25000, 25000);
+    db.planSelections.find((s) => s.id === selectionId)!.billingModel = 'PER_DELIVERY';
     await paymentsService.confirmCashCollection(collectionId, ADMIN_ID, {});
 
     // Simulate the plan's configuration being absent at subscription approval time:
@@ -566,7 +572,7 @@ describe('Cash Plan Confirmation -> Wallet Routing Integration', () => {
     let caught: any;
     try {
       await plansService.adminApproveSubscription(ADMIN_ID, selectionId, {
-        firstDeliveryDate: '2026-10-15',
+        firstDeliveryDate: '2027-10-15',
       });
     } catch (err) {
       caught = err;

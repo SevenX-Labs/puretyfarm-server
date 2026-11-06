@@ -1933,12 +1933,12 @@ export class PlansService {
         selection.billingModel === PlanBillingModel.PER_DELIVERY;
 
       // Per-delivery plans are charged per delivered order and do not require
-      // prior wallet funding approval. Admins can approve the plan and schedule
-      // deliveries even if wallet funding was rejected, pending, or not yet funded,
-      // as existing customers may have paid offline/manually, and admins can credit
-      // the wallet later via manual transaction.
-
+      // prior wallet funding approval or upfront cash confirmation. Admins can approve
+      // the plan and schedule deliveries even if wallet funding was rejected, pending,
+      // or cash collection is unconfirmed, as existing customers may have paid offline/manually,
+      // and admins can credit the wallet later via manual transaction or confirm cash collection later.
       if (
+        !isPerDelivery &&
         selection.paymentMethod === PlanPaymentMethod.CASH &&
         selection.cashCollection?.status !== 'CONFIRMED'
       ) {

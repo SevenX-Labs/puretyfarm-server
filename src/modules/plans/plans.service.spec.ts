@@ -2075,6 +2075,78 @@ describe('PlansService', () => {
       expect(res.success).toBe(true);
       expect(res.startDate).toBe('2027-01-01');
     });
+
+    it('approves a per-delivery plan even when paymentMethod is CASH and cashCollection is PENDING', async () => {
+      const perDeliveryCashRow = {
+        id: 'sub-per-delivery-cash',
+        userId: USER,
+        planType: PlanType.MONTHLY,
+        status: PlanSelectionStatus.PENDING_APPROVAL,
+        billingModel: PlanBillingModel.PER_DELIVERY,
+        paymentMethod: 'CASH',
+        paidAt: null,
+        cashCollection: { id: 'col-1', status: 'PENDING' },
+        quoteId: 'quote-100',
+        quote: {
+          id: 'quote-100',
+          planType: PlanType.MONTHLY,
+          totalSellingAmount: 10000,
+          sellingPricePerLitre: 8000,
+          actualPricePerLitre: 8500,
+          deliveryOccurrences: 30,
+          quantity: 1,
+          quantityMode: QuantityMode.FIXED,
+          quantityA: null,
+          quantityB: null,
+          frequency: DeliveryFrequency.DAILY,
+          billingPeriodStart: null,
+          billingPeriodEnd: null,
+          status: PlanQuoteStatus.PENDING,
+        },
+      };
+
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          planSelection: {
+            findUnique: jest.fn().mockResolvedValue(perDeliveryCashRow),
+            update: jest.fn().mockResolvedValue(perDeliveryCashRow),
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+            findMany: jest.fn().mockResolvedValue([]),
+          },
+          planQuote: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+          planDelivery: {
+            createMany: jest.fn(),
+            findMany: jest.fn().mockResolvedValue([]),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+          },
+          order: {
+            findMany: jest.fn().mockResolvedValue([]),
+            findUnique: jest.fn().mockResolvedValue(null),
+            updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+            create: jest.fn(),
+          },
+          planConfig: {
+            findUnique: jest.fn().mockResolvedValue(monthlyConfig),
+          },
+          customerAddress: { findFirst: jest.fn().mockResolvedValue(null) },
+          wallet: {
+            findMany: jest.fn().mockResolvedValue([]),
+          },
+        };
+        return cb(tx);
+      });
+
+      const res = await service.adminApproveSubscription(
+        'admin-1',
+        'sub-per-delivery-cash',
+        {
+          firstDeliveryDate: '2027-01-01',
+        },
+      );
+
+      expect(res.success).toBe(true);
+      expect(res.startDate).toBe('2027-01-01');
+    });
   });
 
   // ── Admin: plan configuration ─────────────────────────────────────
