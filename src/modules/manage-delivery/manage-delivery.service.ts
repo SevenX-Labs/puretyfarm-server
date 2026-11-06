@@ -421,16 +421,17 @@ export class ManageDeliveryService {
       );
     }
 
-    if (selection.endDate) {
-      const end = toDateOnly(selection.endDate);
-      if (toDate.getTime() > end.getTime()) {
-        throw new BadRequestException(
-          `The new date cannot be after the plan end date (${this.fmt(selection.endDate)})`,
-        );
-      }
-    }
-
     await this.prisma.$transaction(async (tx) => {
+      if (selection.endDate) {
+        const end = toDateOnly(selection.endDate);
+        if (toDate.getTime() > end.getTime()) {
+          await tx.planSelection.update({
+            where: { id: selection.id },
+            data: { endDate: toDate },
+          });
+        }
+      }
+
       await tx.planDelivery.update({
         where: { id: delivery.id },
         data: {

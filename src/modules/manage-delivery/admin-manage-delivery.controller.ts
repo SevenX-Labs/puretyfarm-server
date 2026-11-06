@@ -8,6 +8,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import { ManageDeliveryService } from './manage-delivery.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -74,5 +75,18 @@ export class AdminManageDeliveryController {
     @Body() dto: AdminRescheduleDeliveryDto,
   ) {
     return this.service.adminRescheduleDelivery(admin.sub, customerId, dto);
+  }
+
+  @Get('customers/:customerId/deliveries')
+  @HttpCode(HttpStatus.OK)
+  async getCustomerDeliveries(@Param('customerId') customerId: string) {
+    try {
+      return await this.service.getManageDelivery(customerId);
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        return { deliveries: [], activePlan: null };
+      }
+      throw err;
+    }
   }
 }

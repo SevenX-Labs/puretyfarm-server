@@ -2785,6 +2785,12 @@ export class PlansService {
         approvalNote: s.approvalNote ?? null,
         createdAt: s.createdAt,
         deliveriesCount: s.deliveries?.length || 0,
+        deliveries: (s.deliveries || []).map((d: any) => ({
+          id: d.id,
+          deliveryDate: toIsoDateString(toDateOnly(d.deliveryDate)),
+          quantityLitres: d.quantityLitres,
+          status: d.status,
+        })),
         /**
          * Authoritative Plan Configuration for this subscription's plan type.
          * `deliveryStartTime`/`deliveryEndTime` are null when the admin has not
